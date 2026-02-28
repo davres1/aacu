@@ -1,0 +1,218 @@
+- hosts: wins_install
+  become_method: runas
+  strategy: free
+
+  tasks:
+  - name: copy checkmk msi file
+    win_copy:
+      src: files/check_mk_agent.msi
+      dest: C:\temp\check_mk_agent.msi
+    tags: [ install]
+
+  - name: "Create directory for Database custom facts"
+    win_file:
+      path: C:\ProgramData\ansible\facts.d
+      state: directory
+    tags: [ install, facts ]
+
+  - name: "Copy the Database custom facts"
+    win_copy:
+      src: files/win_db_inventory.ps1
+      dest: C:\ProgramData\ansible\facts.d\db_inventory.ps1
+    tags: [ install, facts ]
+
+  - name: "Copy the chekmk user creation ps1 file"
+    win_copy:
+      src: files/createcheckmk.ps1
+      dest: C:\temp\createcheckmk.ps1
+    tags: [ install, facts ]
+
+  - name: "Install dbatools PowerShell module"
+    win_shell: |
+      $null = Install-Module -Name dbatools -Force -AllowClobber -ErrorAction SilentlyContinue
+      Write-Output "dbatools module installation completed"
+    tags: [ install, facts ]
+
+  - name: Running checkmk user create
+    win_shell: C:\temp\createcheckmk.ps1
+    args:
+      chdir: C:\temp\
+    tags: [ install, facts ]
+
+  - name: "Copy the database status check ps1 file"
+    win_copy:
+      src: files/CheckmssqlStatus.ps1
+      dest: C:\temp\CheckmssqlStatus.ps1
+    tags: [ install, facts ]
+
+  - name: Ensure script is executable by PowerShell
+    win_file:
+      path: C:\temp\CheckmssqlStatus.ps1
+      attributes: 'readonly'
+    tags: [ install, facts ]
+
+  - name: Create Scheduled Task to run script
+    win_scheduled_task:
+      name: "CheckmssqlStatus"
+      description: "Checks mssql DB and Listener status, restarts if down"
+      actions:
+      - path: powershell.exe
+        arguments: "-ExecutionPolicy Bypass -File C:\\temp\\CheckmssqlStatus.ps1"
+      triggers:
+      - type: daily
+        start_boundary: '2025-06-29T09:00:00'
+        repetition:
+          interval: PT1H
+          duration: P1D
+      username: "SYSTEM"
+      run_level: highest
+      state: present
+      enabled: yes
+    tags: [ install, facts ]
+
+  - name: "Copy Blocking and Lock Contention Detection script"
+    win_copy:
+      src: files/DetectBlockingLocks.ps1
+      dest: C:\temp\DetectBlockingLocks.ps1
+    tags: [ install, maintenance ]
+
+  - name: "Create Scheduled Task for Blocking Lock Detection (Every 30 mins)"
+    win_scheduled_task:
+      name: "DetectBlockingLocks"
+      description: "Detects and logs blocking locks and lock contention"
+      actions:
+      - path: powershell.exe
+        arguments: "-ExecutionPolicy Bypass -File C:\\temp\\DetectBlockingLocks.ps1"
+      triggers:
+      - type: daily
+        start_boundary: '2025-06-29T09:00:00'
+        repetition:
+          interval: PT30M
+          duration: P1D
+      username: "SYSTEM"
+      run_level: highest
+      state: present
+      enabled: yes
+    tags: [ install, maintenance ]
+
+  - name: "Copy Deadlock Detection script"
+    win_copy:
+      src: files/DetectDeadlocks.ps1
+      dest: C:\temp\DetectDeadlocks.ps1
+    tags: [ install, maintenance ]
+
+  - name: "Create Scheduled Task for Deadlock Detection (Every 30 mins)"
+    win_scheduled_task:
+      name: "DetectDeadlocks"
+      description: "Detects deadlocks and captures deadlock graphs"
+      actions:
+      - path: powershell.exe
+        arguments: "-ExecutionPolicy Bypass -File C:\\temp\\DetectDeadlocks.ps1"
+      triggers:
+      - type: daily
+        start_boundary: '2025-06-29T09:05:00'
+        repetition:
+          interval: PT30M
+          duration: P1D
+      username: "SYSTEM"
+      run_level: highest
+      state: present
+      enabled: yes
+    tags: [ install, maintenance ]
+
+  - name: "Copy Index Maintenance script"
+    win_copy:
+      src: files/IndexMaintenance.ps1
+      dest: C:\temp\IndexMaintenance.ps1
+    tags: [ install, maintenance ]
+
+  - name: "Create Scheduled Task for Index Maintenance (Every 3 months on Friday night)"
+    win_scheduled_task:
+      name: "IndexMaintenance"
+      description: "Performs index maintenance and analytics - runs every 3 months on Friday night"
+      actions:
+      - path: powershell.exe
+        arguments: "-ExecutionPolicy Bypass -File C:\\temp\\IndexMaintenance.ps1"
+      triggers:
+      - type: monthly
+        schedule: Last
+        day_of_week: Friday
+        months:
+        - February
+        - May
+        - August
+        - November
+        start_boundary: '2025-02-28T22:00:00'
+      - type: monthly
+        schedule: Last
+        day_of_week: Friday
+        months:
+        - January
+        - April
+        - July
+        - October
+        start_boundary: '2025-01-31T22:00:00'
+      username: "SYSTEM"
+      run_level: highest
+      state: present
+      enabled: yes
+    tags: [ install, maintenance ]
+
+  - name: "Copy Account Security Monitoring script"
+    win_copy:
+      src: files/MonitorAccountSecurity.ps1
+      dest: C:\temp\MonitorAccountSecurity.ps1
+    tags: [ install, maintenance ]
+
+  - name: "Create Scheduled Task for Account Security Monitoring (Every 30 mins)"
+    win_scheduled_task:
+      name: "MonitorAccountSecurity"
+      description: "Monitors failed login attempts and locks/disables accounts on repeated failures"
+      actions:
+      - path: powershell.exe
+        arguments: "-ExecutionPolicy Bypass -File C:\\temp\\MonitorAccountSecurity.ps1"
+      triggers:
+      - type: daily
+        start_boundary: '2025-06-29T09:15:00'
+        repetition:
+          interval: PT30M
+          duration: P1D
+      username: "SYSTEM"
+      run_level: highest
+      state: present
+      enabled: yes
+    tags: [ install, maintenance ]
+
+  - name: install mssql facts
+    win_shell: C:\ProgramData\ansible\facts.d\db_inventory.ps1
+    args:
+      chdir: C:\ProgramData\ansible\facts.d
+    tags: [ install, facts ]
+
+  - name: install checkmk
+    win_shell: msiexec /i check_mk_agent.msi /qn
+    args:
+      chdir: C:\temp\
+      executable: cmd
+    register: install_result
+    ignore_errors: yes
+    tags: [ install]
+
+  - name: add mssql file
+    win_template:
+      src: templates/mk_mssql_cfg.ps1.j2
+      dest: C:\ProgramData\checkmk\agent\config\mk_mssql_cfg.ps1
+    tags: [ install]
+
+  - name: add mssql plugin file
+    win_copy:
+      src: files/mk_mssql.ps1
+      dest: C:\ProgramData\checkmk\agent\plugins\mk_mssql.ps1
+    tags: [ install]
+
+  - name: Restart the service
+    win_service:
+      name: "CheckmkService"
+      state: restarted
+    when: install_result.changed
+    tags: [ install]
