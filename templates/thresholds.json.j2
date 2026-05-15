@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "generated_by": "dba_automation.yaml",
+  "generated_at": "{{ ansible_date_time.iso8601 | default('') }}",
+  "backups": {
+    "full_max_age_hours": {{ backups.thresholds.full_max_age_hours }},
+    "log_max_age_hours": {{ backups.thresholds.log_max_age_hours }}
+  },
+  "disk": {
+    "drive_free_pct_warn": {{ disk.drive_free_pct_warn }},
+    "drive_free_pct_crit": {{ disk.drive_free_pct_crit }},
+    "datafile_free_pct_warn": {{ disk.datafile_free_pct_warn }},
+    "datafile_free_pct_crit": {{ disk.datafile_free_pct_crit }},
+    "autogrowth_danger_mb": {{ disk.autogrowth_danger_mb }}
+  },
+  "tempdb": {
+    "full_percent": {{ tempdb.full_percent }},
+    "alloc_contention_ms": {{ tempdb.alloc_contention_ms }}
+  },
+  "agent_jobs": {
+    "lookback_hours": {{ agent_jobs.lookback_hours }}
+  },
+  "security_audit": {
+    "stale_login_days": {{ security_audit.stale_login_days }},
+    "sysadmin_warn_count": {{ security_audit.sysadmin_warn_count }}
+  },
+  "patch": {
+    "hotfix_warn_age_days": {{ patch.hotfix_warn_age_days }},
+    "hotfix_crit_age_days": {{ patch.hotfix_crit_age_days }}
+  },
+  "alwayson": {
+    "lag_warn_sec": {{ alwayson.lag_warn_sec }},
+    "lag_crit_sec": {{ alwayson.lag_crit_sec }},
+    "send_queue_warn_kb": {{ alwayson.send_queue_warn_kb }}
+  }
+}

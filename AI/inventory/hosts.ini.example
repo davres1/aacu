@@ -1,0 +1,15 @@
+; Copy this file to hosts.ini and edit for your environment.
+; The chatbot looks up servers from the [sql_servers] group when the LLM
+; asks "which servers do you know about?".
+
+[sql_servers]
+sqlprod01.example.com
+sqlprod02.example.com
+
+[sql_servers:vars]
+ansible_connection=winrm
+ansible_user=svc_ansible
+ansible_password=CHANGE_ME
+ansible_winrm_transport=ntlm
+ansible_winrm_server_cert_validation=ignore
+ansible_port=5985

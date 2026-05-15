@@ -1,0 +1,35 @@
+---
+- name: Database & service health check
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  vars:
+    remote_dir: "C:\\Windows\\Temp"
+
+  tasks:
+    - name: Copy CheckmssqlStatus.ps1
+      ansible.windows.win_copy:
+        src: "{{ scripts_dir }}/CheckmssqlStatus.ps1"
+        dest: "{{ remote_dir }}\\CheckmssqlStatus.ps1"
+
+    - name: Copy db_inventory.ps1
+      ansible.windows.win_copy:
+        src: "{{ scripts_dir }}/db_inventory.ps1"
+        dest: "{{ remote_dir }}\\db_inventory.ps1"
+
+    - name: Run CheckmssqlStatus.ps1
+      ansible.windows.win_shell: "& '{{ remote_dir }}\\CheckmssqlStatus.ps1'"
+      register: status_result
+      changed_when: false
+      failed_when: false
+
+    - name: Run db_inventory.ps1
+      ansible.windows.win_shell: "& '{{ remote_dir }}\\db_inventory.ps1'"
+      register: inventory_result
+      changed_when: false
+      failed_when: false
+
+    - name: Surface results
+      ansible.builtin.debug:
+        msg:
+          status_rc: "{{ status_result.rc }}"
+          inventory_preview: "{{ (inventory_result.stdout | default('')) | truncate(400) }}"

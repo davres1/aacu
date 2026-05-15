@@ -1,0 +1,30 @@
+---
+- name: Run a read-only SQL query on a target instance
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  vars:
+    sql_instance: "{{ sql_instance | default(target_host) }}"
+    sql_database: "{{ sql_database | default('master') }}"
+    max_rows: "{{ max_rows | default(200) }}"
+
+  tasks:
+    - name: Run read-only SQL query
+      ansible.windows.win_shell: |
+        Import-Module dbatools -ErrorAction Stop
+        $rows = Invoke-DbaQuery `
+          -SqlInstance '{{ sql_instance }}' `
+          -Database   '{{ sql_database }}' `
+          -Query      @'
+        {{ sql_query }}
+        '@ `
+          -ReadOnly `
+          -As PSObject `
+          -MessagesToOutput
+        $rows = @($rows) | Select-Object -First {{ max_rows }}
+        $rows | ConvertTo-Json -Depth 6 -Compress
+      register: query_result
+      changed_when: false
+
+    - name: Surface query stdout
+      ansible.builtin.debug:
+        var: query_result.stdout

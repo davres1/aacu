@@ -1,0 +1,224 @@
+# =============================================================================
+# setup.yaml — single configuration file for the entire SQL Server automation
+# project.
+#
+# Consumed by:
+#   - dba_automation.yaml   (Ansible playbook, via vars_files)
+#   - AI/settings.py        (chatbot, loads it on import)
+#   - CheckMK local plugins (via C:\DBA\thresholds.json, rendered by the
+#                            playbook from templates/thresholds.json.j2)
+#   - ticktator.py          (CheckMK -> ServiceNow bridge; environment is
+#                            exported from the servicenow: section — see
+#                            the note at the bottom of that section)
+#
+# Secrets (CheckMK SQL login password, InfluxDB password, ServiceNow creds)
+# should be encrypted with `ansible-vault encrypt_string`. The vault tag
+# format below is left as a placeholder so the playbook still parses on a
+# fresh clone; replace `CHANGE_ME` lines before going to production.
+# =============================================================================
+
+
+# ---------- Bootstrap (RedHat management/monitoring host) --------------------
+# Consumed only by bootstrap.sh — the one-shot RPM-host installer.
+bootstrap:
+  checkmk:
+    site: monitoring
+    admin_password: CHANGE_ME       # ansible-vault encrypt_string ...
+  rundeck:
+    admin_password: CHANGE_ME
+    public_url: http://localhost:4440
+  packages:
+    java: java-17-openjdk
+    influxdb_version: '1.8.10'
+  nagflux:
+    version: '0.4.3'        # released binary tag at github.com/Griesbacher/nagflux/releases
+    url: 'https://github.com/Griesbacher/nagflux/releases/download/v0.4.3/nagflux-linux-x86_64.tar.gz'
+  firewall_ports:
+    - 80/tcp        # HTTP (CheckMK GUI)
+    - 443/tcp       # HTTPS
+    - 4440/tcp      # Rundeck
+    - 5000/tcp      # chatbot Flask
+    - 5667/tcp      # CheckMK livestatus
+    - 8086/tcp      # InfluxDB HTTP
+    - 11434/tcp     # Ollama
+
+
+# ---------- Inventory ---------------------------------------------------------
+inventory:
+  path: /etc/ansible/hosts          # consumed by the chatbot's _known_servers()
+  sql_servers_group: sql_servers
+
+
+# ---------- Windows paths -----------------------------------------------------
+paths:
+  scripts_dir:   'C:\DBA\scripts'
+  log_dir:       'C:\Logs'
+  temp_dir:      'C:\temp'
+  facts_dir:     'C:\ProgramData\ansible\facts.d'
+  config_dir:    'C:\DBA'                              # thresholds.json lives here
+  checkmk_agent: 'C:\ProgramData\checkmk\agent'
+  checkmk_local: 'C:\ProgramData\checkmk\agent\local'
+  backup_root:   'C:\Backups'
+
+
+# ---------- CheckMK monitoring SQL login (created by files/createcheckmk.ps1) -
+checkmk:
+  user: checkmk
+  # ansible-vault encrypt_string 'YourStrongPasswordHere' --name 'checkmk_password'
+  password: CHANGE_ME
+
+
+# ---------- Backups -----------------------------------------------------------
+backups:
+  retention_days: 14
+  exclude_databases:
+    - tempdb
+  schedule:
+    full_time:      '22:00'
+    diff_interval:  PT6H
+    log_interval:   PT15M
+  thresholds:
+    full_max_age_hours: 30
+    log_max_age_hours:  2
+    verify_sample_count: 3
+  parallel:
+    full: 4         # databases backed up concurrently for FULL backups
+    diff: 6         # ...for differential backups
+    log:  8         # ...for log backups (lightest, most concurrent)
+
+
+# ---------- Integrity (DBCC CHECKDB) -----------------------------------------
+integrity:
+  schedule:
+    day_of_week: Sunday
+    time:        '03:00'
+  physical_only_above_gb: 200
+  parallel: 2                 # concurrent DBCC CHECKDBs — CHECKDB is I/O heavy
+  exclude_databases:
+    - tempdb
+
+
+# ---------- Disk / datafile thresholds ---------------------------------------
+disk:
+  drive_free_pct_warn:     15
+  drive_free_pct_crit:     7
+  datafile_free_pct_warn:  15
+  datafile_free_pct_crit:  5
+  autogrowth_danger_mb:    64
+
+
+# ---------- tempdb -----------------------------------------------------------
+tempdb:
+  full_percent:        85
+  alloc_contention_ms: 50
+
+
+# ---------- SQL Agent jobs ---------------------------------------------------
+agent_jobs:
+  lookback_hours:       24
+  long_running_minutes: 60
+
+
+# ---------- Security audit ---------------------------------------------------
+security_audit:
+  stale_login_days:    90
+  sysadmin_warn_count: 5
+
+
+# ---------- Patch level ------------------------------------------------------
+patch:
+  build_max_age_days:    180
+  hotfix_warn_age_days:  45
+  hotfix_crit_age_days:  90
+
+
+# ---------- AlwaysOn ---------------------------------------------------------
+alwayson:
+  lag_warn_sec:         30
+  lag_crit_sec:         120
+  send_queue_warn_kb:   100000
+
+
+# ---------- Index maintenance ------------------------------------------------
+index_maintenance:
+  rebuild_fragmentation_pct:    30
+  reorganize_fragmentation_pct: 10
+  min_page_count:               1000
+
+
+# ---------- Active-remediation thresholds ------------------------------------
+remediation:
+  blocking:
+    auto_kill_minutes: 60         # DetectBlockingLocks.ps1 kills blockers older than this
+  deadlocks:
+    monitor_window_minutes:    35
+    repeat_offender_threshold: 2  # kill sessions involved in N+ deadlocks
+  account_security:
+    failed_attempts_threshold: 5  # disable login after N failed attempts
+    window_minutes:           30
+
+
+# ---------- Chatbot (AI/) ----------------------------------------------------
+chatbot:
+  flask:
+    host:  0.0.0.0
+    port:  5000
+    debug: false
+  llm:
+    provider:     ollama          # ollama | openai | anthropic
+    temperature:  0.1
+    max_tokens:   1024
+    ollama:
+      base_url: http://localhost:11434
+      model:    llama3.1:8b
+      timeout:  120
+    openai:
+      api_key:  ''
+      base_url: https://api.openai.com/v1
+      model:    gpt-4o-mini
+    anthropic:
+      api_key:  ''
+      model:    claude-sonnet-4-6
+  sql:
+    max_rows: 200
+  influxdb:
+    host:     localhost
+    port:     8086
+    # CheckMK Raw -> InfluxDB pipeline (via nagflux) writes here.
+    # Convention: db name, user, and password all set to 'checkmk'.
+    database: checkmk
+    user:     checkmk
+    password: checkmk
+    ssl:      false
+
+
+# ---------- ServiceNow / ticktator (CheckMK notification handler) ------------
+# ticktator.py reads its config from environment variables. The simplest
+# integration is to drop a snippet into /etc/default/ticktator that the
+# CheckMK site shell sources before running ticktator:
+#
+#   export SNOW_INSTANCE='<instance>'
+#   export SNOW_USER='<user>'
+#   export SNOW_PASS='<password>'
+#   export SNOW_ASSIGNMENT_GROUP='Database Operations'
+#   export TICKTATOR_DEDUP_HOURS='4'
+#
+# The values below are the source of truth for that env file; render it
+# with a small ansible task on the CheckMK host if desired.
+servicenow:
+  instance:           dev12345.service-now.com
+  user:               snow_integration
+  password:           CHANGE_ME
+  oauth_token:        ''             # if set, takes precedence over user/password
+  table:              incident
+  assignment_group:   Database Operations
+  caller_id:          checkmk_svc
+  cmdb_ci_field:      cmdb_ci
+  category:           Database
+  subcategory:        Monitoring
+  default_impact:     2
+  default_urgency:    2
+  dedup_hours:        4
+  state_file:         /var/lib/ticktator/state.json
+  log_file:           /var/log/ticktator.log
+  dry_run:            false

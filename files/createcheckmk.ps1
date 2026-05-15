@@ -1,4 +1,8 @@
 #Requires -Version 5.0
+param(
+    [string]$CheckmkUserName = "checkmk",
+    [SecureString]$CheckmkPassword
+)
 <#
 .SYNOPSIS
     Creates a 'checkmk' SQL Server user with readonly monitoring permissions.
@@ -30,8 +34,20 @@ try {
 }
 
 $ErrorActionPreference = "Stop"
-$checkmkUser = "checkmk"
-$checkmkPassword = Read-Host "Enter password for checkmk user" -AsSecureString
+$checkmkUser = $CheckmkUserName
+
+if (-not $CheckmkPassword) {
+    $envPw = $env:CHECKMK_PASSWORD
+    if ($envPw) {
+        $CheckmkPassword = ConvertTo-SecureString -String $envPw -AsPlainText -Force
+    } elseif ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+        $CheckmkPassword = Read-Host "Enter password for $checkmkUser user" -AsSecureString
+    } else {
+        Write-Error "Password not supplied. Pass -CheckmkPassword <SecureString> or set CHECKMK_PASSWORD env var."
+        exit 1
+    }
+}
+$checkmkPassword = $CheckmkPassword
 
 try {
     # Find SQL Server instances on localhost

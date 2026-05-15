@@ -1,0 +1,29 @@
+# Claude Code per-machine settings — not for sharing.
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Ansible
+*.retry
+/tmp/.ansible*
+
+# Local secrets (use ansible-vault for committed secrets instead)
+inventory/hosts.ini
+inventory/hosts
+.env
+*.local
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Bootstrap log artefacts that may end up here during local dev
+bootstrap.log
+*.dump

@@ -1,0 +1,14 @@
+# All text files are LF in the repo regardless of who clones it.
+# This kills the "LF will be replaced by CRLF" autocrlf noise on Windows
+# while keeping shell scripts + Ansible playbooks executable on Linux.
+
+* text=auto eol=lf
+
+# Binary-ish files Git should leave alone (none today, but future-proof).
+*.png  binary
+*.jpg  binary
+*.pdf  binary
+*.zip  binary
+*.tar.gz binary
+*.rpm  binary
+*.msi  binary

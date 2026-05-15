@@ -198,6 +198,8 @@ function Kill-Session {
         return $false
     }
 }
+
+try {
     $instances = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty InstalledInstances
     
     if (-not $instances) {

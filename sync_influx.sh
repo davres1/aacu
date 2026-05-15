@@ -2,13 +2,15 @@
 
 # --- CONFIG ---
 RRDTOOL_BIN="/opt/omd/sites/monitoring/bin/rrdtool"
-INFLUX_URL="http://localhost:8086/write?db=influx"
-INFLUX_USER="influx"
-INFLUX_PASS="influx"
+# Legacy polling path. The live pipeline now is nagflux (see bootstrap.sh
+# Phase 5b). Credentials match the chatbot.influxdb section of setup.yaml.
+INFLUX_URL="http://localhost:8086/write?db=checkmk"
+INFLUX_USER="checkmk"
+INFLUX_PASS="checkmk"
 RRD_BASE_DIR="/omd/sites/monitoring/var/pnp4nagios/perfdata"
 FETCH_WINDOW="-1h"
 LOG_FILE="/var/log/migrate_data.log"
-MAX_PARALLEL_JOBS=8  # Adjust based on system resources
+MAX_PARALLEL_JOBS=16  # Adjust based on system resources
 TEMP_DIR="/tmp/influx_sync_$$"
 # ----------------
 
