@@ -85,18 +85,39 @@
 
     # ===================================================================
     # 2. Custom facts: db_inventory.ps1
+    #
+    # Ansible's Windows facts.d loader runs every .ps1 in
+    # C:\ProgramData\ansible\facts.d\ on each fact-gathering pass and merges
+    # the JSON stdout under ansible_local.<basename>. We:
+    #   (a) ensure the facts.d directory exists with sane ACLs
+    #   (b) push the fresh db_inventory.ps1
+    #   (c) sanity-execute it once so the JSON output is logged
+    #   (d) re-run setup with filter=ansible_local so subsequent tasks /
+    #       generate_databases_ini.py see ansible_local.db_inventory.
     # ===================================================================
-    - name: Copy db_inventory custom-facts script
+    - name: Ensure Ansible facts.d directory exists
+      ansible.windows.win_file:
+        path: "{{ facts_dir }}"
+        state: directory
+      tags: [bootstrap, install, facts, always]
+
+    - name: Push db_inventory.ps1 as the Ansible custom fact collector
       ansible.windows.win_copy:
         src: files/db_inventory.ps1
         dest: "{{ facts_dir }}\\db_inventory.ps1"
-      tags: [bootstrap, install, facts]
+      tags: [bootstrap, install, facts, always]
 
-    - name: Run db_inventory once
-      ansible.windows.win_shell: "& '{{ facts_dir }}\\db_inventory.ps1'"
+    - name: Sanity-run db_inventory.ps1 once and capture its JSON
+      ansible.windows.win_shell: "powershell.exe -NoProfile -ExecutionPolicy Bypass -File {{ facts_dir }}\\db_inventory.ps1"
+      register: db_inventory_probe
       changed_when: false
       failed_when: false
       tags: [bootstrap, install, facts]
+
+    - name: Re-gather ansible_local.* so the new fact is visible immediately
+      ansible.builtin.setup:
+        filter: ansible_local
+      tags: [facts]
 
     # ===================================================================
     # 3. CheckMK monitoring SQL login

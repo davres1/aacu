@@ -17,6 +17,13 @@ import settings
 SYSTEM_PROMPT = """You are a SQL Server / InfluxDB operations assistant.
 Classify the user's request into ONE structured action and return STRICT JSON.
 
+Most messages should set 'database' only — the backend resolves the matching
+'server' (Windows SQL host) from databases.ini's ansible_servername field
+automatically. Only emit 'server' explicitly when the user names a host that
+isn't tied to one DB (e.g. "check disk on sqlprod01"). When the user has a
+database selected in the UI, default the 'database' field to that value
+unless the user names a different one.
+
 Allowed actions and their parameter shapes:
 
   sql_query           {"server": str, "database": str|null, "query": str}
@@ -182,11 +189,17 @@ def chat(messages, **kwargs):
 _JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
 
 
-def classify(user_message, known_servers=None):
+def classify(user_message, known_servers=None, selected_database=None):
     """Return an intent dict for the user's message."""
-    context = ""
+    context_parts = []
     if known_servers:
-        context = f"\n\nKnown servers in inventory: {', '.join(known_servers)}"
+        context_parts.append(f"Known servers in inventory: {', '.join(known_servers)}")
+    if selected_database:
+        context_parts.append(
+            f"The user currently has database '{selected_database}' selected in the UI. "
+            "Default the 'database' field to this value unless the user names a different one."
+        )
+    context = ("\n\n" + "\n".join(context_parts)) if context_parts else ""
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT + context},

@@ -95,12 +95,153 @@ def _servers_metadata():
 
 
 # ---------------------------------------------------------------------------
+# databases.ini reader — one section per SQL Server database. Each section
+# carries ansible_servername + sql_instance + database; the chatbot uses the
+# section to drive both the UI dropdown and the auto-server-resolve hook.
+# ---------------------------------------------------------------------------
+
+_DB_INI_RESERVED_SECTIONS = {"sql_servers", "DEFAULT"}
+
+
+def _read_databases_ini():
+    path = settings.MSSQL_DATABASES_INI
+    if not path or not os.path.exists(path):
+        return None, path
+    parser = configparser.ConfigParser(allow_no_value=True, delimiters=("=",),
+                                       interpolation=None)
+    parser.optionxform = str
+    try:
+        parser.read(path)
+    except configparser.Error:
+        return None, path
+    return parser, path
+
+
+def _databases_metadata():
+    """Every SQL Server database known to the chatbot, with config sanity flags."""
+    parser, path = _read_databases_ini()
+    inv_hosts = set(_known_servers())
+
+    if parser is None:
+        return {
+            "databases": [],
+            "databases_ini": path,
+            "databases_ini_exists": False,
+            "hint": (f"databases.ini not found at {path}. Run "
+                     "`python3 AI/tools/generate_databases_ini.py` to create it."),
+        }
+
+    rows = []
+    missing = 0
+    for section in parser.sections():
+        if section in _DB_INI_RESERVED_SECTIONS:
+            continue
+        get = parser[section].get
+        ansible_servername = (get("ansible_servername", "") or "").strip()
+        in_inv = (ansible_servername in inv_hosts) if ansible_servername else False
+        if not ansible_servername or not in_inv:
+            missing += 1
+        rows.append({
+            "name":               section,
+            "ansible_servername": ansible_servername or None,
+            "in_inventory":       in_inv,
+            "sql_instance":       (get("sql_instance", "") or "").strip() or None,
+            "database":           (get("database", "") or section).strip(),
+            "environment":        (get("environment", "") or "").strip() or None,
+            "edition":            (get("edition", "") or "").strip() or None,
+            "version":            (get("version", "") or "").strip() or None,
+            "emaillist":          (get("emaillist", "") or "").strip() or None,
+            "lastupdated":        (get("lastupdated", "") or "").strip() or None,
+        })
+
+    rows.sort(key=lambda r: r["name"].lower())
+
+    return {
+        "databases":            rows,
+        "databases_ini":        path,
+        "databases_ini_exists": True,
+        "inventory":            settings.INVENTORY_PATH,
+        "inventory_group":      settings.INVENTORY_SQL_GROUP,
+        "missing_server_count": missing,
+        "hint":                 None if rows else "databases.ini contains no DB sections",
+    }
+
+
+def _resolve_db_section(database):
+    """Case-insensitive lookup of a databases.ini section."""
+    if not database:
+        return None
+    parser, _ = _read_databases_ini()
+    if parser is None:
+        return None
+    target_lc = database.strip().lower()
+    for section in parser.sections():
+        if section in _DB_INI_RESERVED_SECTIONS:
+            continue
+        if section.lower() == target_lc:
+            return section, parser[section]
+    return None
+
+
+def _resolve_server_for_db(database):
+    """Look up ansible_servername in databases.ini for a given DB name."""
+    found = _resolve_db_section(database)
+    if not found:
+        return None
+    section, sec = found
+    return (sec.get("ansible_servername", "") or "").strip() or None
+
+
+def _resolve_instance_for_db(database):
+    """Look up sql_instance in databases.ini; fall back to ansible_servername."""
+    found = _resolve_db_section(database)
+    if not found:
+        return None
+    section, sec = found
+    inst = (sec.get("sql_instance", "") or "").strip()
+    return inst or (sec.get("ansible_servername", "") or "").strip() or None
+
+
+def _resolve_db_name_for_section(database):
+    """Map a [section-header] back to the real `database` field if set."""
+    found = _resolve_db_section(database)
+    if not found:
+        return database
+    section, sec = found
+    real = (sec.get("database", "") or "").strip()
+    return real or section
+
+
+# ---------------------------------------------------------------------------
 # Intent dispatch
 # ---------------------------------------------------------------------------
 
 def _dispatch(intent):
     action = intent.get("action", "chat")
     params = intent.get("params", {}) or {}
+
+    # Auto-fill `server` (and rewrite section-header → real DB name) from the
+    # picked database. The chat UI sends the section header as `database`;
+    # we look it up in databases.ini and populate both `server` and the
+    # actual DB name. Works for combo_query's sql sub-query too.
+    def _fill_from_db(p):
+        if not isinstance(p, dict):
+            return
+        section = p.get("database")
+        if not section:
+            return
+        # Always rewrite to the real DB name from the section.
+        real_db = _resolve_db_name_for_section(section)
+        if real_db:
+            p["database"] = real_db
+        if not p.get("server"):
+            srv = _resolve_server_for_db(section)
+            if srv:
+                p["server"] = srv
+
+    _fill_from_db(params)
+    if action == "combo_query":
+        _fill_from_db(params.get("sql"))
 
     if action == "sql_query":
         return sql_handler.run_query(
@@ -205,18 +346,38 @@ def servers():
     return jsonify(_servers_metadata())
 
 
+@app.route("/api/databases")
+def databases():
+    return jsonify(_databases_metadata())
+
+
 @app.route("/api/chat", methods=["POST"])
 def chat():
     payload = request.get_json(silent=True) or {}
     user_message = (payload.get("message") or "").strip()
+    selected_db  = (payload.get("database") or "").strip() or None
     if not user_message:
         return jsonify({"error": "Empty message."}), 400
 
     # 1) classify
     try:
-        intent = llm_client.classify(user_message, known_servers=_known_servers())
+        intent = llm_client.classify(
+            user_message,
+            known_servers=_known_servers(),
+            selected_database=selected_db,
+        )
     except llm_client.LLMError as exc:
         return jsonify({"error": f"LLM error: {exc}"}), 502
+
+    # If the LLM left 'database' empty for a database-aware action, fall back
+    # to the dropdown selection. Skip 'chat' and 'influx_query' (no DB needed).
+    if selected_db:
+        params = intent.get("params") or {}
+        if isinstance(params, dict) and intent.get("action") not in ("chat", "influx_query"):
+            params.setdefault("database", selected_db)
+        sub = (params or {}).get("sql") if isinstance(params, dict) else None
+        if isinstance(sub, dict):
+            sub.setdefault("database", selected_db)
 
     # 2) dispatch
     try:

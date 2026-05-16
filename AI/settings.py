@@ -18,11 +18,12 @@ except ImportError:  # pragma: no cover - PyYAML missing means we fall back to d
 # ---------------------------------------------------------------------------
 # Layout + setup.yaml loader
 # ---------------------------------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_DIR = os.path.dirname(BASE_DIR)
-PLAYBOOK_DIR = os.path.join(BASE_DIR, "playbooks")
-SCRIPTS_DIR  = os.path.join(REPO_DIR, "files")
-SETUP_YAML   = os.environ.get("SETUP_YAML", os.path.join(REPO_DIR, "setup.yaml"))
+BASE_DIR      = os.path.dirname(os.path.abspath(__file__))
+REPO_DIR      = os.path.dirname(BASE_DIR)
+PLAYBOOK_DIR  = os.path.join(BASE_DIR, "playbooks")
+SCRIPTS_DIR   = os.path.join(REPO_DIR, "files")
+DATABASES_INI = os.path.join(BASE_DIR, "inventory", "databases.ini")
+SETUP_YAML    = os.environ.get("SETUP_YAML", os.path.join(REPO_DIR, "setup.yaml"))
 
 
 def _load_setup():
@@ -76,10 +77,11 @@ LLM_MAX_TOKENS  = int(_env("LLM_MAX_TOKENS",   _path("chatbot", "llm", "max_toke
 # ---------------------------------------------------------------------------
 # Ansible
 # ---------------------------------------------------------------------------
-INVENTORY_PATH      = _env("ANSIBLE_INVENTORY", _path("inventory", "path", default="/etc/ansible/hosts"))
-INVENTORY_SQL_GROUP = _env("ANSIBLE_SQL_GROUP", _path("inventory", "sql_servers_group", default="sql_servers"))
-ANSIBLE_BIN         = _env("ANSIBLE_PLAYBOOK_BIN", "ansible-playbook")
-ANSIBLE_TIMEOUT     = int(_env("ANSIBLE_TIMEOUT", "300"))
+INVENTORY_PATH        = _env("ANSIBLE_INVENTORY", _path("inventory", "path", default="/etc/ansible/hosts"))
+INVENTORY_SQL_GROUP   = _env("ANSIBLE_SQL_GROUP", _path("inventory", "sql_servers_group", default="sql_servers"))
+MSSQL_DATABASES_INI   = _env("MSSQL_DATABASES_INI", DATABASES_INI)
+ANSIBLE_BIN           = _env("ANSIBLE_PLAYBOOK_BIN", "ansible-playbook")
+ANSIBLE_TIMEOUT       = int(_env("ANSIBLE_TIMEOUT", "300"))
 
 
 # ---------------------------------------------------------------------------

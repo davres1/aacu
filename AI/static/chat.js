@@ -452,7 +452,10 @@ async function send(message) {
     const resp = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({
+        message,
+        database: serverPicker.value || null,   // currently-picked DB
+      }),
     });
     const data = await resp.json();
     thinking.remove();
@@ -539,45 +542,51 @@ document.querySelectorAll('.quick').forEach(btn => {
   });
 });
 
-// Server picker — populated from /api/servers, persisted in localStorage.
+// Database picker — populated from /api/databases. Each option is one SQL
+// Server database from databases.ini. Picking a DB drives every chat
+// message: the backend resolves its ansible_servername automatically.
 serverPicker.addEventListener('change', () => {
   localStorage.setItem(SERVER_KEY, serverPicker.value);
 });
 
 async function loadServers() {
   try {
-    const r = await fetch('/api/servers');
+    const r = await fetch('/api/databases');
     const j = await r.json();
-    const servers = j.servers || [];
-    const group   = j.group   || 'sql_servers';
+    const dbs = j.databases || [];
 
-    // Refresh the dropdown so reloads stay consistent.
     serverPicker.innerHTML = '';
     const placeholder = document.createElement('option');
     placeholder.value = '';
-    placeholder.textContent = servers.length
-      ? `— any (${servers.length} in [${group}]) —`
-      : `— no hosts in [${group}] —`;
+    placeholder.textContent = dbs.length
+      ? `— pick a database (${dbs.length}) —`
+      : '— no databases configured —';
     serverPicker.appendChild(placeholder);
 
-    for (const s of servers) {
+    for (const d of dbs) {
       const opt = document.createElement('option');
-      opt.value = s; opt.textContent = s;
+      opt.value = d.name;
+      // Show DB name + which host it lives on; amber ⚠ when the host isn't
+      // actually in the Ansible inventory.
+      const tag = d.ansible_servername || '?';
+      opt.textContent = d.in_inventory
+        ? `${d.name}  ·  ${tag}`
+        : `${d.name}  ·  ${tag} ⚠`;
+      if (!d.in_inventory) opt.style.color = '#f59e0b';
       serverPicker.appendChild(opt);
     }
 
-    // Restore previous selection if it's still in the list.
     const saved = localStorage.getItem(SERVER_KEY) || '';
-    if (saved && servers.includes(saved)) serverPicker.value = saved;
+    if (saved && dbs.some(d => d.name === saved)) serverPicker.value = saved;
 
-    serverPicker.disabled = servers.length === 0;
+    serverPicker.disabled = dbs.length === 0;
     serverPicker.title = j.hint
-      ? `${j.hint}`
-      : `Hosts read from [${group}] in ${j.inventory || 'the inventory'}`;
+      ? j.hint
+      : `Databases read from ${j.databases_ini || 'databases.ini'} (${j.missing_server_count || 0} missing ansible_servername)`;
   } catch {
     serverPicker.innerHTML = '<option value="">— unavailable —</option>';
     serverPicker.disabled = true;
-    serverPicker.title = 'Could not reach /api/servers';
+    serverPicker.title = 'Could not reach /api/databases';
   }
 }
 
