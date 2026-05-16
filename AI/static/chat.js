@@ -7,7 +7,8 @@
 
 const STORAGE_KEY = 'dba-chatbot.sessions.v1';
 const CURRENT_KEY = 'dba-chatbot.current.v1';
-const SERVER_KEY  = 'dba-chatbot.server.v1';
+const SERVER_KEY  = 'dba-chatbot.server.v1';      // per-flavor: SERVER_KEY + '.' + flavor
+const FLAVOR_KEY  = 'dba-chatbot.flavor.v1';
 const MAX_HISTORY = 50;
 const PALETTE = ['#60a5fa','#34d399','#fbbf24','#f472b6','#a78bfa','#f87171','#22d3ee','#fb923c'];
 
@@ -25,17 +26,34 @@ const serverPicker  = $('#server-picker');
 const statusDot     = $('#status-dot');
 const statusText    = $('#status-text');
 const toggleSidebar = $('#toggle-sidebar');
+const flavorTabs    = document.querySelectorAll('.flavor-tab');
 
 // ---------- State ----------
-let sessions    = loadSessions();
-let currentId   = localStorage.getItem(CURRENT_KEY) || null;
-let pendingCall = false;
+let sessions     = loadSessions();
+let currentId    = localStorage.getItem(CURRENT_KEY) || null;
+let activeFlavor = localStorage.getItem(FLAVOR_KEY) || 'mssql';
+let pendingCall  = false;
 
-if (!currentId || !sessions[currentId]) {
-  currentId = newSessionId();
-  sessions[currentId] = { id: currentId, title: 'New conversation', created: Date.now(), updated: Date.now(), messages: [] };
+// Ensure the current session matches the active flavor; otherwise pick the
+// most-recent session for that flavor, or create a fresh one.
+function _ensureCurrentMatchesFlavor() {
+  const cur = sessions[currentId];
+  if (cur && (cur.flavor || 'mssql') === activeFlavor) return;
+  const ids = Object.keys(sessions)
+    .filter(id => (sessions[id].flavor || 'mssql') === activeFlavor)
+    .sort((a, b) => sessions[b].updated - sessions[a].updated);
+  if (ids.length) {
+    currentId = ids[0];
+  } else {
+    currentId = newSessionId();
+    sessions[currentId] = {
+      id: currentId, title: 'New conversation', flavor: activeFlavor,
+      created: Date.now(), updated: Date.now(), messages: [],
+    };
+  }
   saveSessions();
 }
+_ensureCurrentMatchesFlavor();
 
 // ============================================================
 // Session storage
@@ -70,7 +88,10 @@ function setSessionTitle(text) {
 // Sidebar history rendering
 // ============================================================
 function renderHistory() {
-  const ids = Object.keys(sessions).sort((a,b) => sessions[b].updated - sessions[a].updated);
+  // Only show sessions belonging to the currently-active flavor.
+  const ids = Object.keys(sessions)
+    .filter(id => (sessions[id].flavor || 'mssql') === activeFlavor)
+    .sort((a, b) => sessions[b].updated - sessions[a].updated);
   historyList.innerHTML = '';
   if (ids.length === 0) {
     const empty = document.createElement('div');
@@ -141,11 +162,16 @@ function deleteSession(id) {
 }
 
 function startNewChat() {
-  // If the current session is already empty, reuse it.
+  // If the current session is already empty (and in this flavor), reuse it.
   const s = currentSession();
-  if (s && s.messages.length === 0) { renderChat(); return; }
+  if (s && s.messages.length === 0 && (s.flavor || 'mssql') === activeFlavor) {
+    renderChat(); return;
+  }
   currentId = newSessionId();
-  sessions[currentId] = { id: currentId, title: 'New conversation', created: Date.now(), updated: Date.now(), messages: [] };
+  sessions[currentId] = {
+    id: currentId, title: 'New conversation', flavor: activeFlavor,
+    created: Date.now(), updated: Date.now(), messages: [],
+  };
   saveSessions();
   renderChat();
   renderHistory();
@@ -454,7 +480,8 @@ async function send(message) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message,
-        database: serverPicker.value || null,   // currently-picked DB
+        flavor:   activeFlavor,                  // 'mssql' or 'oracle'
+        database: serverPicker.value || null,    // currently-picked DB
       }),
     });
     const data = await resp.json();
@@ -542,16 +569,15 @@ document.querySelectorAll('.quick').forEach(btn => {
   });
 });
 
-// Database picker — populated from /api/databases. Each option is one SQL
-// Server database from databases.ini. Picking a DB drives every chat
-// message: the backend resolves its ansible_servername automatically.
+// Database picker — populated from /api/<flavor>/databases. Each option is a
+// database from the active flavor's databases.ini. Pick remembered per flavor.
 serverPicker.addEventListener('change', () => {
-  localStorage.setItem(SERVER_KEY, serverPicker.value);
+  localStorage.setItem(SERVER_KEY + '.' + activeFlavor, serverPicker.value);
 });
 
 async function loadServers() {
   try {
-    const r = await fetch('/api/databases');
+    const r = await fetch('/api/' + activeFlavor + '/databases');
     const j = await r.json();
     const dbs = j.databases || [];
 
@@ -566,8 +592,6 @@ async function loadServers() {
     for (const d of dbs) {
       const opt = document.createElement('option');
       opt.value = d.name;
-      // Show DB name + which host it lives on; amber ⚠ when the host isn't
-      // actually in the Ansible inventory.
       const tag = d.ansible_servername || '?';
       opt.textContent = d.in_inventory
         ? `${d.name}  ·  ${tag}`
@@ -576,18 +600,44 @@ async function loadServers() {
       serverPicker.appendChild(opt);
     }
 
-    const saved = localStorage.getItem(SERVER_KEY) || '';
+    const saved = localStorage.getItem(SERVER_KEY + '.' + activeFlavor) || '';
     if (saved && dbs.some(d => d.name === saved)) serverPicker.value = saved;
 
     serverPicker.disabled = dbs.length === 0;
     serverPicker.title = j.hint
       ? j.hint
-      : `Databases read from ${j.databases_ini || 'databases.ini'} (${j.missing_server_count || 0} missing ansible_servername)`;
+      : `[${activeFlavor}] Databases read from ${j.databases_ini || 'databases.ini'} (${j.missing_server_count || 0} missing ansible_servername)`;
   } catch {
     serverPicker.innerHTML = '<option value="">— unavailable —</option>';
     serverPicker.disabled = true;
-    serverPicker.title = 'Could not reach /api/databases';
+    serverPicker.title = 'Could not reach /api/' + activeFlavor + '/databases';
   }
+}
+
+// Tab switching: swap activeFlavor, refresh dropdown + history, and switch
+// the chat pane to a session that belongs to the new flavor.
+function switchFlavor(next) {
+  if (next === activeFlavor) return;
+  activeFlavor = next;
+  localStorage.setItem(FLAVOR_KEY, next);
+  for (const tab of flavorTabs) {
+    const on = tab.dataset.flavor === next;
+    tab.classList.toggle('is-active', on);
+    tab.setAttribute('aria-selected', on ? 'true' : 'false');
+  }
+  _ensureCurrentMatchesFlavor();
+  loadServers();
+  renderHistory();
+  renderChat();
+}
+flavorTabs.forEach(tab => {
+  tab.addEventListener('click', () => switchFlavor(tab.dataset.flavor));
+});
+// Initialize tab visual state on boot.
+for (const tab of flavorTabs) {
+  const on = tab.dataset.flavor === activeFlavor;
+  tab.classList.toggle('is-active', on);
+  tab.setAttribute('aria-selected', on ? 'true' : 'false');
 }
 
 async function pingHealth() {

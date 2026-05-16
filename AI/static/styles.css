@@ -468,6 +468,50 @@ button { font-family: inherit; }
   font-style: italic;
 }
 
+/* =========== Flavor tabs (SQL Server / Oracle) =========== */
+.flavor-tabs {
+  display: inline-flex;
+  background: var(--bg-card);
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  padding: 3px;
+  gap: 2px;
+  margin-left: 6px;
+}
+.flavor-tab {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+  position: relative;
+}
+.flavor-tab::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.6;
+  margin-right: 6px;
+  transform: translateY(-1px);
+}
+.flavor-tab[data-flavor="mssql"]::before  { background: #38bdf8; }
+.flavor-tab[data-flavor="oracle"]::before { background: #f97316; }
+.flavor-tab:hover { color: var(--text); background: rgba(255,255,255,0.04); }
+.flavor-tab.is-active {
+  background: var(--accent);
+  color: white;
+  box-shadow: 0 1px 3px rgba(0,0,0,.3);
+}
+.flavor-tab.is-active::before { background: white; opacity: 1; }
+
 /* =========== Ansible output disclosure =========== */
 .ansible-out {
   margin-top: 10px;

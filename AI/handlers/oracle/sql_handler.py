@@ -59,7 +59,7 @@ def run_query(server, database, raw_query):
         "oracle_user":   settings.ORACLE_OS_USER,
     }
 
-    out = ansible_runner.run_playbook("run_sql_query.yml", server, extra_vars=extra_vars)
+    out = ansible_runner.run_playbook("oracle/run_sql_query.yml", server, extra_vars=extra_vars)
     task = ansible_runner.extract_task_result(out, "Run read-only SQL query") or {}
     if not task:
         return {

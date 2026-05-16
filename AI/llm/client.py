@@ -14,79 +14,106 @@ import requests
 import settings
 
 
-SYSTEM_PROMPT = """You are a SQL Server / InfluxDB operations assistant.
+_MSSQL_PROMPT = """You are a SQL Server / InfluxDB operations assistant.
 Classify the user's request into ONE structured action and return STRICT JSON.
 
 Most messages should set 'database' only — the backend resolves the matching
-'server' (Windows SQL host) from databases.ini's ansible_servername field
-automatically. Only emit 'server' explicitly when the user names a host that
-isn't tied to one DB (e.g. "check disk on sqlprod01"). When the user has a
-database selected in the UI, default the 'database' field to that value
-unless the user names a different one.
+'server' (Windows SQL host) from databases.ini's ansible_servername field.
+Only emit 'server' when the user names a host that isn't tied to one DB.
+If the user has a database selected in the UI, default 'database' to that.
 
 Allowed actions and their parameter shapes:
 
   sql_query           {"server": str, "database": str|null, "query": str}
-      Only SELECT statements. Use this when the user asks to look up data,
-      counts, sizes, lists of databases/tables, configuration values, etc.
+      Only SELECT statements (T-SQL). Use for counts, sizes, lists of DBs /
+      tables / sessions, configuration values, etc.
 
   influx_query        {"measurement": str, "host": str|null,
                        "time_range": str, "aggregation": "mean"|"max"|"min"|"last"|"sum"}
-      Use this for CheckMK / monitoring stats: CPU, memory, disk, oracle
-      tablespaces, MSSQL waits, etc. time_range examples: "1h", "24h", "7d".
-      Measurement names match CheckMK service names (e.g. "MSSQL_DB_SIZE",
-      "ORA_TABLESPACES", "CPU_load"). Returns time-series the UI plots.
+      CheckMK / monitoring stats — measurement names match CheckMK service
+      names (e.g. "MSSQL_DB_SIZE", "CPU_load"). Time range: "1h", "24h", "7d".
 
   combo_query         {"sql":    {"server": str, "database": str|null, "query": str} | null,
                        "influx": {"measurement": str, "host": str|null,
-                                  "time_range": str, "aggregation": str}    | null}
-      Use this when the user wants a holistic view that needs BOTH the live
-      database state (via SQL) AND the historical metrics (via InfluxDB) —
-      e.g. "how is sqlprod01 doing", "give me a status of MyAppDB on
-      sqlprod02 with growth trend". Either sub-query may be null but at
-      least one must be set.
+                                  "time_range": str, "aggregation": str} | null}
+      Holistic view that needs both the live DB state and historical metrics.
 
-  check_blocking_locks  {"server": str}
-      Runs DetectBlockingLocks.ps1 against the server.
-
+  check_blocking_locks  {"server": str}            Run DetectBlockingLocks.ps1.
   add_datafile_space    {"server": str, "database": str,
                          "logical_file": str, "add_mb": int}
-      Grows a database datafile by add_mb megabytes.
-
-  health_check          {"server": str}
-      Runs the full DB health-check (instance status + inventory).
-
-  backup_status         {"server": str}
-      Reports last full/log backup age per database (uses VerifyBackups.ps1).
-
-  integrity_status      {"server": str}
-      Returns latest DBCC CHECKDB results (clean/errors/failed counts).
-
-  disk_status           {"server": str}
-      Drive % free + per-datafile free %, autogrow risks.
-
+  health_check          {"server": str}            Service + inventory.
+  backup_status         {"server": str}            VerifyBackups.ps1.
+  integrity_status      {"server": str}            Cached DBCC CHECKDB.
+  disk_status           {"server": str}            Drives + datafile %.
   agent_jobs            {"server": str, "lookback_hours": int|null}
-      Failed / long-running / disabled SQL Agent jobs in the window.
-
-  tempdb_status         {"server": str}
-      tempdb usage + PAGELATCH contention + top tempdb consumers.
-
-  security_audit        {"server": str}
-      Sysadmin members, sa state, dangerous configs, weak logins,
-      stale logins, orphaned users, public-role grants, TDE, cert expiry.
-
-  patch_level           {"server": str}
-      SQL build/CU age + Windows hotfix age.
-
-  alwayson_status       {"server": str}
-      AlwaysOn AG replica sync, lag, suspended databases.
-
-  chat                  {"reply": str}
-      Free-form answer when no tool is appropriate.
+  tempdb_status         {"server": str}            tempdb + PAGELATCH.
+  security_audit        {"server": str}            sysadmins, sa, configs.
+  patch_level           {"server": str}            SQL build + Windows hotfix.
+  alwayson_status       {"server": str}            AG replica sync + lag.
+  chat                  {"reply": str}             Free-form answer.
 
 Return JSON only — no prose, no markdown fences. Pick exactly one action.
-If the user's request is ambiguous, choose "chat" and put a clarifying
+If the user's request is ambiguous, choose 'chat' and ask a clarifying
 question in the reply field."""
+
+
+_ORACLE_PROMPT = """You are an Oracle Database / InfluxDB operations assistant.
+Classify the user's request into ONE structured action and return STRICT JSON.
+
+The user works with Oracle databases identified by SID/TNS alias (e.g. PHHSDG8,
+PXGTFG7). Most messages should set 'database' only — the backend resolves the
+matching 'server' (Linux host) from databases.ini's ansible_servername field
+automatically. Only emit 'server' explicitly when the user names a host that
+isn't tied to any one DB.
+
+Allowed actions and their parameter shapes:
+
+  sql_query           {"server": str, "database": str, "query": str}
+      Only SELECT statements (Oracle SQL — use dual, v$ views, dba_* views).
+
+  influx_query        {"measurement": str, "host": str|null,
+                       "time_range": str, "aggregation": "mean"|"max"|"min"|"last"|"sum"}
+      CheckMK / monitoring stats — measurement names from the Oracle local
+      plugins (e.g. "Oracle_TS_PHHSDG8_USERS", "Oracle_Backup_Full_PHHSDG8").
+
+  combo_query         {"sql":    {"server": str, "database": str, "query": str} | null,
+                       "influx": {"measurement": str, "host": str|null,
+                                  "time_range": str, "aggregation": str} | null}
+
+  check_blocking_locks  {"server": str, "database": str|null}
+  add_datafile_space    {"server": str, "database": str,
+                         "datafile": str, "add_mb": int}
+  health_check          {"server": str}            Listener + pmon + inventory.
+  backup_status         {"server": str}            RMAN backup age + VALIDATE.
+  integrity_status      {"server": str}            Cached BACKUP VALIDATE CHECK LOGICAL.
+  disk_status           {"server": str}            Tablespace usage + FS free.
+  agent_jobs            {"server": str, "lookback_hours": int|null}
+                                                    DBA_SCHEDULER job runs.
+  tempdb_status         {"server": str}            TEMP tablespace + sort segs.
+  security_audit        {"server": str}            DBA role, defaults, PUBLIC.
+  patch_level           {"server": str}            opatch + DBA_REGISTRY_HISTORY.
+  alwayson_status       {"server": str}            Data Guard role + lag.
+  create_restore_point  {"server": str, "database": str, "name": str,
+                         "guarantee": bool}
+  list_restore_points   {"server": str, "database": str}
+  grow_recovery_size    {"server": str, "database": str, "add_gb": int}
+                                                    db_recovery_file_dest_size.
+  chat                  {"reply": str}
+
+Return JSON only — no prose, no markdown fences. Pick exactly one action.
+If the user's request is ambiguous, choose 'chat' and put a clarifying
+question in the reply field."""
+
+
+def _system_prompt_for(flavor):
+    """Return the right system prompt for the active database flavor."""
+    if (flavor or "").lower() == "oracle":
+        return _ORACLE_PROMPT
+    return _MSSQL_PROMPT
+
+
+# Back-compat name for the old single-flavor build.
+SYSTEM_PROMPT = _MSSQL_PROMPT
 
 
 class LLMError(RuntimeError):
@@ -189,8 +216,12 @@ def chat(messages, **kwargs):
 _JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
 
 
-def classify(user_message, known_servers=None, selected_database=None):
-    """Return an intent dict for the user's message."""
+def classify(user_message, known_servers=None, selected_database=None, flavor="mssql"):
+    """Return an intent dict for the user's message.
+
+    `flavor` picks the LLM system prompt — 'mssql' (default) or 'oracle'.
+    """
+    prompt = _system_prompt_for(flavor)
     context_parts = []
     if known_servers:
         context_parts.append(f"Known servers in inventory: {', '.join(known_servers)}")
@@ -202,7 +233,7 @@ def classify(user_message, known_servers=None, selected_database=None):
     context = ("\n\n" + "\n".join(context_parts)) if context_parts else ""
 
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT + context},
+        {"role": "system", "content": prompt + context},
         {"role": "user", "content": user_message},
     ]
     raw = chat(messages)

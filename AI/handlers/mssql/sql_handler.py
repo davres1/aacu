@@ -23,7 +23,7 @@ def run_query(server, database, raw_query):
         "max_rows": settings.SQL_MAX_ROWS,
     }
 
-    out = ansible_runner.run_playbook("run_sql_query.yml", server, extra_vars=extra_vars)
+    out = ansible_runner.run_playbook("mssql/run_sql_query.yml", server, extra_vars=extra_vars)
     task = ansible_runner.extract_task_result(out, "Run read-only SQL query") or {}
     if not task:
         return {

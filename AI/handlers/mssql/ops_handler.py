@@ -76,7 +76,7 @@ def _run_script(server, playbook, task_name, extra_vars=None):
 
 def check_blocking_locks(server):
     out = ansible_runner.run_playbook(
-        "check_blocking_locks.yml", server,
+        "mssql/check_blocking_locks.yml", server,
         extra_vars={"target_host": server},
     )
     task = ansible_runner.extract_task_result(out, "Run DetectBlockingLocks.ps1") or {}
@@ -100,7 +100,7 @@ def add_datafile_space(server, database, logical_file, add_mb):
         return {"error": "add_mb must be between 1 and 102400."}
 
     out = ansible_runner.run_playbook(
-        "add_datafile_space.yml", server,
+        "mssql/add_datafile_space.yml", server,
         extra_vars={
             "target_host": server,
             "sql_instance": server,
@@ -123,7 +123,7 @@ def add_datafile_space(server, database, logical_file, add_mb):
 
 def health_check(server):
     out = ansible_runner.run_playbook(
-        "health_check.yml", server,
+        "mssql/health_check.yml", server,
         extra_vars={"target_host": server},
     )
     status = ansible_runner.extract_task_result(out, "Run CheckmssqlStatus.ps1") or {}
@@ -156,15 +156,15 @@ def health_check(server):
 # ---------------------------------------------------------------------------
 
 def backup_status(server):
-    return _run_script(server, "verify_backups.yml", "Run VerifyBackups.ps1")
+    return _run_script(server, "mssql/verify_backups.yml", "Run VerifyBackups.ps1")
 
 
 def integrity_status(server):
-    return _run_script(server, "dbcc_checkdb.yml", "Run DBCCCheckDB.ps1")
+    return _run_script(server, "mssql/dbcc_checkdb.yml", "Run DBCCCheckDB.ps1")
 
 
 def disk_status(server):
-    return _run_script(server, "monitor_disk_space.yml", "Run MonitorDiskSpace.ps1")
+    return _run_script(server, "mssql/monitor_disk_space.yml", "Run MonitorDiskSpace.ps1")
 
 
 def agent_jobs(server, lookback_hours=None):
@@ -174,20 +174,20 @@ def agent_jobs(server, lookback_hours=None):
             extra["lookback_hours"] = int(lookback_hours)
         except (TypeError, ValueError):
             pass
-    return _run_script(server, "monitor_agent_jobs.yml", "Run MonitorAgentJobs.ps1", extra)
+    return _run_script(server, "mssql/monitor_agent_jobs.yml", "Run MonitorAgentJobs.ps1", extra)
 
 
 def tempdb_status(server):
-    return _run_script(server, "monitor_tempdb.yml", "Run MonitorTempDB.ps1")
+    return _run_script(server, "mssql/monitor_tempdb.yml", "Run MonitorTempDB.ps1")
 
 
 def security_audit(server):
-    return _run_script(server, "security_audit.yml", "Run SecurityAudit.ps1")
+    return _run_script(server, "mssql/security_audit.yml", "Run SecurityAudit.ps1")
 
 
 def patch_level(server):
-    return _run_script(server, "patch_level.yml", "Run PatchLevelCheck.ps1")
+    return _run_script(server, "mssql/patch_level.yml", "Run PatchLevelCheck.ps1")
 
 
 def alwayson_status(server):
-    return _run_script(server, "monitor_alwayson.yml", "Run MonitorAlwaysOn.ps1")
+    return _run_script(server, "mssql/monitor_alwayson.yml", "Run MonitorAlwaysOn.ps1")

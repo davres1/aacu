@@ -79,7 +79,7 @@ def check_blocking_locks(server, database=None):
     if database:
         extra["only_database"] = database
     out = ansible_runner.run_playbook(
-        "check_blocking_locks.yml", server,
+        "oracle/check_blocking_locks.yml", server,
         extra_vars={"target_host": server, **extra},
     )
     task = ansible_runner.extract_task_result(out, "Run DetectBlockingLocks.sh") or {}
@@ -107,7 +107,7 @@ def add_datafile_space(server, database, datafile, add_mb):
         return {"error": "add_mb must be between 1 and 102400."}
 
     out = ansible_runner.run_playbook(
-        "add_datafile_space.yml", server,
+        "oracle/add_datafile_space.yml", server,
         extra_vars={
             "target_host":   server,
             "tns_alias":     database,
@@ -129,7 +129,7 @@ def add_datafile_space(server, database, datafile, add_mb):
 
 def health_check(server):
     out = ansible_runner.run_playbook(
-        "health_check.yml", server,
+        "oracle/health_check.yml", server,
         extra_vars={"target_host": server},
     )
     status    = ansible_runner.extract_task_result(out, "Run CheckOracleStatus.sh") or {}
@@ -163,34 +163,34 @@ def health_check(server):
 # ---------------------------------------------------------------------------
 
 def backup_status(server):
-    return _run_script(server, "verify_backups.yml",     "Run VerifyBackups.sh")
+    return _run_script(server, "oracle/verify_backups.yml",     "Run VerifyBackups.sh")
 
 def integrity_status(server):
-    return _run_script(server, "dbcc_checkdb.yml",       "Run GetCheckDBStatus.sh")
+    return _run_script(server, "oracle/dbcc_checkdb.yml",       "Run GetCheckDBStatus.sh")
 
 def disk_status(server):
-    return _run_script(server, "monitor_disk_space.yml", "Run MonitorTablespaces.sh")
+    return _run_script(server, "oracle/monitor_disk_space.yml", "Run MonitorTablespaces.sh")
 
 def agent_jobs(server, lookback_hours=None):
     extra = {}
     if lookback_hours is not None:
         try: extra["lookback_hours"] = int(lookback_hours)
         except (TypeError, ValueError): pass
-    return _run_script(server, "monitor_agent_jobs.yml", "Run MonitorJobs.sh", extra)
+    return _run_script(server, "oracle/monitor_agent_jobs.yml", "Run MonitorJobs.sh", extra)
 
 def tempdb_status(server):
     # MonitorTablespaces.sh also covers TEMP — we filter on the client side.
-    return _run_script(server, "monitor_tempdb.yml", "Run MonitorTablespaces.sh")
+    return _run_script(server, "oracle/monitor_tempdb.yml", "Run MonitorTablespaces.sh")
 
 def security_audit(server):
-    return _run_script(server, "security_audit.yml",     "Run SecurityAudit.sh")
+    return _run_script(server, "oracle/security_audit.yml",     "Run SecurityAudit.sh")
 
 def patch_level(server):
-    return _run_script(server, "patch_level.yml",        "Run PatchLevelCheck.sh")
+    return _run_script(server, "oracle/patch_level.yml",        "Run PatchLevelCheck.sh")
 
 def alwayson_status(server):
     """Oracle Data Guard — same intent name as the SQL Server side for chat parity."""
-    return _run_script(server, "monitor_alwayson.yml",   "Run MonitorDataGuard.sh")
+    return _run_script(server, "oracle/monitor_alwayson.yml",   "Run MonitorDataGuard.sh")
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +210,7 @@ def create_restore_point(server, database, name, guarantee=False):
         return {"error": "name must be alphanumeric or underscore only (Oracle identifier rules)."}
 
     out = ansible_runner.run_playbook(
-        "create_restore_point.yml", server,
+        "oracle/create_restore_point.yml", server,
         extra_vars={
             "target_host": server,
             "tns_alias":   database,
@@ -235,7 +235,7 @@ def list_restore_points(server, database):
     if not database:
         return {"error": "database (TNS alias) is required."}
     out = ansible_runner.run_playbook(
-        "list_restore_points.yml", server,
+        "oracle/list_restore_points.yml", server,
         extra_vars={
             "target_host": server,
             "tns_alias":   database,
@@ -276,7 +276,7 @@ def grow_recovery_dest(server, database, add_gb):
         return {"error": "add_gb must be between 1 and 4096."}
 
     out = ansible_runner.run_playbook(
-        "grow_recovery_dest.yml", server,
+        "oracle/grow_recovery_dest.yml", server,
         extra_vars={
             "target_host": server,
             "tns_alias":   database,

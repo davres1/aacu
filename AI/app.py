@@ -1,10 +1,14 @@
 """
-Flask-based DB info chatbot.
+Unified DB Info Chatbot — serves both SQL Server and Oracle.
 
-Run with:
-    python app.py
-or:
-    flask --app app run --host 0.0.0.0 --port 5000
+The UI shows a tab at the top (SQL Server / Oracle). Every API call carries
+a `flavor` field (mssql | oracle); the dispatcher routes to the right
+handler module:
+
+    handlers.mssql   -> SQL Server (Windows hosts, dbatools, T-SQL)
+    handlers.oracle  -> Oracle     (Linux hosts, sqlplus, PL/SQL)
+
+InfluxDB queries are flavor-agnostic — CheckMK feeds the same database.
 """
 
 import configparser
@@ -15,25 +19,35 @@ from flask import Flask, jsonify, render_template, request
 
 import settings
 from llm import client as llm_client
-from handlers import (
-    influx_handler,
-    ops_handler,
-    sql_handler,
-)
+from handlers import influx_handler
+from handlers.mssql  import sql_handler as mssql_sql,  ops_handler as mssql_ops
+from handlers.oracle import sql_handler as oracle_sql, ops_handler as oracle_ops
 from handlers.sql_guard import UnsafeSqlError
+
 
 app = Flask(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Inventory helpers
+# Flavor dispatch — pick the right SQL + ops modules for a request.
+# ---------------------------------------------------------------------------
+
+def _flavor_modules(flavor):
+    """Return (sql_handler_module, ops_handler_module, group_name, ini_path)."""
+    if (flavor or "").lower() == "oracle":
+        return oracle_sql, oracle_ops, settings.ORACLE_GROUP, settings.ORACLE_DATABASES_INI
+    return mssql_sql, mssql_ops, settings.MSSQL_GROUP, settings.MSSQL_DATABASES_INI
+
+
+# ---------------------------------------------------------------------------
+# Inventory + databases.ini readers
 # ---------------------------------------------------------------------------
 
 def _read_inventory():
-    """Parse the Ansible inventory file. Returns the ConfigParser or None."""
     if not os.path.exists(settings.INVENTORY_PATH):
         return None
-    parser = configparser.ConfigParser(allow_no_value=True, delimiters=("=",))
+    parser = configparser.ConfigParser(allow_no_value=True, delimiters=("=",),
+                                       interpolation=None)
     parser.optionxform = str
     try:
         parser.read(settings.INVENTORY_PATH)
@@ -43,68 +57,29 @@ def _read_inventory():
 
 
 def _hosts_in_section(parser, section):
-    """Return the host names in the given INI section, stripping inline vars."""
     if section not in parser:
         return []
     out = []
     for raw in parser[section].keys():
         if not raw or raw.startswith((";", "#")):
             continue
-        host = raw.split()[0].strip()              # "host01 ansible_user=x" -> "host01"
+        host = raw.split()[0].strip()
         if host and not host.endswith(":vars"):
             out.append(host)
     return out
 
 
-def _known_servers():
-    """Hosts in the configured [sql_servers] group (settings.INVENTORY_SQL_GROUP).
-
-    Strict: returns only hosts in that one group. Configure via
-    setup.yaml -> inventory.sql_servers_group (default 'sql_servers').
-    """
+def _known_servers(flavor):
+    """Hosts in the flavor's [sql_servers] / [oracle_servers] group."""
     parser = _read_inventory()
     if parser is None:
         return []
-    return sorted(set(_hosts_in_section(parser, settings.INVENTORY_SQL_GROUP)))
+    _, _, group, _ = _flavor_modules(flavor)
+    return sorted(set(_hosts_in_section(parser, group)))
 
 
-def _servers_metadata():
-    """Detailed response for /api/servers — surfaces config issues to the UI."""
-    parser = _read_inventory()
-    inv_exists = parser is not None
-    group = settings.INVENTORY_SQL_GROUP
-    if not inv_exists:
-        return {
-            "group": group,
-            "servers": [],
-            "inventory": settings.INVENTORY_PATH,
-            "inventory_exists": False,
-            "group_exists": False,
-            "hint": f"Inventory file not found at {settings.INVENTORY_PATH}",
-        }
-    group_exists = group in parser
-    return {
-        "group": group,
-        "servers": sorted(set(_hosts_in_section(parser, group))),
-        "inventory": settings.INVENTORY_PATH,
-        "inventory_exists": True,
-        "group_exists": group_exists,
-        "hint": None if group_exists
-                     else f"Group [{group}] not found in {settings.INVENTORY_PATH}",
-    }
-
-
-# ---------------------------------------------------------------------------
-# databases.ini reader — one section per SQL Server database. Each section
-# carries ansible_servername + sql_instance + database; the chatbot uses the
-# section to drive both the UI dropdown and the auto-server-resolve hook.
-# ---------------------------------------------------------------------------
-
-_DB_INI_RESERVED_SECTIONS = {"sql_servers", "DEFAULT"}
-
-
-def _read_databases_ini():
-    path = settings.MSSQL_DATABASES_INI
+def _read_databases_ini(flavor):
+    _, _, _, path = _flavor_modules(flavor)
     if not path or not os.path.exists(path):
         return None, path
     parser = configparser.ConfigParser(allow_no_value=True, delimiters=("=",),
@@ -117,94 +92,79 @@ def _read_databases_ini():
     return parser, path
 
 
-def _databases_metadata():
-    """Every SQL Server database known to the chatbot, with config sanity flags."""
-    parser, path = _read_databases_ini()
-    inv_hosts = set(_known_servers())
+# Sections that aren't actual databases.
+_DB_INI_RESERVED = {"sql_servers", "oracle_servers", "DEFAULT"}
+
+
+def _databases_metadata(flavor):
+    parser, path = _read_databases_ini(flavor)
+    inv_hosts = set(_known_servers(flavor))
 
     if parser is None:
         return {
+            "flavor": flavor,
             "databases": [],
             "databases_ini": path,
             "databases_ini_exists": False,
-            "hint": (f"databases.ini not found at {path}. Run "
-                     "`python3 AI/tools/generate_databases_ini.py` to create it."),
+            "hint": f"databases.ini not found at {path}",
         }
 
     rows = []
     missing = 0
     for section in parser.sections():
-        if section in _DB_INI_RESERVED_SECTIONS:
+        if section in _DB_INI_RESERVED:
             continue
         get = parser[section].get
-        ansible_servername = (get("ansible_servername", "") or "").strip()
-        in_inv = (ansible_servername in inv_hosts) if ansible_servername else False
-        if not ansible_servername or not in_inv:
+        ans = (get("ansible_servername", "") or "").strip()
+        in_inv = (ans in inv_hosts) if ans else False
+        if not ans or not in_inv:
             missing += 1
         rows.append({
             "name":               section,
-            "ansible_servername": ansible_servername or None,
+            "ansible_servername": ans or None,
             "in_inventory":       in_inv,
             "sql_instance":       (get("sql_instance", "") or "").strip() or None,
             "database":           (get("database", "") or section).strip(),
-            "environment":        (get("environment", "") or "").strip() or None,
-            "edition":            (get("edition", "") or "").strip() or None,
-            "version":            (get("version", "") or "").strip() or None,
             "emaillist":          (get("emaillist", "") or "").strip() or None,
             "lastupdated":        (get("lastupdated", "") or "").strip() or None,
         })
-
     rows.sort(key=lambda r: r["name"].lower())
-
     return {
-        "databases":            rows,
-        "databases_ini":        path,
+        "flavor": flavor,
+        "databases": rows,
+        "databases_ini": path,
         "databases_ini_exists": True,
-        "inventory":            settings.INVENTORY_PATH,
-        "inventory_group":      settings.INVENTORY_SQL_GROUP,
+        "inventory": settings.INVENTORY_PATH,
         "missing_server_count": missing,
-        "hint":                 None if rows else "databases.ini contains no DB sections",
+        "hint": None if rows else "databases.ini contains no DB sections",
     }
 
 
-def _resolve_db_section(database):
-    """Case-insensitive lookup of a databases.ini section."""
+def _resolve_db_section(flavor, database):
     if not database:
         return None
-    parser, _ = _read_databases_ini()
+    parser, _ = _read_databases_ini(flavor)
     if parser is None:
         return None
     target_lc = database.strip().lower()
     for section in parser.sections():
-        if section in _DB_INI_RESERVED_SECTIONS:
+        if section in _DB_INI_RESERVED:
             continue
         if section.lower() == target_lc:
             return section, parser[section]
     return None
 
 
-def _resolve_server_for_db(database):
-    """Look up ansible_servername in databases.ini for a given DB name."""
-    found = _resolve_db_section(database)
+def _resolve_server_for_db(flavor, database):
+    found = _resolve_db_section(flavor, database)
     if not found:
         return None
-    section, sec = found
+    _, sec = found
     return (sec.get("ansible_servername", "") or "").strip() or None
 
 
-def _resolve_instance_for_db(database):
-    """Look up sql_instance in databases.ini; fall back to ansible_servername."""
-    found = _resolve_db_section(database)
-    if not found:
-        return None
-    section, sec = found
-    inst = (sec.get("sql_instance", "") or "").strip()
-    return inst or (sec.get("ansible_servername", "") or "").strip() or None
-
-
-def _resolve_db_name_for_section(database):
-    """Map a [section-header] back to the real `database` field if set."""
-    found = _resolve_db_section(database)
+def _resolve_db_name_for_section(flavor, database):
+    found = _resolve_db_section(flavor, database)
     if not found:
         return database
     section, sec = found
@@ -216,26 +176,24 @@ def _resolve_db_name_for_section(database):
 # Intent dispatch
 # ---------------------------------------------------------------------------
 
-def _dispatch(intent):
+def _dispatch(flavor, intent):
+    sql_h, ops_h, _, _ = _flavor_modules(flavor)
     action = intent.get("action", "chat")
     params = intent.get("params", {}) or {}
 
-    # Auto-fill `server` (and rewrite section-header → real DB name) from the
-    # picked database. The chat UI sends the section header as `database`;
-    # we look it up in databases.ini and populate both `server` and the
-    # actual DB name. Works for combo_query's sql sub-query too.
+    # Auto-fill server from the picked database; rewrite section header to
+    # the real DB name. Same hook applies to combo_query's sql sub-query.
     def _fill_from_db(p):
         if not isinstance(p, dict):
             return
         section = p.get("database")
         if not section:
             return
-        # Always rewrite to the real DB name from the section.
-        real_db = _resolve_db_name_for_section(section)
+        real_db = _resolve_db_name_for_section(flavor, section)
         if real_db:
             p["database"] = real_db
         if not p.get("server"):
-            srv = _resolve_server_for_db(section)
+            srv = _resolve_server_for_db(flavor, section)
             if srv:
                 p["server"] = srv
 
@@ -244,7 +202,7 @@ def _dispatch(intent):
         _fill_from_db(params.get("sql"))
 
     if action == "sql_query":
-        return sql_handler.run_query(
+        return sql_h.run_query(
             server=params.get("server"),
             database=params.get("database"),
             raw_query=params.get("query", ""),
@@ -264,7 +222,7 @@ def _dispatch(intent):
         result = {}
         if sql_part:
             try:
-                result["sql"] = sql_handler.run_query(
+                result["sql"] = sql_h.run_query(
                     server=sql_part.get("server"),
                     database=sql_part.get("database"),
                     raw_query=sql_part.get("query", ""),
@@ -286,53 +244,89 @@ def _dispatch(intent):
         return result
 
     if action == "check_blocking_locks":
-        return ops_handler.check_blocking_locks(server=params.get("server"))
+        if flavor == "oracle":
+            return ops_h.check_blocking_locks(
+                server=params.get("server"),
+                database=params.get("database"),
+            )
+        return ops_h.check_blocking_locks(server=params.get("server"))
 
     if action == "add_datafile_space":
-        return ops_handler.add_datafile_space(
+        if flavor == "oracle":
+            datafile = params.get("datafile") or params.get("logical_file")
+            return ops_h.add_datafile_space(
+                server=params.get("server"),
+                database=params.get("database"),
+                datafile=datafile,
+                add_mb=params.get("add_mb"),
+            )
+        return ops_h.add_datafile_space(
             server=params.get("server"),
             database=params.get("database"),
-            logical_file=params.get("logical_file"),
+            logical_file=params.get("logical_file") or params.get("datafile"),
             add_mb=params.get("add_mb"),
         )
 
     if action == "health_check":
-        return ops_handler.health_check(server=params.get("server"))
-
+        return ops_h.health_check(server=params.get("server"))
     if action == "backup_status":
-        return ops_handler.backup_status(server=params.get("server"))
-
+        return ops_h.backup_status(server=params.get("server"))
     if action == "integrity_status":
-        return ops_handler.integrity_status(server=params.get("server"))
-
+        return ops_h.integrity_status(server=params.get("server"))
     if action == "disk_status":
-        return ops_handler.disk_status(server=params.get("server"))
-
+        return ops_h.disk_status(server=params.get("server"))
     if action == "agent_jobs":
-        return ops_handler.agent_jobs(
+        return ops_h.agent_jobs(
             server=params.get("server"),
             lookback_hours=params.get("lookback_hours"),
         )
-
     if action == "tempdb_status":
-        return ops_handler.tempdb_status(server=params.get("server"))
-
+        return ops_h.tempdb_status(server=params.get("server"))
     if action == "security_audit":
-        return ops_handler.security_audit(server=params.get("server"))
-
+        return ops_h.security_audit(server=params.get("server"))
     if action == "patch_level":
-        return ops_handler.patch_level(server=params.get("server"))
-
+        return ops_h.patch_level(server=params.get("server"))
     if action == "alwayson_status":
-        return ops_handler.alwayson_status(server=params.get("server"))
+        return ops_h.alwayson_status(server=params.get("server"))
 
-    # action == "chat" or unknown
+    # Oracle-only intents
+    if action == "create_restore_point" and flavor == "oracle":
+        return ops_h.create_restore_point(
+            server=params.get("server"),
+            database=params.get("database"),
+            name=params.get("name"),
+            guarantee=bool(params.get("guarantee", False)),
+        )
+    if action == "list_restore_points" and flavor == "oracle":
+        return ops_h.list_restore_points(
+            server=params.get("server"),
+            database=params.get("database"),
+        )
+    if action == "grow_recovery_size" and flavor == "oracle":
+        return ops_h.grow_recovery_dest(
+            server=params.get("server"),
+            database=params.get("database"),
+            add_gb=params.get("add_gb"),
+        )
+
     return {"reply": params.get("reply", "I'm not sure how to help with that.")}
 
 
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+def _active_model():
+    return {
+        "ollama":    settings.OLLAMA_MODEL,
+        "openai":    settings.OPENAI_MODEL,
+        "anthropic": settings.ANTHROPIC_MODEL,
+    }.get(settings.LLM_PROVIDER, "unknown")
+
+
+def _normalize_flavor(value):
+    return "oracle" if (value or "").lower().strip() == "oracle" else "mssql"
+
 
 @app.route("/")
 def index():
@@ -341,20 +335,29 @@ def index():
                            model=_active_model())
 
 
-@app.route("/api/servers")
-def servers():
-    return jsonify(_servers_metadata())
+@app.route("/api/<flavor>/databases")
+def databases(flavor):
+    return jsonify(_databases_metadata(_normalize_flavor(flavor)))
 
 
-@app.route("/api/databases")
-def databases():
-    return jsonify(_databases_metadata())
+@app.route("/api/<flavor>/servers")
+def servers(flavor):
+    flavor = _normalize_flavor(flavor)
+    _, _, group, _ = _flavor_modules(flavor)
+    return jsonify({
+        "flavor": flavor,
+        "group":  group,
+        "servers": _known_servers(flavor),
+        "inventory": settings.INVENTORY_PATH,
+        "inventory_exists": os.path.exists(settings.INVENTORY_PATH),
+    })
 
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    payload = request.get_json(silent=True) or {}
+    payload      = request.get_json(silent=True) or {}
     user_message = (payload.get("message") or "").strip()
+    flavor       = _normalize_flavor(payload.get("flavor"))
     selected_db  = (payload.get("database") or "").strip() or None
     if not user_message:
         return jsonify({"error": "Empty message."}), 400
@@ -363,14 +366,14 @@ def chat():
     try:
         intent = llm_client.classify(
             user_message,
-            known_servers=_known_servers(),
+            known_servers=_known_servers(flavor),
             selected_database=selected_db,
+            flavor=flavor,
         )
     except llm_client.LLMError as exc:
         return jsonify({"error": f"LLM error: {exc}"}), 502
 
-    # If the LLM left 'database' empty for a database-aware action, fall back
-    # to the dropdown selection. Skip 'chat' and 'influx_query' (no DB needed).
+    # Default the database from the picker for DB-aware intents.
     if selected_db:
         params = intent.get("params") or {}
         if isinstance(params, dict) and intent.get("action") not in ("chat", "influx_query"):
@@ -381,16 +384,16 @@ def chat():
 
     # 2) dispatch
     try:
-        tool_result = _dispatch(intent)
+        tool_result = _dispatch(flavor, intent)
     except UnsafeSqlError as exc:
         tool_result = {"error": f"Refused unsafe SQL: {exc}"}
-    except Exception as exc:  # surface every handler failure as data, not a 500
+    except Exception as exc:
         tool_result = {
             "error": str(exc),
             "trace": traceback.format_exc().splitlines()[-5:],
         }
 
-    # 3) summarise (the LLM turns tool output into a friendly reply)
+    # 3) summarise
     if intent.get("action") == "chat":
         reply = tool_result.get("reply") or "..."
     else:
@@ -400,9 +403,10 @@ def chat():
             reply = f"(LLM summary unavailable: {exc})"
 
     return jsonify({
-        "reply": reply,
+        "flavor": flavor,
+        "reply":  reply,
         "intent": intent,
-        "data": tool_result,
+        "data":   tool_result,
     })
 
 
@@ -414,23 +418,14 @@ def health():
         "model": _active_model(),
         "inventory": settings.INVENTORY_PATH,
         "inventory_exists": os.path.exists(settings.INVENTORY_PATH),
-        "scripts_dir": settings.SCRIPTS_DIR,
-        "known_servers": _known_servers(),
+        "flavors": {
+            "mssql":  {"group": settings.MSSQL_GROUP,  "databases_ini": settings.MSSQL_DATABASES_INI},
+            "oracle": {"group": settings.ORACLE_GROUP, "databases_ini": settings.ORACLE_DATABASES_INI},
+        },
     })
 
 
-def _active_model():
-    return {
-        "ollama":    settings.OLLAMA_MODEL,
-        "openai":    settings.OPENAI_MODEL,
-        "anthropic": settings.ANTHROPIC_MODEL,
-    }.get(settings.LLM_PROVIDER, "unknown")
-
-
 if __name__ == "__main__":
-    # threaded=True so concurrent users / parallel Ansible runs don't block
-    # each other on the dev server. For higher concurrency in production,
-    # front this with gunicorn or waitress.
     app.run(
         host=settings.FLASK_HOST,
         port=settings.FLASK_PORT,
