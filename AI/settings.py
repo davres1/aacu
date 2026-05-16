@@ -76,9 +76,10 @@ LLM_MAX_TOKENS  = int(_env("LLM_MAX_TOKENS",   _path("chatbot", "llm", "max_toke
 # ---------------------------------------------------------------------------
 # Ansible
 # ---------------------------------------------------------------------------
-INVENTORY_PATH  = _env("ANSIBLE_INVENTORY", _path("inventory", "path", default="/etc/ansible/hosts"))
-ANSIBLE_BIN     = _env("ANSIBLE_PLAYBOOK_BIN", "ansible-playbook")
-ANSIBLE_TIMEOUT = int(_env("ANSIBLE_TIMEOUT", "300"))
+INVENTORY_PATH      = _env("ANSIBLE_INVENTORY", _path("inventory", "path", default="/etc/ansible/hosts"))
+INVENTORY_SQL_GROUP = _env("ANSIBLE_SQL_GROUP", _path("inventory", "sql_servers_group", default="sql_servers"))
+ANSIBLE_BIN         = _env("ANSIBLE_PLAYBOOK_BIN", "ansible-playbook")
+ANSIBLE_TIMEOUT     = int(_env("ANSIBLE_TIMEOUT", "300"))
 
 
 # ---------------------------------------------------------------------------

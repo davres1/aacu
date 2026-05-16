@@ -29,48 +29,69 @@ app = Flask(__name__)
 # Inventory helpers
 # ---------------------------------------------------------------------------
 
-_PREFERRED_GROUPS = ("sql_servers", "mssql", "oracle", "databases", "db")
-
-
-def _known_servers():
-    """Pull host names from the Ansible inventory at settings.INVENTORY_PATH.
-
-    Prefers the DB-flavoured groups but falls back to every host in the file
-    so we still work with a generic /etc/ansible/hosts.
-    """
+def _read_inventory():
+    """Parse the Ansible inventory file. Returns the ConfigParser or None."""
     if not os.path.exists(settings.INVENTORY_PATH):
-        return []
+        return None
     parser = configparser.ConfigParser(allow_no_value=True, delimiters=("=",))
     parser.optionxform = str
     try:
         parser.read(settings.INVENTORY_PATH)
     except configparser.Error:
+        return None
+    return parser
+
+
+def _hosts_in_section(parser, section):
+    """Return the host names in the given INI section, stripping inline vars."""
+    if section not in parser:
         return []
-
-    def _hosts_in(section):
-        out = []
-        for raw in parser[section].keys():
-            if not raw or raw.startswith((";", "#")):
-                continue
-            # Strip Ansible inline vars: "host01 ansible_user=svc" -> "host01"
-            host = raw.split()[0].strip()
-            if host and not host.endswith(":vars"):
-                out.append(host)
-        return out
-
-    preferred = []
-    for grp in _PREFERRED_GROUPS:
-        if grp in parser:
-            preferred.extend(_hosts_in(grp))
-    if preferred:
-        return sorted(set(preferred))
-
-    all_hosts = []
-    for section in parser.sections():
-        if section.endswith(":vars") or section.endswith(":children"):
+    out = []
+    for raw in parser[section].keys():
+        if not raw or raw.startswith((";", "#")):
             continue
-        all_hosts.extend(_hosts_in(section))
-    return sorted(set(all_hosts))
+        host = raw.split()[0].strip()              # "host01 ansible_user=x" -> "host01"
+        if host and not host.endswith(":vars"):
+            out.append(host)
+    return out
+
+
+def _known_servers():
+    """Hosts in the configured [sql_servers] group (settings.INVENTORY_SQL_GROUP).
+
+    Strict: returns only hosts in that one group. Configure via
+    setup.yaml -> inventory.sql_servers_group (default 'sql_servers').
+    """
+    parser = _read_inventory()
+    if parser is None:
+        return []
+    return sorted(set(_hosts_in_section(parser, settings.INVENTORY_SQL_GROUP)))
+
+
+def _servers_metadata():
+    """Detailed response for /api/servers — surfaces config issues to the UI."""
+    parser = _read_inventory()
+    inv_exists = parser is not None
+    group = settings.INVENTORY_SQL_GROUP
+    if not inv_exists:
+        return {
+            "group": group,
+            "servers": [],
+            "inventory": settings.INVENTORY_PATH,
+            "inventory_exists": False,
+            "group_exists": False,
+            "hint": f"Inventory file not found at {settings.INVENTORY_PATH}",
+        }
+    group_exists = group in parser
+    return {
+        "group": group,
+        "servers": sorted(set(_hosts_in_section(parser, group))),
+        "inventory": settings.INVENTORY_PATH,
+        "inventory_exists": True,
+        "group_exists": group_exists,
+        "hint": None if group_exists
+                     else f"Group [{group}] not found in {settings.INVENTORY_PATH}",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +202,7 @@ def index():
 
 @app.route("/api/servers")
 def servers():
-    return jsonify({"servers": _known_servers()})
+    return jsonify(_servers_metadata())
 
 
 @app.route("/api/chat", methods=["POST"])

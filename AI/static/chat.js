@@ -549,15 +549,35 @@ async function loadServers() {
     const r = await fetch('/api/servers');
     const j = await r.json();
     const servers = j.servers || [];
-    const saved = localStorage.getItem(SERVER_KEY) || '';
+    const group   = j.group   || 'sql_servers';
+
+    // Refresh the dropdown so reloads stay consistent.
+    serverPicker.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = servers.length
+      ? `— any (${servers.length} in [${group}]) —`
+      : `— no hosts in [${group}] —`;
+    serverPicker.appendChild(placeholder);
+
     for (const s of servers) {
       const opt = document.createElement('option');
       opt.value = s; opt.textContent = s;
       serverPicker.appendChild(opt);
     }
+
+    // Restore previous selection if it's still in the list.
+    const saved = localStorage.getItem(SERVER_KEY) || '';
     if (saved && servers.includes(saved)) serverPicker.value = saved;
+
+    serverPicker.disabled = servers.length === 0;
+    serverPicker.title = j.hint
+      ? `${j.hint}`
+      : `Hosts read from [${group}] in ${j.inventory || 'the inventory'}`;
   } catch {
-    /* no-op — picker stays at "any" */
+    serverPicker.innerHTML = '<option value="">— unavailable —</option>';
+    serverPicker.disabled = true;
+    serverPicker.title = 'Could not reach /api/servers';
   }
 }
 
