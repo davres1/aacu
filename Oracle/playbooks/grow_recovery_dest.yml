@@ -1,0 +1,69 @@
+---
+# Grow db_recovery_file_dest_size (the Fast Recovery Area quota) by add_gb GB.
+#   1. Read the current value from v$parameter
+#   2. ALTER SYSTEM SET db_recovery_file_dest_size = NEW_VALUE SCOPE = BOTH
+# The setting is dynamic — no instance restart needed.
+- name: Grow db_recovery_file_dest_size by N GB
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ oracle_user | default('oracle') }}"
+
+  vars:
+    tns_alias:      "{{ tns_alias }}"
+    add_gb:         "{{ add_gb | int }}"
+    databases_ini:  "{{ databases_ini | default('/etc/oracle/databases.ini') }}"
+
+  tasks:
+    - name: Read system password from databases.ini
+      ansible.builtin.set_fact:
+        ora_pw: >-
+          {{ lookup('ini', 'syspass section=' + tns_alias + ' file=' + databases_ini) }}
+      no_log: true
+
+    - name: Read current db_recovery_file_dest_size in bytes
+      ansible.builtin.shell: |
+        set -e
+        cat <<'SQL' | sqlplus -S -L "system/{{ ora_pw }}@{{ tns_alias }}"
+        SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF
+        SET LINESIZE 100 TRIMSPOOL ON
+        WHENEVER SQLERROR EXIT 2
+        SELECT TO_CHAR(value)
+          FROM v$parameter
+         WHERE name = 'db_recovery_file_dest_size';
+        EXIT;
+        SQL
+      args:
+        executable: /bin/bash
+      register: current_size
+      changed_when: false
+      no_log: true
+
+    - name: Fail if parameter not set
+      ansible.builtin.fail:
+        msg: "db_recovery_file_dest_size is not set on {{ tns_alias }} — set it once manually first."
+      when: (current_size.stdout | trim) == "" or (current_size.stdout | trim | int) == 0
+
+    - name: Compute new size in MB (current bytes / 1MB + add_gb*1024)
+      ansible.builtin.set_fact:
+        new_size_mb: "{{ ((current_size.stdout | trim | int) // (1024 * 1024)) + ((add_gb | int) * 1024) }}"
+
+    - name: Grow db_recovery_file_dest_size
+      ansible.builtin.shell: |
+        set -e
+        cat <<'SQL' | sqlplus -S -L "system/{{ ora_pw }}@{{ tns_alias }}"
+        SET PAGESIZE 0 FEEDBACK ON VERIFY OFF HEADING OFF ECHO OFF
+        WHENEVER SQLERROR EXIT 1
+        ALTER SYSTEM SET db_recovery_file_dest_size = {{ new_size_mb }}M SCOPE = BOTH;
+        SELECT 'db_recovery_file_dest_size grown to {{ new_size_mb }} MB' FROM dual;
+        EXIT;
+        SQL
+      args:
+        executable: /bin/bash
+      register: grow_result
+      no_log: true
+      changed_when: "'grown' in (grow_result.stdout | default(''))"
+
+    - name: Surface result
+      ansible.builtin.debug:
+        var: grow_result.stdout

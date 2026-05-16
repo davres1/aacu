@@ -1,0 +1,306 @@
+---
+# Oracle DBA automation playbook. Mirrors dba_automation.yaml at the repo root
+# (which targets [sql_servers] Windows hosts). This one targets [oracle_servers]
+# in /etc/ansible/hosts.
+#
+#   ansible-playbook -i /etc/ansible/hosts Oracle/dba_automation.yaml
+#   ansible-playbook -i /etc/ansible/hosts Oracle/dba_automation.yaml --tags backups
+#   ansible-playbook -i /etc/ansible/hosts Oracle/dba_automation.yaml --tags localplugins
+#
+# Strategy mirrors the Windows side:
+#   - scripts that actively do work (backup, CHECKDB, killing blockers,
+#     re-starting a downed instance) are scheduled via cron
+#   - read-only monitoring runs as CheckMK local plugins (one binary, multiple
+#     interval subfolders under /usr/lib/check_mk_agent/local/)
+#
+# Required: databases.ini on each host (pushed by this playbook), the oracle
+# OS user must exist with ORACLE_HOME set in /etc/oratab.
+
+- hosts: oracle_servers
+  gather_facts: true
+  become: true                    # most tasks need root; sudo to oracle for sqlplus/rman
+
+  vars:
+    repo_dir:        '/opt/dba'
+    scripts_dir:     '/opt/dba/scripts'
+    config_dir:      '/opt/dba'
+    log_dir:         '/var/log/dba'
+    status_dir:      '/var/log/dba/status'
+    facts_dir:       '/etc/ansible/facts.d'
+    checkmk_local:   '/usr/lib/check_mk_agent/local'
+    databases_ini:   '/etc/oracle/databases.ini'
+    oracle_user:     'oracle'
+    oracle_group:    'oinstall'
+
+    backup_root:           "{{ backup_root | default('/backup/oracle') }}"
+    retention_days:        "{{ retention_days | default(14) }}"
+    full_backup_time:      "{{ full_backup_time | default('22:00') }}"
+    diff_backup_interval:  "{{ diff_backup_interval | default('*/6:00') }}"
+    log_backup_interval:   "{{ log_backup_interval  | default('*/15') }}"
+    checkdb_day_of_week:   "{{ checkdb_day_of_week | default(0) }}"   # 0=Sunday
+    checkdb_time:          "{{ checkdb_time | default('03:00') }}"
+
+  tasks:
+    # ===================================================================
+    # 0. Directories
+    # ===================================================================
+    - name: Ensure DBA directories exist
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ oracle_user }}"
+        group: "{{ oracle_group }}"
+        mode: '0755'
+      loop:
+        - "{{ scripts_dir }}"
+        - "{{ scripts_dir }}/lib"
+        - "{{ log_dir }}"
+        - "{{ status_dir }}"
+        - "{{ facts_dir }}"
+        - "{{ checkmk_local }}"
+        - "{{ checkmk_local }}/300"
+        - "{{ checkmk_local }}/600"
+        - "{{ checkmk_local }}/3600"
+        - "{{ checkmk_local }}/86400"
+        - /etc/oracle
+        - "{{ backup_root }}"
+      tags: [always]
+
+    # ===================================================================
+    # 1. Drop databases.ini onto each host (encrypt with ansible-vault).
+    # ===================================================================
+    - name: Push databases.ini
+      copy:
+        src: inventory/databases.ini
+        dest: "{{ databases_ini }}"
+        owner: "{{ oracle_user }}"
+        group: "{{ oracle_group }}"
+        mode: '0600'             # contains plaintext passwords — strict perms
+      tags: [config, always]
+
+    # ===================================================================
+    # 2. Render thresholds.json from the project's setup.yaml (if present).
+    # ===================================================================
+    - name: Render thresholds.json from setup.yaml
+      template:
+        src: ../templates/thresholds.json.j2
+        dest: "{{ config_dir }}/thresholds.json"
+        owner: "{{ oracle_user }}"
+        group: "{{ oracle_group }}"
+        mode: '0644'
+      ignore_errors: yes         # template may not exist on every checkout
+      tags: [config, localplugins]
+
+    # ===================================================================
+    # 3. Push all the maintenance + monitoring scripts.
+    # ===================================================================
+    - name: Push shared lib
+      copy:
+        src: files/lib/oracle_common.sh
+        dest: "{{ scripts_dir }}/lib/oracle_common.sh"
+        owner: "{{ oracle_user }}"
+        group: "{{ oracle_group }}"
+        mode: '0755'
+      tags: [scripts, always]
+
+    - name: Push DBA scripts
+      copy:
+        src: "files/{{ item }}"
+        dest: "{{ scripts_dir }}/{{ item }}"
+        owner: "{{ oracle_user }}"
+        group: "{{ oracle_group }}"
+        mode: '0755'
+      loop:
+        - CheckOracleStatus.sh
+        - DetectBlockingLocks.sh
+        - DetectDeadlocks.sh
+        - IndexMaintenance.sh
+        - BackupDatabases.sh
+        - VerifyBackups.sh
+        - CheckDB.sh
+        - GetCheckDBStatus.sh
+        - MonitorTablespaces.sh
+        - MonitorJobs.sh
+        - MonitorAccountSecurity.sh
+        - SecurityAudit.sh
+        - PatchLevelCheck.sh
+        - MonitorDataGuard.sh
+        - createcheckmk.sh
+        - db_inventory.sh
+      tags: [scripts, always]
+
+    # ===================================================================
+    # 4. Ansible custom facts — let `ansible -m setup` expose db_inventory.
+    #
+    # Ansible's facts.d loader runs every executable file in
+    # /etc/ansible/facts.d/ that ends in .fact and merges the JSON stdout
+    # under ansible_local.<basename>. We copy db_inventory.sh straight in
+    # with the .fact extension; subsequent `gather_facts: true` populates
+    # ansible_local.db_inventory across every Oracle host.
+    # ===================================================================
+    - name: Ensure Ansible facts.d directory exists
+      ansible.builtin.file:
+        path: "{{ facts_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      tags: [facts, always]
+
+    - name: Install db_inventory.sh as an Ansible custom fact
+      ansible.builtin.copy:
+        src: files/db_inventory.sh
+        dest: "{{ facts_dir }}/db_inventory.fact"
+        owner: root
+        group: root
+        mode: '0755'
+      tags: [facts, always]
+
+    - name: Trigger a re-gather so ansible_local.db_inventory is fresh
+      ansible.builtin.setup:
+        filter: ansible_local
+      tags: [facts]
+
+    # ===================================================================
+    # 5. CheckMK local plugins
+    # ===================================================================
+    - name: Push CheckMK local plugin (default, ~60s)
+      copy:
+        src: files/checkmk_local/oracle_local.sh
+        dest: "{{ checkmk_local }}/oracle_local"
+        mode: '0755'
+      tags: [localplugins, checkmk]
+
+    - name: Push CheckMK local plugin (5 min)
+      copy:
+        src: files/checkmk_local/300/oracle_tablespaces.sh
+        dest: "{{ checkmk_local }}/300/oracle_tablespaces"
+        mode: '0755'
+      tags: [localplugins, checkmk]
+
+    - name: Push CheckMK local plugin (10 min)
+      copy:
+        src: files/checkmk_local/600/oracle_backups_jobs.sh
+        dest: "{{ checkmk_local }}/600/oracle_backups_jobs"
+        mode: '0755'
+      tags: [localplugins, checkmk]
+
+    - name: Push CheckMK local plugin (hourly)
+      copy:
+        src: files/checkmk_local/3600/oracle_security_checkdb.sh
+        dest: "{{ checkmk_local }}/3600/oracle_security_checkdb"
+        mode: '0755'
+      tags: [localplugins, checkmk]
+
+    - name: Push CheckMK local plugin (daily)
+      copy:
+        src: files/checkmk_local/86400/oracle_patch.sh
+        dest: "{{ checkmk_local }}/86400/oracle_patch"
+        mode: '0755'
+      tags: [localplugins, checkmk]
+
+    # ===================================================================
+    # 6. Scheduled (active) work via cron
+    # ===================================================================
+    - name: Cron - Oracle service watchdog (hourly)
+      cron:
+        name: "Oracle service watchdog"
+        user: root
+        minute: '0'
+        job: "{{ scripts_dir }}/CheckOracleStatus.sh >> {{ log_dir }}/cron.log 2>&1"
+      tags: [maintenance, remediation]
+
+    - name: Cron - blocking-lock detector (every 30 min)
+      cron:
+        name: "Oracle blocking detector"
+        user: "{{ oracle_user }}"
+        minute: '*/30'
+        job: "{{ scripts_dir }}/DetectBlockingLocks.sh >> {{ log_dir }}/cron.log 2>&1"
+      tags: [maintenance, remediation]
+
+    - name: Cron - deadlock check (every 30 min)
+      cron:
+        name: "Oracle deadlock detector"
+        user: "{{ oracle_user }}"
+        minute: '5,35'
+        job: "{{ scripts_dir }}/DetectDeadlocks.sh >> {{ log_dir }}/cron.log 2>&1"
+      tags: [maintenance, remediation]
+
+    - name: Cron - account-security monitor (every 30 min)
+      cron:
+        name: "Oracle account security"
+        user: "{{ oracle_user }}"
+        minute: '15,45'
+        job: "{{ scripts_dir }}/MonitorAccountSecurity.sh >> {{ log_dir }}/cron.log 2>&1"
+      tags: [security, remediation]
+
+    - name: Cron - FULL RMAN backup (daily)
+      cron:
+        name: "Oracle FULL backup"
+        user: "{{ oracle_user }}"
+        hour:   "{{ full_backup_time.split(':')[0] }}"
+        minute: "{{ full_backup_time.split(':')[1] }}"
+        job: "BACKUP_ROOT={{ backup_root }} RETENTION_DAYS={{ retention_days }} PARALLEL=4 {{ scripts_dir }}/BackupDatabases.sh Full >> {{ log_dir }}/cron.log 2>&1"
+      tags: [backups]
+
+    - name: Cron - INCREMENTAL RMAN backup (every 6 hours)
+      cron:
+        name: "Oracle INCR backup"
+        user: "{{ oracle_user }}"
+        hour: '2,8,14,20'
+        minute: '30'
+        job: "BACKUP_ROOT={{ backup_root }} RETENTION_DAYS={{ retention_days }} PARALLEL=4 {{ scripts_dir }}/BackupDatabases.sh Incr >> {{ log_dir }}/cron.log 2>&1"
+      tags: [backups]
+
+    - name: Cron - archive-log RMAN backup (every 15 min)
+      cron:
+        name: "Oracle LOG backup"
+        user: "{{ oracle_user }}"
+        minute: '*/15'
+        job: "BACKUP_ROOT={{ backup_root }} RETENTION_DAYS={{ retention_days }} PARALLEL=8 {{ scripts_dir }}/BackupDatabases.sh Log >> {{ log_dir }}/cron.log 2>&1"
+      tags: [backups]
+
+    - name: Cron - backup verification (daily 06:00)
+      cron:
+        name: "Oracle backup verify"
+        user: "{{ oracle_user }}"
+        hour:   '6'
+        minute: '0'
+        job: "{{ scripts_dir }}/VerifyBackups.sh >> {{ log_dir }}/cron.log 2>&1"
+      tags: [backups]
+
+    - name: Cron - RMAN CheckDB (weekly Sunday 03:00)
+      cron:
+        name: "Oracle CheckDB"
+        user: "{{ oracle_user }}"
+        weekday: "{{ checkdb_day_of_week }}"
+        hour:    "{{ checkdb_time.split(':')[0] }}"
+        minute:  "{{ checkdb_time.split(':')[1] }}"
+        job: "{{ scripts_dir }}/CheckDB.sh >> {{ log_dir }}/cron.log 2>&1"
+      tags: [integrity]
+
+    - name: Cron - index maintenance (last Sunday quarterly, 22:00)
+      cron:
+        name: "Oracle index maintenance"
+        user: "{{ oracle_user }}"
+        special_time: "monthly"
+        job: "[ $(date +\\%m) = $(date -d \"$(date +%Y)-$((($(date +%m)-1)/3*3+1))-01\" +\\%m) ] && {{ scripts_dir }}/IndexMaintenance.sh >> {{ log_dir }}/cron.log 2>&1"
+      tags: [maintenance]
+
+    # ===================================================================
+    # 7. Cleanup: remove the SQL Server-era scheduled tasks if cloned here
+    # ===================================================================
+    - name: Remove obsolete cron entries (legacy names)
+      cron:
+        name: "{{ item }}"
+        state: absent
+      loop:
+        - "SQLDBA_BackupFull"
+        - "SQLDBA_BackupDiff"
+        - "SQLDBA_BackupLog"
+        - "Oracle TablespaceMonitor"      # superseded by CheckMK local plugin
+        - "Oracle PatchLevelCheck"        # superseded by CheckMK local plugin
+        - "Oracle DataGuardMonitor"       # superseded by CheckMK local plugin
+        - "Oracle SecurityAudit"          # superseded by CheckMK local plugin
+        - "Oracle JobsMonitor"            # superseded by CheckMK local plugin
+      tags: [cleanup]

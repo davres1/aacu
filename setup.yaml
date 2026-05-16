@@ -52,7 +52,8 @@ bootstrap:
 # ---------- Inventory ---------------------------------------------------------
 inventory:
   path: /etc/ansible/hosts          # consumed by the chatbot's _known_servers()
-  sql_servers_group: sql_servers
+  sql_servers_group: sql_servers    # group used by the AI/ chatbot
+  oracle_servers_group: oracle_servers  # group used by the Oracle/ chatbot
 
 
 # ---------- Windows paths -----------------------------------------------------

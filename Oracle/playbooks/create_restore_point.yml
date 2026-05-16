@@ -1,0 +1,47 @@
+---
+# Create an Oracle RESTORE POINT (optionally a GUARANTEED one).
+# A guaranteed restore point requires ARCHIVELOG mode and FLASHBACK ON, and
+# consumes flashback log space until dropped — the playbook will surface the
+# Oracle error if those prerequisites are missing instead of failing silently.
+- name: Create an Oracle restore point
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ oracle_user | default('oracle') }}"
+
+  vars:
+    tns_alias:      "{{ tns_alias }}"
+    rp_name:        "{{ rp_name }}"
+    guarantee:      "{{ guarantee | default(false) | bool }}"
+    databases_ini:  "{{ databases_ini | default('/etc/oracle/databases.ini') }}"
+
+  tasks:
+    - name: Read system password from databases.ini
+      ansible.builtin.set_fact:
+        ora_pw: >-
+          {{ lookup('ini', 'syspass section=' + tns_alias + ' file=' + databases_ini) }}
+      no_log: true
+
+    - name: Create restore point
+      ansible.builtin.shell: |
+        set -e
+        cat <<'SQL' | sqlplus -S -L "system/{{ ora_pw }}@{{ tns_alias }}"
+        SET PAGESIZE 0 FEEDBACK ON VERIFY OFF HEADING OFF ECHO OFF
+        SET LINESIZE 32767 TRIMSPOOL ON
+        WHENEVER SQLERROR EXIT 1
+        CREATE RESTORE POINT "{{ rp_name }}"{% if guarantee %} GUARANTEE FLASHBACK DATABASE{% endif %};
+        SELECT 'Created {% if guarantee %}guaranteed {% endif %}restore point '
+               || name || ' at SCN ' || scn
+          FROM v$restore_point
+         WHERE name = UPPER('{{ rp_name }}');
+        EXIT;
+        SQL
+      args:
+        executable: /bin/bash
+      register: result
+      no_log: true
+      changed_when: "'Created' in (result.stdout | default(''))"
+
+    - name: Surface result
+      ansible.builtin.debug:
+        var: result.stdout
