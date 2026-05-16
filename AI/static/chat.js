@@ -241,6 +241,71 @@ function pickTimeUnit(range) {
   return 'day';
 }
 
+/**
+ * Walk `data` and any nested objects, returning [{label, meta}, ...] for
+ * every `_ansible`/`_ansible_*` block we find. Lets combo_query and
+ * health_check (which run multiple playbooks) render multiple disclosures.
+ */
+function collectAnsibleMeta(data, prefix = '') {
+  const out = [];
+  if (!data || typeof data !== 'object') return out;
+  for (const [key, val] of Object.entries(data)) {
+    if (!val) continue;
+    if (key === '_ansible' || key.startsWith('_ansible_')) {
+      const suffix = key === '_ansible' ? '' : key.replace(/^_ansible_/, '');
+      const label = [prefix, suffix].filter(Boolean).join(' / ');
+      out.push({ label, meta: val });
+    } else if (typeof val === 'object' && !Array.isArray(val)) {
+      out.push(...collectAnsibleMeta(val, key));
+    }
+  }
+  return out;
+}
+
+function renderAnsibleOutput(meta, label) {
+  if (!meta || typeof meta !== 'object') return null;
+  const wrap = document.createElement('details');
+  wrap.className = 'ansible-out';
+
+  const summary = document.createElement('summary');
+  const rc = (meta.rc === null || meta.rc === undefined) ? '?' : meta.rc;
+  const sev = (rc === 0 || rc === '0') ? 'ok' : (rc === '?' ? 'unknown' : 'err');
+  summary.innerHTML =
+    `<span class="ansible-chev">▸</span>` +
+    `<span class="ansible-title">Ansible output${label ? ` · ${escapeHtml(label)}` : ''}</span>` +
+    `<span class="ansible-rc rc-${sev}">rc=${escapeHtml(String(rc))}</span>` +
+    (meta.task ? `<span class="ansible-task">${escapeHtml(meta.task)}</span>` : '');
+  wrap.appendChild(summary);
+
+  if (meta.cmd) {
+    const sec = document.createElement('div');
+    sec.className = 'ansible-section';
+    sec.innerHTML =
+      `<div class="ansible-label">Command</div>` +
+      `<pre class="ansible-pre cmd">${escapeHtml(meta.cmd)}</pre>`;
+    wrap.appendChild(sec);
+  }
+
+  if (meta.stdout && meta.stdout.length) {
+    const sec = document.createElement('div');
+    sec.className = 'ansible-section';
+    sec.innerHTML =
+      `<div class="ansible-label">stdout${meta.stdout_truncated ? ' <span class="ansible-trunc">(truncated)</span>' : ''}</div>` +
+      `<pre class="ansible-pre">${escapeHtml(meta.stdout)}</pre>`;
+    wrap.appendChild(sec);
+  }
+
+  if (meta.stderr && meta.stderr.trim()) {
+    const sec = document.createElement('div');
+    sec.className = 'ansible-section';
+    sec.innerHTML =
+      `<div class="ansible-label warn">stderr${meta.stderr_truncated ? ' <span class="ansible-trunc">(truncated)</span>' : ''}</div>` +
+      `<pre class="ansible-pre err">${escapeHtml(meta.stderr)}</pre>`;
+    wrap.appendChild(sec);
+  }
+  return wrap;
+}
+
 function renderData(data, intent) {
   if (!data || typeof data !== 'object') return null;
   const block = document.createElement('div');
@@ -328,6 +393,14 @@ function appendMessageElement(msg) {
   el.innerHTML = renderMarkdown(msg.body || '');
   const block = renderData(msg.data, msg.intent);
   if (block) el.appendChild(block);
+
+  // Collapsible "Ansible output" disclosure(s). One per playbook that ran;
+  // health_check / combo_query may surface multiple.
+  for (const { label, meta } of collectAnsibleMeta(msg.data || {})) {
+    const out = renderAnsibleOutput(meta, label);
+    if (out) el.appendChild(out);
+  }
+
   if (msg.intent) {
     const tag = document.createElement('div');
     tag.className = 'intent';

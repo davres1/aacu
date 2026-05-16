@@ -438,6 +438,110 @@ button { font-family: inherit; }
   font-style: italic;
 }
 
+/* =========== Ansible output disclosure =========== */
+.ansible-out {
+  margin-top: 10px;
+  background: #0a0e13;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+.ansible-out summary {
+  cursor: pointer;
+  padding: 7px 10px 7px 6px;
+  background: #11161e;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: none;          /* hide native disclosure triangle */
+  user-select: none;
+  transition: background var(--transition);
+}
+.ansible-out summary:hover { background: #161d27; }
+.ansible-out summary::-webkit-details-marker { display: none; }
+.ansible-chev {
+  display: inline-block;
+  width: 14px;
+  color: var(--text-dim);
+  font-size: 10px;
+  transition: transform 120ms ease;
+}
+.ansible-out[open] .ansible-chev { transform: rotate(90deg); }
+.ansible-title {
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  color: var(--text-muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ansible-rc {
+  font-family: "JetBrains Mono", "Fira Code", Menlo, monospace;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.ansible-rc.rc-ok       { background: #14532d; color: #86efac; }
+.ansible-rc.rc-err      { background: #7f1d1d; color: #fecaca; }
+.ansible-rc.rc-unknown  { background: #1f2937; color: var(--text-muted); }
+.ansible-task {
+  font-family: "JetBrains Mono", "Fira Code", Menlo, monospace;
+  font-size: 10.5px;
+  color: var(--text-dim);
+  padding-left: 4px;
+  border-left: 1px solid var(--border);
+  margin-left: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 40%;
+}
+.ansible-section {
+  padding: 8px 12px;
+}
+.ansible-section + .ansible-section {
+  border-top: 1px dashed var(--border);
+}
+.ansible-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.ansible-label.warn { color: var(--warn); }
+.ansible-trunc {
+  font-style: italic;
+  font-weight: 400;
+  text-transform: none;
+  color: var(--text-dim);
+  letter-spacing: 0;
+  margin-left: 4px;
+}
+.ansible-pre {
+  background: #02060e;
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "JetBrains Mono", "Fira Code", Menlo, monospace;
+  color: #cbd5e1;
+  margin: 0;
+}
+.ansible-pre.cmd { color: #93c5fd; }
+.ansible-pre.err { color: #fca5a5; }
+
 /* =========== Composer =========== */
 #composer {
   display: flex;

@@ -24,12 +24,17 @@ def run_query(server, database, raw_query):
     }
 
     out = ansible_runner.run_playbook("run_sql_query.yml", server, extra_vars=extra_vars)
-    task = ansible_runner.extract_task_result(out, "Run read-only SQL query")
+    task = ansible_runner.extract_task_result(out, "Run read-only SQL query") or {}
     if not task:
-        return {"query": safe_query, "rows": [], "warning": "No task result returned."}
+        return {
+            "query": safe_query, "rows": [], "warning": "No task result returned.",
+            "_ansible": {"cmd": (out or {}).get("cmd"), "task": "Run read-only SQL query",
+                         "rc": None, "stdout": "", "stderr": ""},
+        }
 
     stdout = task.get("stdout") or ""
-    # dbatools ConvertTo-Json output — try to parse, fall back to raw lines.
+    stderr = task.get("stderr") or ""
+
     rows = []
     try:
         parsed = json.loads(stdout) if stdout.strip().startswith(("[", "{")) else None
@@ -47,6 +52,15 @@ def run_query(server, database, raw_query):
         "row_count": len(rows),
         "rows": rows[: settings.SQL_MAX_ROWS],
         "raw_stdout": stdout[:4000] if not rows else None,
+        "_ansible": {
+            "cmd": (out or {}).get("cmd"),
+            "task": "Run read-only SQL query",
+            "rc": task.get("rc"),
+            "stdout": stdout[:50000],
+            "stderr": stderr[:10000],
+            "stdout_truncated": len(stdout) > 50000,
+            "stderr_truncated": len(stderr) > 10000,
+        },
     }
 
 

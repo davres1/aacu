@@ -34,6 +34,28 @@ def _parse_json_tail(stdout):
     return None
 
 
+def _ansible_meta(out, task_name, task=None):
+    """Build the _ansible disclosure block consumed by the chat UI.
+
+    Caps stdout/stderr so we don't ship 1MB of YAML over /api/chat — the user
+    sees the head of stdout (which is where errors live) and the tail (which
+    has the final JSON line). 50KB / 10KB are plenty for any reasonable run.
+    """
+    if task is None:
+        task = ansible_runner.extract_task_result(out, task_name) or {}
+    stdout = task.get("stdout") or ""
+    stderr = task.get("stderr") or ""
+    return {
+        "cmd": (out or {}).get("cmd"),
+        "task": task_name,
+        "rc": task.get("rc"),
+        "stdout": stdout[:50000],
+        "stderr": stderr[:10000],
+        "stdout_truncated": len(stdout) > 50000,
+        "stderr_truncated": len(stderr) > 10000,
+    }
+
+
 def _run_script(server, playbook, task_name, extra_vars=None):
     out = ansible_runner.run_playbook(
         playbook, server,
@@ -48,6 +70,7 @@ def _run_script(server, playbook, task_name, extra_vars=None):
         "summary": parsed,
         "raw_stdout_tail": None if parsed else stdout[-2000:],
         "stderr": (task.get("stderr") or "")[:1500],
+        "_ansible": _ansible_meta(out, task_name, task),
     }
 
 
@@ -56,12 +79,13 @@ def check_blocking_locks(server):
         "check_blocking_locks.yml", server,
         extra_vars={"target_host": server},
     )
-    task = ansible_runner.extract_task_result(out, "Run DetectBlockingLocks.ps1")
+    task = ansible_runner.extract_task_result(out, "Run DetectBlockingLocks.ps1") or {}
     return {
         "server": server,
-        "stdout": (task or {}).get("stdout", "")[:8000],
-        "stderr": (task or {}).get("stderr", "")[:2000],
-        "rc": (task or {}).get("rc"),
+        "stdout": task.get("stdout", "")[:8000],
+        "stderr": task.get("stderr", "")[:2000],
+        "rc": task.get("rc"),
+        "_ansible": _ansible_meta(out, "Run DetectBlockingLocks.ps1", task),
     }
 
 
@@ -85,14 +109,15 @@ def add_datafile_space(server, database, logical_file, add_mb):
             "add_mb": add_mb,
         },
     )
-    task = ansible_runner.extract_task_result(out, "Grow datafile")
+    task = ansible_runner.extract_task_result(out, "Grow datafile") or {}
     return {
         "server": server,
         "database": database,
         "logical_file": logical_file,
         "add_mb": add_mb,
-        "stdout": (task or {}).get("stdout", "")[:4000],
-        "rc": (task or {}).get("rc"),
+        "stdout": task.get("stdout", "")[:4000],
+        "rc": task.get("rc"),
+        "_ansible": _ansible_meta(out, "Grow datafile", task),
     }
 
 
@@ -120,6 +145,8 @@ def health_check(server):
             "stdout_tail": (status.get("stdout") or "")[-2000:],
         },
         "inventory": parsed_inv if parsed_inv else {"raw": inv_stdout[:4000]},
+        "_ansible_status":    _ansible_meta(out, "Run CheckmssqlStatus.ps1", status),
+        "_ansible_inventory": _ansible_meta(out, "Run db_inventory.ps1", inventory),
     }
 
 
