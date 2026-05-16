@@ -10,6 +10,7 @@
 # entry in /etc/hosts, then installs and wires up:
 #
 #   - Python 3 + Ansible + Windows collections
+#   - GitHub CLI (gh) + optional gh auth from setup.yaml / GH_TOKEN
 #   - InfluxDB 1.x   (CheckMK perfdata target)
 #   - CheckMK Raw    (server / OMD site)
 #   - nagflux        (CheckMK Raw -> InfluxDB live pipeline)
@@ -20,8 +21,8 @@
 #   - firewalld      (opens the ports listed in setup.yaml)
 #
 # Skip phases with env vars (each accepts 1/true to skip):
-#   SKIP_INFLUXDB, SKIP_CHECKMK, SKIP_NAGFLUX, SKIP_RUNDECK, SKIP_OLLAMA,
-#   SKIP_CHATBOT, SKIP_TICKTATOR, SKIP_FIREWALL
+#   SKIP_GITHUB, SKIP_INFLUXDB, SKIP_CHECKMK, SKIP_NAGFLUX, SKIP_RUNDECK,
+#   SKIP_OLLAMA, SKIP_CHATBOT, SKIP_TICKTATOR, SKIP_FIREWALL
 #
 # Override the path to setup.yaml:
 #   SETUP_YAML=/path/to/setup.yaml ./bootstrap.sh
@@ -136,6 +137,7 @@ vals = {
     "SNOW_PASS":       g('servicenow','password', default=''),
     "SNOW_GROUP":      g('servicenow','assignment_group', default='Database Operations'),
     "SNOW_DEDUP":      g('servicenow','dedup_hours', default=4),
+    "GITHUB_TOKEN":    g('bootstrap','github','token', default=''),
     "FW_PORTS":        ' '.join(str(p) for p in g('bootstrap','firewall_ports', default=[]) or []),
 }
 for k, v in vals.items():
@@ -147,11 +149,60 @@ rm -f "$SETUP_ENV"
 log "setup.yaml loaded (CheckMK site=$CHECKMK_SITE, Influx db=$INFLUX_DB, model=$OLLAMA_MODEL)"
 
 # --- Phase 3: Ansible ---------------------------------------------------------
-phase "Phase 3: Ansible + Windows collections"
-python3 -m pip install --quiet ansible >>"$LOG_FILE" 2>&1
+phase "Phase 3: Ansible toolkit + Windows collections"
+# Match the chatbot's AI/requirements.txt so anyone pip-installing from there
+# gets the same set we pre-install systemwide here. ansible (meta) pulls in
+# ansible-core; the rest are operator-friendly extras.
+python3 -m pip install --quiet --upgrade \
+    "ansible>=2.14" \
+    "ansible-core>=2.14" \
+    "ansible-runner>=2.0" \
+    "ansible-lint>=6.0" \
+    "ansible-tower-cli>=3.0" \
+    >>"$LOG_FILE" 2>&1 || warn "one or more ansible pip installs failed — review $LOG_FILE"
+
+# Windows collections come from Galaxy, not PyPI.
 ansible-galaxy collection install ansible.windows community.windows --upgrade >>"$LOG_FILE" 2>&1 || \
     warn "ansible-galaxy collection install had warnings — review $LOG_FILE"
 ok "Ansible $(ansible --version | head -1 | awk '{print $NF}' | tr -d ']')"
+
+# --- Phase 3b: GitHub CLI ----------------------------------------------------
+if skip SKIP_GITHUB; then
+    warn "Phase 3b: GitHub CLI — SKIPPED"
+else
+    phase "Phase 3b: GitHub CLI (gh)"
+    if ! command -v gh >/dev/null 2>&1; then
+        # The official RHEL repo for the GitHub CLI.
+        cat >/etc/yum.repos.d/gh-cli.repo <<'REPO'
+[gh-cli]
+name=packages for the GitHub CLI
+baseurl=https://cli.github.com/packages/rpm
+enabled=1
+gpgcheck=1
+gpgkey=https://cli.github.com/packages/rpm/gh-cli.repo.gpg
+REPO
+        # Some RHEL forks ship the key separately; this is harmless either way.
+        rpm --import https://cli.github.com/packages/rpm/gh-cli.repo.gpg 2>>"$LOG_FILE" || true
+        dnf -y install gh >>"$LOG_FILE" 2>&1 || warn "gh install failed — continuing without it"
+    fi
+
+    # Allow GH_TOKEN env var to override the value from setup.yaml.
+    GH_AUTH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}"
+    if command -v gh >/dev/null 2>&1; then
+        if [[ -n "$GH_AUTH_TOKEN" && "$GH_AUTH_TOKEN" != "CHANGE_ME" ]]; then
+            # `gh auth login --with-token` reads the token from stdin and stores
+            # it in the running user's gh config (~/.config/gh/). Suppress the
+            # token from the log file.
+            if printf '%s' "$GH_AUTH_TOKEN" | gh auth login --with-token >/dev/null 2>&1; then
+                ok "gh $(gh --version | awk 'NR==1 {print $3}') installed and authenticated"
+            else
+                warn "gh installed but auth failed — verify token scopes (needs 'repo')"
+            fi
+        else
+            ok "gh $(gh --version | awk 'NR==1 {print $3}') installed (no token supplied — run 'gh auth login' to sign in)"
+        fi
+    fi
+fi
 
 # --- Phase 4: InfluxDB -------------------------------------------------------
 if skip SKIP_INFLUXDB; then

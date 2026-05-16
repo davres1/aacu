@@ -33,6 +33,12 @@ bootstrap:
   nagflux:
     version: '0.4.3'        # released binary tag at github.com/Griesbacher/nagflux/releases
     url: 'https://github.com/Griesbacher/nagflux/releases/download/v0.4.3/nagflux-linux-x86_64.tar.gz'
+  github:
+    # Optional. If set, bootstrap.sh runs `gh auth login --with-token` after
+    # installing the GitHub CLI. Use a Personal Access Token with repo scope.
+    # Prefer env var GH_TOKEN at bootstrap time over checking it in here.
+    # ansible-vault encrypt_string '<token>' --name 'github_token'
+    token: ''
   firewall_ports:
     - 80/tcp        # HTTP (CheckMK GUI)
     - 443/tcp       # HTTPS
