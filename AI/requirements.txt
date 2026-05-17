@@ -2,7 +2,7 @@ Flask>=3.0
 requests>=2.31
 influxdb>=5.3
 PyYAML>=6.0
-
+tenacity>=9.0
 # LLM gateway — speaks Ollama, OpenAI, Anthropic, Azure, Bedrock, Gemini, etc.
 # with one API. Model selection is driven by env / setup.yaml.
 litellm>=1.50
