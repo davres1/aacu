@@ -417,36 +417,68 @@ else
     ok "Ollama listening on $OLLAMA_BASE"
 fi
 
-# --- Phase 8: Chatbot service ------------------------------------------------
+# --- Phase 8: Chatbot service (gunicorn + LiteLLM) ---------------------------
 if skip SKIP_CHATBOT; then
     warn "Phase 8: Chatbot — SKIPPED"
 elif [[ ! -d "$SCRIPT_DIR/AI" ]]; then
     warn "Phase 8: $SCRIPT_DIR/AI not found — SKIPPED"
 else
-    phase "Phase 8: DBA chatbot Flask service"
+    phase "Phase 8: DBA chatbot (gunicorn + LiteLLM)"
     python3 -m pip install --quiet -r "$SCRIPT_DIR/AI/requirements.txt" >>"$LOG_FILE" 2>&1
+
+    # Worker sizing — tune through env in the unit (GUNICORN_WORKERS / _THREADS).
+    GUNICORN_BIN="$(command -v gunicorn || echo /usr/local/bin/gunicorn)"
+
     cat >/etc/systemd/system/dba-chatbot.service <<UNIT
 [Unit]
-Description=DBA Info Chatbot (Flask)
-After=network-online.target ollama.service
+Description=DBA Info Chatbot — unified MSSQL + Oracle, gunicorn, LiteLLM
+After=network-online.target ollama.service influxdb.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=$SCRIPT_DIR/AI
+
+# --- core config ---
 Environment=SETUP_YAML=$SETUP_YAML
 Environment=FLASK_HOST=$FLASK_HOST
 Environment=FLASK_PORT=$FLASK_PORT
-ExecStart=/usr/bin/python3 $SCRIPT_DIR/AI/app.py
+Environment=PYTHONUNBUFFERED=1
+Environment=LOG_LEVEL=INFO
+
+# --- LiteLLM tunables (override per host as needed) ---
+# LITELLM_MODEL forces a specific model (e.g. "anthropic/claude-sonnet-4-6").
+# If unset, settings.py picks the best available based on which API keys
+# are present (ANTHROPIC_API_KEY > OPENAI_API_KEY > ollama/<OLLAMA_MODEL>).
+# Environment=LITELLM_MODEL=anthropic/claude-sonnet-4-6
+# Environment=ANTHROPIC_API_KEY=
+# Environment=OPENAI_API_KEY=
+Environment=LITELLM_TIMEOUT=60
+Environment=LITELLM_NUM_RETRIES=2
+
+# --- gunicorn worker sizing ---
+Environment=GUNICORN_WORKERS=4
+Environment=GUNICORN_THREADS=8
+Environment=GUNICORN_TIMEOUT=300
+
+ExecStart=$GUNICORN_BIN -c $SCRIPT_DIR/AI/gunicorn_conf.py app:app
+
 Restart=on-failure
 RestartSec=5
+TimeoutStopSec=30
+
+# --- hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
 
 [Install]
 WantedBy=multi-user.target
 UNIT
     systemctl daemon-reload
     systemctl enable --now dba-chatbot >>"$LOG_FILE" 2>&1
-    ok "Chatbot at http://$NEW_HOST:$FLASK_PORT"
+    ok "Chatbot at http://$NEW_HOST:$FLASK_PORT (4 workers × 8 threads = 32 concurrent users)"
 fi
 
 # --- Phase 9: ticktator ------------------------------------------------------

@@ -12,10 +12,13 @@ InfluxDB queries are flavor-agnostic — CheckMK feeds the same database.
 """
 
 import configparser
+import logging
 import os
+import time
 import traceback
+import uuid
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, g, jsonify, render_template, request
 
 import settings
 from llm import client as llm_client
@@ -25,7 +28,60 @@ from handlers.oracle import sql_handler as oracle_sql, ops_handler as oracle_ops
 from handlers.sql_guard import UnsafeSqlError
 
 
+# ---------------------------------------------------------------------------
+# Structured logging
+#
+# When running under gunicorn the worker captures stdout/stderr and writes
+# to the configured access/error logs. We add request-correlation ids so
+# multiple concurrent users can be traced.
+# ---------------------------------------------------------------------------
+
+_log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, _log_level, logging.INFO),
+    format="%(asctime)s %(levelname)-7s %(name)s [%(reqid)s] %(message)s",
+)
+
+class _ReqIdFilter(logging.Filter):
+    def filter(self, record):                       # noqa: D401
+        record.reqid = getattr(g, "reqid", "-") if _in_request_context() else "-"
+        return True
+
+def _in_request_context():
+    try:
+        from flask import has_request_context
+        return has_request_context()
+    except Exception:                                # pragma: no cover
+        return False
+
+for h in logging.getLogger().handlers:
+    h.addFilter(_ReqIdFilter())
+
+log = logging.getLogger("aacu.app")
+log.info("starting unified DBA chatbot, model=%s fallbacks=%s",
+         settings.LITELLM_MODEL, settings.LITELLM_FALLBACKS)
+
+
 app = Flask(__name__)
+
+
+@app.before_request
+def _attach_request_id():
+    g.reqid = (request.headers.get("X-Request-ID")
+               or uuid.uuid4().hex[:12])
+    g.started = time.monotonic()
+
+
+@app.after_request
+def _log_response(resp):
+    try:
+        dur_ms = int((time.monotonic() - g.started) * 1000)
+        log.info("%s %s -> %d in %dms", request.method, request.path,
+                 resp.status_code, dur_ms)
+        resp.headers["X-Request-ID"] = g.reqid
+    except Exception:                                # never fail in after_request
+        pass
+    return resp
 
 
 # ---------------------------------------------------------------------------

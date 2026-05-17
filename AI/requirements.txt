@@ -2,12 +2,11 @@ Flask>=3.0
 requests>=2.31
 influxdb>=5.3
 PyYAML>=6.0
-ansible>=2.14
-ansible-core>=2.14
-ansible-runner>=2.0
-ansible-lint>=6.0
-ansible-galaxy>=2.0
-ansible-collections>=2.0
-ansible-roles>=2.0
-ansible-playbooks>=2.0
-ansible-tower-cli>=3.0
+
+# LLM gateway — speaks Ollama, OpenAI, Anthropic, Azure, Bedrock, Gemini, etc.
+# with one API. Model selection is driven by env / setup.yaml.
+litellm>=1.50
+
+# Production WSGI server — gthread workers keep blocking Ansible calls
+# off the request thread.
+gunicorn>=22.0

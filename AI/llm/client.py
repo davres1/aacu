@@ -121,92 +121,94 @@ class LLMError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# Provider implementations
+# LiteLLM-backed completion call.
+#
+# LiteLLM speaks ollama / openai / anthropic / azure / bedrock / gemini /
+# vllm / etc. behind one .completion() API. Provider routing is driven by
+# the model prefix (e.g. "anthropic/claude-…", "openai/gpt-…", "ollama/…").
+#
+# We push API keys / base URLs into the env vars LiteLLM expects, then call
+# completion_with_fallbacks so a stalled Ollama silently falls back to an
+# OpenAI/Anthropic key if one is configured.
 # ---------------------------------------------------------------------------
 
-def _ollama_chat(messages, max_tokens=None, temperature=None):
-    url = f"{settings.OLLAMA_BASE_URL.rstrip('/')}/api/chat"
-    payload = {
-        "model": settings.OLLAMA_MODEL,
-        "messages": messages,
-        "stream": False,
-        "options": {
-            "temperature": settings.LLM_TEMPERATURE if temperature is None else temperature,
-            "num_predict": settings.LLM_MAX_TOKENS if max_tokens is None else max_tokens,
-        },
-    }
+import logging
+import os
+import time
+
+try:
+    import litellm
+    from litellm import completion_with_fallbacks
+    _LITELLM_OK = True
+except ImportError:                # pragma: no cover - install gap
+    _LITELLM_OK = False
+
+_log = logging.getLogger("aacu.llm")
+
+
+def _prime_litellm_env_once():
+    """Mirror settings → env vars that LiteLLM picks up natively."""
+    if getattr(_prime_litellm_env_once, "_done", False):
+        return
+    if settings.OPENAI_API_KEY:
+        os.environ.setdefault("OPENAI_API_KEY", settings.OPENAI_API_KEY)
+    if settings.OPENAI_BASE_URL and settings.OPENAI_BASE_URL != "https://api.openai.com/v1":
+        os.environ.setdefault("OPENAI_API_BASE", settings.OPENAI_BASE_URL)
+    if settings.ANTHROPIC_API_KEY:
+        os.environ.setdefault("ANTHROPIC_API_KEY", settings.ANTHROPIC_API_KEY)
+    if settings.OLLAMA_BASE_URL:
+        os.environ.setdefault("OLLAMA_API_BASE", settings.OLLAMA_BASE_URL)
+
+    if _LITELLM_OK:
+        litellm.drop_params = True                # silently drop unsupported params per-provider
+        litellm.suppress_debug_info = not settings.LITELLM_DEBUG
+        litellm.set_verbose = settings.LITELLM_DEBUG
+        # Tighten the global timeout/retry defaults too.
+        litellm.request_timeout = settings.LITELLM_TIMEOUT
+
+    _prime_litellm_env_once._done = True
+
+
+def chat(messages, max_tokens=None, temperature=None):
+    """Send a chat completion through LiteLLM. Returns the assistant text.
+
+    Raises LLMError on connection / authentication / shape failures.
+    """
+    if not _LITELLM_OK:
+        raise LLMError("litellm is not installed (`pip install litellm`)")
+
+    _prime_litellm_env_once()
+
+    model = settings.LITELLM_MODEL
+    fallbacks = settings.LITELLM_FALLBACKS
+    params = dict(
+        messages=messages,
+        temperature=settings.LLM_TEMPERATURE if temperature is None else temperature,
+        max_tokens=settings.LLM_MAX_TOKENS if max_tokens is None else max_tokens,
+        timeout=settings.LITELLM_TIMEOUT,
+        num_retries=settings.LITELLM_NUM_RETRIES,
+    )
+
+    started = time.monotonic()
     try:
-        resp = requests.post(url, json=payload, timeout=settings.OLLAMA_TIMEOUT)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        raise LLMError(f"Ollama request failed: {exc}") from exc
-
-    data = resp.json()
-    return data.get("message", {}).get("content", "").strip()
-
-
-def _openai_chat(messages, max_tokens=None, temperature=None):
-    if not settings.OPENAI_API_KEY:
-        raise LLMError("OPENAI_API_KEY not set")
-    url = f"{settings.OPENAI_BASE_URL.rstrip('/')}/chat/completions"
-    payload = {
-        "model": settings.OPENAI_MODEL,
-        "messages": messages,
-        "temperature": settings.LLM_TEMPERATURE if temperature is None else temperature,
-        "max_tokens": settings.LLM_MAX_TOKENS if max_tokens is None else max_tokens,
-    }
-    headers = {"Authorization": f"Bearer {settings.OPENAI_API_KEY}"}
-    try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=settings.OLLAMA_TIMEOUT)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        raise LLMError(f"OpenAI request failed: {exc}") from exc
-    return resp.json()["choices"][0]["message"]["content"].strip()
-
-
-def _anthropic_chat(messages, max_tokens=None, temperature=None):
-    if not settings.ANTHROPIC_API_KEY:
-        raise LLMError("ANTHROPIC_API_KEY not set")
-    system = ""
-    converted = []
-    for m in messages:
-        if m["role"] == "system":
-            system = m["content"]
+        # completion_with_fallbacks tries `model` first, then each entry in
+        # `fallbacks` on connection error / timeout / 5xx / rate limit.
+        if fallbacks:
+            resp = completion_with_fallbacks(model=model, fallbacks=fallbacks, **params)
         else:
-            converted.append({"role": m["role"], "content": m["content"]})
-    url = "https://api.anthropic.com/v1/messages"
-    headers = {
-        "x-api-key": settings.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
-    payload = {
-        "model": settings.ANTHROPIC_MODEL,
-        "system": system,
-        "messages": converted,
-        "max_tokens": settings.LLM_MAX_TOKENS if max_tokens is None else max_tokens,
-        "temperature": settings.LLM_TEMPERATURE if temperature is None else temperature,
-    }
+            resp = litellm.completion(model=model, **params)
+    except Exception as exc:                       # noqa: BLE001
+        _log.warning("LLM call failed model=%s fallbacks=%s err=%s",
+                     model, fallbacks, exc)
+        raise LLMError(f"LLM request failed (model={model}): {exc}") from exc
+    finally:
+        _log.info("LLM call model=%s duration_ms=%d",
+                  model, int((time.monotonic() - started) * 1000))
+
     try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=settings.OLLAMA_TIMEOUT)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        raise LLMError(f"Anthropic request failed: {exc}") from exc
-    return resp.json()["content"][0]["text"].strip()
-
-
-_DISPATCH = {
-    "ollama":    _ollama_chat,
-    "openai":    _openai_chat,
-    "anthropic": _anthropic_chat,
-}
-
-
-def chat(messages, **kwargs):
-    fn = _DISPATCH.get(settings.LLM_PROVIDER)
-    if fn is None:
-        raise LLMError(f"Unknown LLM_PROVIDER: {settings.LLM_PROVIDER}")
-    return fn(messages, **kwargs)
+        return (resp.choices[0].message.content or "").strip()
+    except (AttributeError, IndexError, KeyError) as exc:
+        raise LLMError(f"Unexpected LLM response shape: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------

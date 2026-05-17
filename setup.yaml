@@ -175,13 +175,29 @@ chatbot:
     port:  5000
     debug: false
   llm:
-    provider:     ollama          # ollama | openai | anthropic
+    # LiteLLM routes by model prefix:
+    #   "anthropic/claude-sonnet-4-6"  → ANTHROPIC_API_KEY
+    #   "openai/gpt-4o-mini"           → OPENAI_API_KEY
+    #   "ollama/llama3.1:8b"           → local Ollama (slow on CPU)
+    #   "azure/<deployment>"           → AZURE_API_KEY + AZURE_API_BASE
+    #   "bedrock/anthropic.claude-…"   → AWS Bedrock
+    # Leave `model:` empty to auto-select based on which API keys are set
+    # (anthropic > openai > ollama).
+    model:        ''
+    fallbacks:    []              # comma-separated model strings, or list here
+    timeout:      60              # per-call timeout, seconds
+    num_retries:  2
     temperature:  0.1
     max_tokens:   1024
+    debug:        false
+
+    # Legacy knobs — used by settings.py to build the auto-selection chain
+    # and the fallback list when the values above are blank.
+    provider:     ollama          # informational only since LiteLLM took over
     ollama:
       base_url: http://localhost:11434
       model:    llama3.1:8b
-      timeout:  120
+      timeout:  60
     openai:
       api_key:  ''
       base_url: https://api.openai.com/v1

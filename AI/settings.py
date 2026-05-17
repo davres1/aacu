@@ -56,12 +56,23 @@ def _env(name, default):
 
 
 # ---------------------------------------------------------------------------
-# LLM (shared across flavors)
+# LLM — single LiteLLM call routes to the right provider by model prefix.
+#
+# Default selection: highest-quality reachable provider based on which API
+# keys are set. Override with LITELLM_MODEL=<provider/model> at any time.
+#
+#   ollama/llama3.1:8b       → http://localhost:11434
+#   openai/gpt-4o-mini       → OPENAI_API_KEY
+#   anthropic/claude-…       → ANTHROPIC_API_KEY
+#   azure/<deployment>       → AZURE_API_KEY + AZURE_API_BASE
+#   bedrock/anthropic.claude-…
 # ---------------------------------------------------------------------------
 LLM_PROVIDER    = _env("LLM_PROVIDER",     _path("chatbot", "llm", "provider",     default="ollama"))
+
+# Legacy keys retained for the auto-selection fallback below.
 OLLAMA_BASE_URL = _env("OLLAMA_BASE_URL",  _path("chatbot", "llm", "ollama", "base_url", default="http://localhost:11434"))
 OLLAMA_MODEL    = _env("OLLAMA_MODEL",     _path("chatbot", "llm", "ollama", "model",    default="llama3.1:8b"))
-OLLAMA_TIMEOUT  = int(_env("OLLAMA_TIMEOUT", _path("chatbot", "llm", "ollama", "timeout", default=120)))
+OLLAMA_TIMEOUT  = int(_env("OLLAMA_TIMEOUT", _path("chatbot", "llm", "ollama", "timeout", default=60)))
 OPENAI_API_KEY  = _env("OPENAI_API_KEY",   _path("chatbot", "llm", "openai", "api_key",  default=""))
 OPENAI_BASE_URL = _env("OPENAI_BASE_URL",  _path("chatbot", "llm", "openai", "base_url", default="https://api.openai.com/v1"))
 OPENAI_MODEL    = _env("OPENAI_MODEL",     _path("chatbot", "llm", "openai", "model",    default="gpt-4o-mini"))
@@ -69,6 +80,52 @@ ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY", _path("chatbot", "llm", "anthropic
 ANTHROPIC_MODEL   = _env("ANTHROPIC_MODEL",   _path("chatbot", "llm", "anthropic", "model",   default="claude-sonnet-4-6"))
 LLM_TEMPERATURE = float(_env("LLM_TEMPERATURE", _path("chatbot", "llm", "temperature", default=0.1)))
 LLM_MAX_TOKENS  = int(_env("LLM_MAX_TOKENS",   _path("chatbot", "llm", "max_tokens",  default=1024)))
+
+
+def _auto_litellm_model():
+    """Pick a model string for LiteLLM based on which API keys are present."""
+    if ANTHROPIC_API_KEY:
+        return f"anthropic/{ANTHROPIC_MODEL}"
+    if OPENAI_API_KEY:
+        # 'openai/' prefix is optional but keeps the format consistent.
+        return f"openai/{OPENAI_MODEL}"
+    return f"ollama/{OLLAMA_MODEL}"
+
+
+# Active model — explicit override beats auto-detection.
+LITELLM_MODEL = _env("LITELLM_MODEL", _path("chatbot", "llm", "model", default="")) or _auto_litellm_model()
+
+# Fallback chain: comma-separated model strings tried in order if the primary
+# 5xx/timeouts. The auto chain is "best of what's reachable", reversed.
+def _default_fallback_chain():
+    primary = LITELLM_MODEL
+    chain = []
+    candidates = []
+    if ANTHROPIC_API_KEY:
+        candidates.append(f"anthropic/{ANTHROPIC_MODEL}")
+    if OPENAI_API_KEY:
+        candidates.append(f"openai/{OPENAI_MODEL}")
+    candidates.append(f"ollama/{OLLAMA_MODEL}")
+    for m in candidates:
+        if m != primary and m not in chain:
+            chain.append(m)
+    return chain
+
+
+_fb_env = _env("LITELLM_FALLBACKS", "")
+LITELLM_FALLBACKS = (
+    [m.strip() for m in _fb_env.split(",") if m.strip()]
+    if _fb_env
+    else _default_fallback_chain()
+)
+
+# Network behaviour — per-call timeout and retry count. Ollama is slow on CPU;
+# 60s is a sensible upper bound. OpenAI / Anthropic usually finish in a few s.
+LITELLM_TIMEOUT     = int(_env("LITELLM_TIMEOUT",     _path("chatbot", "llm", "timeout",       default=60)))
+LITELLM_NUM_RETRIES = int(_env("LITELLM_NUM_RETRIES", _path("chatbot", "llm", "num_retries",   default=2)))
+
+# Optional: silence LiteLLM verbose logging in production.
+LITELLM_DEBUG = (_env("LITELLM_DEBUG", str(_path("chatbot", "llm", "debug", default=False))).lower() == "true")
 
 
 # ---------------------------------------------------------------------------
