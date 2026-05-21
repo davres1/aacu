@@ -20,6 +20,10 @@
 #   - ticktator      (CheckMK -> ServiceNow notification handler)
 #   - firewalld      (opens the ports listed in setup.yaml)
 #
+# After each phase a QA check runs. On failure or QA-failure you're prompted
+# to retry / skip / continue-anyway / abort. Set BOOTSTRAP_AUTO=1 for a
+# non-interactive run (auto-continue on success, auto-abort on failure).
+#
 # Skip phases with env vars (each accepts 1/true to skip):
 #   SKIP_GITHUB, SKIP_INFLUXDB, SKIP_CHECKMK, SKIP_NAGFLUX, SKIP_RUNDECK,
 #   SKIP_OLLAMA, SKIP_CHATBOT, SKIP_TICKTATOR, SKIP_FIREWALL
@@ -47,6 +51,122 @@ phase() { printf '\n%s========== %s ==========%s\n' "$c_blue" "$*" "$c_off" | te
 skip() {
     local v="${!1:-0}"
     case "${v,,}" in 1|true|yes) return 0 ;; *) return 1 ;; esac
+}
+
+# --- interactive flow: retry / skip / continue / abort -----------------------
+#
+# Sentinel return codes phase functions can use:
+#   99  = precondition not met; treat as skipped (no prompt)
+#
+# Set BOOTSTRAP_AUTO=1 for non-interactive runs (auto-continue / auto-abort).
+prompt_action() {
+    local name="$1" status="$2"   # status: failed | qa_failed | ok
+    local msg default
+
+    case "$status" in
+        failed)
+            msg="${c_red}[$name] FAILED${c_off} — review $LOG_FILE
+  [r]etry / [s]kip / [a]bort"
+            default="r"
+            ;;
+        qa_failed)
+            msg="${c_yellow}[$name] QA CHECK FAILED${c_off} — review $LOG_FILE
+  [r]etry / [s]kip / [c]ontinue anyway / [a]bort"
+            default="r"
+            ;;
+        ok)
+            msg="${c_green}[$name] OK${c_off}
+  [c]ontinue / [r]etry / [s]kip-next / [a]bort"
+            default="c"
+            ;;
+    esac
+
+    # Non-interactive (BOOTSTRAP_AUTO=1 or no controlling tty): auto-decide.
+    if [[ "${BOOTSTRAP_AUTO:-0}" =~ ^(1|true|yes)$ ]] || [[ ! -r /dev/tty ]]; then
+        case "$status" in
+            ok)        echo continue ;;
+            qa_failed) echo continue ;;
+            failed)    echo abort ;;
+        esac
+        return
+    fi
+
+    local ans
+    while true; do
+        printf '\n%s\n  Choice [%s]: ' "$msg" "$default" >/dev/tty
+        if ! IFS= read -r ans </dev/tty; then
+            # tty went away mid-run; behave like BOOTSTRAP_AUTO.
+            case "$status" in
+                ok|qa_failed) echo continue ;;
+                failed)       echo abort ;;
+            esac
+            return
+        fi
+        ans="${ans:-$default}"
+        case "${ans,,}" in
+            r|retry)        echo retry;    return ;;
+            s|skip)         echo skip;     return ;;
+            c|continue)     echo continue; return ;;
+            a|abort)        echo abort;    return ;;
+            *) printf '%s[bootstrap]%s pick r / s / c / a\n' "$c_yellow" "$c_off" >/dev/tty ;;
+        esac
+    done
+}
+
+# run_phase <display name> <skip-env-var-or-empty> <run-fn> [qa-fn]
+#
+# Honors the SKIP_* env var, runs the phase in a subshell so a failure inside
+# doesn't kill the script, runs the (optional) QA check, then prompts the user.
+run_phase() {
+    local name="$1" skip_var="$2" run_fn="$3" qa_fn="${4:-}"
+
+    if [[ -n "$skip_var" ]] && skip "$skip_var"; then
+        warn "$name — SKIPPED ($skip_var=1)"
+        return 0
+    fi
+
+    local attempt=0
+    while true; do
+        attempt=$((attempt + 1))
+        if [[ $attempt -eq 1 ]]; then
+            phase "$name"
+        else
+            phase "$name (retry #$((attempt - 1)))"
+        fi
+
+        local rc=0
+        ( set -e; "$run_fn" ) || rc=$?
+
+        # Phase-level precondition skip — no prompt, just move on.
+        if [[ $rc -eq 99 ]]; then
+            return 0
+        fi
+
+        local action
+        if [[ $rc -ne 0 ]]; then
+            warn "$name failed (rc=$rc)"
+            action="$(prompt_action "$name" failed)"
+        elif [[ -n "$qa_fn" ]] && declare -F "$qa_fn" >/dev/null 2>&1; then
+            local qrc=0
+            ( set -e; "$qa_fn" ) || qrc=$?
+            if [[ $qrc -ne 0 ]]; then
+                warn "$name — QA check failed (rc=$qrc)"
+                action="$(prompt_action "$name" qa_failed)"
+            else
+                ok "$name — QA passed"
+                action="$(prompt_action "$name" ok)"
+            fi
+        else
+            action="$(prompt_action "$name" ok)"
+        fi
+
+        case "$action" in
+            retry)    log "Retrying $name…"; continue ;;
+            skip)     warn "$name — SKIPPED by user"; return 0 ;;
+            continue) return 0 ;;
+            abort)    die "aborted by user at $name" ;;
+        esac
+    done
 }
 
 # --- pre-flight ---------------------------------------------------------------
@@ -88,16 +208,10 @@ NEW_HOST="$(get_hostname_from_hosts)"
 [[ -n $NEW_HOST ]] || die "could not derive a hostname from /etc/hosts"
 log "Setting hostname to $NEW_HOST"
 hostnamectl set-hostname "$NEW_HOST"
-
-# --- Phase 1: base packages ---------------------------------------------------
-phase "Phase 1: base packages"
-dnf -y install epel-release >>"$LOG_FILE" 2>&1 || true
-dnf -y install python3 python3-pip git curl wget firewalld rsync tar openssl \
-               ca-certificates jq >>"$LOG_FILE" 2>&1
-python3 -m pip install --quiet --upgrade pip pyyaml >>"$LOG_FILE" 2>&1
-ok "Python $(python3 -V | awk '{print $2}'), pip ready"
+[[ "$(hostname)" == "$NEW_HOST" ]] || warn "hostname mismatch — kernel still reports '$(hostname)'"
 
 # --- Phase 2: load setup.yaml into shell variables ----------------------------
+# (kept inline because it has to export many vars to the parent shell)
 phase "Phase 2: load setup.yaml"
 SETUP_ENV="$(mktemp)"
 python3 - "$SETUP_YAML" <<'PY' > "$SETUP_ENV"
@@ -148,29 +262,61 @@ source "$SETUP_ENV"
 rm -f "$SETUP_ENV"
 log "setup.yaml loaded (CheckMK site=$CHECKMK_SITE, Influx db=$INFLUX_DB, model=$OLLAMA_MODEL)"
 
-# --- Phase 3: Ansible ---------------------------------------------------------
-phase "Phase 3: Ansible toolkit + Windows collections"
-# Match the chatbot's AI/requirements.txt so anyone pip-installing from there
-# gets the same set we pre-install systemwide here. ansible (meta) pulls in
-# ansible-core; the rest are operator-friendly extras.
-python3 -m pip install --quiet --upgrade \
-    "ansible>=2.14" \
-    "ansible-core>=2.14" \
-    "ansible-runner>=2.0" \
-    "ansible-lint>=6.0" \
-    "ansible-tower-cli>=3.0" \
-    >>"$LOG_FILE" 2>&1 || warn "one or more ansible pip installs failed — review $LOG_FILE"
+# =============================================================================
+# Phase functions (run_fn + qa_fn pairs) — registered with run_phase below.
+# =============================================================================
 
-# Windows collections come from Galaxy, not PyPI.
-ansible-galaxy collection install ansible.windows community.windows --upgrade >>"$LOG_FILE" 2>&1 || \
-    warn "ansible-galaxy collection install had warnings — review $LOG_FILE"
-ok "Ansible $(ansible --version | head -1 | awk '{print $NF}' | tr -d ']')"
+# --- Phase 1: base packages --------------------------------------------------
+phase1_base_packages() {
+    dnf -y install epel-release >>"$LOG_FILE" 2>&1 || true
+    dnf -y install python3 python3-pip git curl wget firewalld rsync tar openssl \
+                   ca-certificates jq >>"$LOG_FILE" 2>&1
+    python3 -m pip install --quiet --upgrade pip pyyaml >>"$LOG_FILE" 2>&1
+    ok "Python $(python3 -V | awk '{print $2}'), pip ready"
+}
+qa_phase1_base_packages() {
+    local missing=()
+    for cmd in python3 pip3 git curl wget firewall-cmd rsync tar openssl jq; do
+        command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+    done
+    if (( ${#missing[@]} )); then
+        warn "missing commands: ${missing[*]}"
+        return 1
+    fi
+    python3 -c 'import yaml' >/dev/null 2>&1 || { warn "python yaml module missing"; return 1; }
+    log "QA: base packages present; pyyaml importable"
+}
+
+# --- Phase 3: Ansible --------------------------------------------------------
+phase3_ansible() {
+    # Match AI/requirements.txt so pip-installs from there get the same set we
+    # pre-install systemwide here. ansible (meta) pulls in ansible-core.
+    python3 -m pip install --quiet --upgrade \
+        "ansible>=2.14" \
+        "ansible-core>=2.14" \
+        "ansible-runner>=2.0" \
+        "ansible-lint>=6.0" \
+        "ansible-tower-cli>=3.0" \
+        >>"$LOG_FILE" 2>&1 || warn "one or more ansible pip installs failed — review $LOG_FILE"
+
+    # Windows collections come from Galaxy, not PyPI.
+    ansible-galaxy collection install ansible.windows community.windows --upgrade >>"$LOG_FILE" 2>&1 || \
+        warn "ansible-galaxy collection install had warnings — review $LOG_FILE"
+    ok "Ansible $(ansible --version | head -1 | awk '{print $NF}' | tr -d ']')"
+}
+qa_phase3_ansible() {
+    command -v ansible >/dev/null 2>&1 || { warn "ansible binary missing"; return 1; }
+    command -v ansible-galaxy >/dev/null 2>&1 || { warn "ansible-galaxy missing"; return 1; }
+    ansible --version >/dev/null 2>&1 || { warn "ansible --version failed"; return 1; }
+    local installed
+    installed="$(ansible-galaxy collection list 2>/dev/null || true)"
+    grep -q '^ansible\.windows ' <<<"$installed"     || { warn "ansible.windows collection missing"; return 1; }
+    grep -q '^community\.windows ' <<<"$installed"   || { warn "community.windows collection missing"; return 1; }
+    log "QA: ansible + windows collections present"
+}
 
 # --- Phase 3b: GitHub CLI ----------------------------------------------------
-if skip SKIP_GITHUB; then
-    warn "Phase 3b: GitHub CLI — SKIPPED"
-else
-    phase "Phase 3b: GitHub CLI (gh)"
+phase3b_github_cli() {
     if ! command -v gh >/dev/null 2>&1; then
         # The official RHEL repo for the GitHub CLI.
         cat >/etc/yum.repos.d/gh-cli.repo <<'REPO'
@@ -191,8 +337,7 @@ REPO
     if command -v gh >/dev/null 2>&1; then
         if [[ -n "$GH_AUTH_TOKEN" && "$GH_AUTH_TOKEN" != "CHANGE_ME" ]]; then
             # `gh auth login --with-token` reads the token from stdin and stores
-            # it in the running user's gh config (~/.config/gh/). Suppress the
-            # token from the log file.
+            # it in the running user's gh config. Suppress the token from the log.
             if printf '%s' "$GH_AUTH_TOKEN" | gh auth login --with-token >/dev/null 2>&1; then
                 ok "gh $(gh --version | awk 'NR==1 {print $3}') installed and authenticated"
             else
@@ -202,13 +347,20 @@ REPO
             ok "gh $(gh --version | awk 'NR==1 {print $3}') installed (no token supplied — run 'gh auth login' to sign in)"
         fi
     fi
-fi
+}
+qa_phase3b_github_cli() {
+    command -v gh >/dev/null 2>&1 || { warn "gh binary missing"; return 1; }
+    gh --version >/dev/null 2>&1 || { warn "gh --version failed"; return 1; }
+    # Auth is optional; only verify if a token was supplied.
+    local tok="${GH_TOKEN:-$GITHUB_TOKEN}"
+    if [[ -n "$tok" && "$tok" != "CHANGE_ME" ]]; then
+        gh auth status >/dev/null 2>&1 || { warn "gh auth status reports not logged in"; return 1; }
+    fi
+    log "QA: gh CLI ready"
+}
 
 # --- Phase 4: InfluxDB -------------------------------------------------------
-if skip SKIP_INFLUXDB; then
-    warn "Phase 4: InfluxDB — SKIPPED"
-else
-    phase "Phase 4: InfluxDB ${INFLUXDB_VERSION}"
+phase4_influxdb() {
     cat >/etc/yum.repos.d/influxdata.repo <<'REPO'
 [influxdata]
 name = InfluxData Repository - Stable
@@ -231,13 +383,20 @@ REPO
         influx -execute "GRANT ALL ON \"$INFLUX_DB\" TO \"$INFLUX_USER\"" >>"$LOG_FILE" 2>&1 || true
     fi
     ok "InfluxDB on http://localhost:8086, db=$INFLUX_DB"
-fi
+}
+qa_phase4_influxdb() {
+    systemctl is-active --quiet influxdb || { warn "influxdb service not active"; return 1; }
+    curl -fs --max-time 5 http://localhost:8086/ping >/dev/null 2>&1 || \
+        { warn "influxdb /ping failed"; return 1; }
+    if ! influx -execute "SHOW DATABASES" 2>/dev/null | grep -qx "$INFLUX_DB"; then
+        warn "database $INFLUX_DB not found in SHOW DATABASES"
+        return 1
+    fi
+    log "QA: influxdb up, db=$INFLUX_DB present"
+}
 
 # --- Phase 5: CheckMK Raw ----------------------------------------------------
-if skip SKIP_CHECKMK; then
-    warn "Phase 5: CheckMK — SKIPPED"
-else
-    phase "Phase 5: CheckMK Raw (site=$CHECKMK_SITE)"
+phase5_checkmk() {
     if ! command -v omd >/dev/null 2>&1; then
         # Look for an RPM in files/ first; the user can drop any supported version there.
         cmk_rpm="$(ls -1 "$SCRIPT_DIR"/files/check-mk-raw-*.rpm 2>/dev/null | sort -V | tail -1)"
@@ -257,15 +416,25 @@ else
     fi
     omd start "$CHECKMK_SITE" >>"$LOG_FILE" 2>&1 || true
     ok "CheckMK GUI: http://$NEW_HOST/${CHECKMK_SITE}/ (user cmkadmin)"
-fi
+}
+qa_phase5_checkmk() {
+    command -v omd >/dev/null 2>&1 || { warn "omd binary missing"; return 1; }
+    omd sites 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$CHECKMK_SITE" || \
+        { warn "site $CHECKMK_SITE not registered"; return 1; }
+    # omd status returns non-zero if anything is stopped.
+    if ! omd status "$CHECKMK_SITE" >>"$LOG_FILE" 2>&1; then
+        warn "omd status reports stopped/partial components in site $CHECKMK_SITE"
+        return 1
+    fi
+    log "QA: checkmk site $CHECKMK_SITE running"
+}
 
 # --- Phase 5b: nagflux (CheckMK Raw -> InfluxDB) -----------------------------
-if skip SKIP_NAGFLUX; then
-    warn "Phase 5b: nagflux — SKIPPED"
-elif ! command -v omd >/dev/null 2>&1; then
-    warn "Phase 5b: nagflux — needs CheckMK/OMD, but it's not installed; SKIPPED"
-else
-    phase "Phase 5b: nagflux ${NAGFLUX_VERSION}"
+phase5b_nagflux() {
+    if ! command -v omd >/dev/null 2>&1; then
+        warn "nagflux needs CheckMK/OMD, but it's not installed; skipping"
+        return 99
+    fi
     install -d /opt/nagflux /etc/nagflux /var/lib/nagflux
 
     if [[ ! -x /opt/nagflux/nagflux ]]; then
@@ -378,13 +547,18 @@ UNIT
     systemctl daemon-reload
     systemctl enable --now nagflux >>"$LOG_FILE" 2>&1
     ok "nagflux running, feeding CheckMK perfdata into InfluxDB db=$INFLUX_DB"
-fi
+}
+qa_phase5b_nagflux() {
+    [[ -x /opt/nagflux/nagflux ]] || { warn "/opt/nagflux/nagflux missing/not executable"; return 1; }
+    [[ -f /etc/nagflux/config.gcfg ]] || { warn "/etc/nagflux/config.gcfg missing"; return 1; }
+    systemctl is-active --quiet nagflux || { warn "nagflux service not active"; return 1; }
+    [[ -f "/omd/sites/$CHECKMK_SITE/etc/check_mk/conf.d/wato/nagflux_perfdata.mk" ]] || \
+        { warn "checkmk perfdata wiring file missing"; return 1; }
+    log "QA: nagflux active, perfdata routing in place"
+}
 
 # --- Phase 6: Rundeck --------------------------------------------------------
-if skip SKIP_RUNDECK; then
-    warn "Phase 6: Rundeck — SKIPPED"
-else
-    phase "Phase 6: Rundeck"
+phase6_rundeck() {
     dnf -y install "$JAVA_PKG" >>"$LOG_FILE" 2>&1
     if ! rpm -q rundeck >/dev/null 2>&1; then
         curl -fsSL https://packagecloud.io/install/repositories/pagerduty/rundeck/script.rpm.sh | bash >>"$LOG_FILE" 2>&1
@@ -399,13 +573,23 @@ else
     fi
     systemctl enable --now rundeckd >>"$LOG_FILE" 2>&1
     ok "Rundeck at $RUNDECK_URL (user admin)"
-fi
+}
+qa_phase6_rundeck() {
+    rpm -q rundeck >/dev/null 2>&1 || { warn "rundeck rpm not installed"; return 1; }
+    systemctl is-active --quiet rundeckd || { warn "rundeckd service not active"; return 1; }
+    # Rundeck startup is slow; allow up to ~60s for the listener to come up.
+    local i
+    for i in {1..30}; do
+        curl -fs --max-time 3 "${RUNDECK_URL%/}/menu/home" >/dev/null 2>&1 && break
+        sleep 2
+    done
+    curl -fs --max-time 3 "${RUNDECK_URL%/}/menu/home" >/dev/null 2>&1 || \
+        { warn "rundeck HTTP did not respond at $RUNDECK_URL"; return 1; }
+    log "QA: rundeck responding at $RUNDECK_URL"
+}
 
 # --- Phase 7: Ollama ---------------------------------------------------------
-if skip SKIP_OLLAMA; then
-    warn "Phase 7: Ollama — SKIPPED"
-else
-    phase "Phase 7: Ollama + model $OLLAMA_MODEL"
+phase7_ollama() {
     if ! command -v ollama >/dev/null 2>&1; then
         curl -fsSL https://ollama.com/install.sh | sh >>"$LOG_FILE" 2>&1
     fi
@@ -415,15 +599,24 @@ else
         warn "ollama pull $OLLAMA_MODEL did not finish in 30 min — retry manually"
     fi
     ok "Ollama listening on $OLLAMA_BASE"
-fi
+}
+qa_phase7_ollama() {
+    command -v ollama >/dev/null 2>&1 || { warn "ollama binary missing"; return 1; }
+    curl -fs --max-time 5 "${OLLAMA_BASE%/}/api/tags" >/dev/null 2>&1 || \
+        { warn "ollama API at $OLLAMA_BASE not responding"; return 1; }
+    if ! ollama list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$OLLAMA_MODEL"; then
+        warn "model $OLLAMA_MODEL not present in 'ollama list'"
+        return 1
+    fi
+    log "QA: ollama up, model $OLLAMA_MODEL pulled"
+}
 
 # --- Phase 8: Chatbot service (gunicorn + LiteLLM) ---------------------------
-if skip SKIP_CHATBOT; then
-    warn "Phase 8: Chatbot — SKIPPED"
-elif [[ ! -d "$SCRIPT_DIR/AI" ]]; then
-    warn "Phase 8: $SCRIPT_DIR/AI not found — SKIPPED"
-else
-    phase "Phase 8: DBA chatbot (gunicorn + LiteLLM)"
+phase8_chatbot() {
+    if [[ ! -d "$SCRIPT_DIR/AI" ]]; then
+        warn "$SCRIPT_DIR/AI not found — skipping chatbot phase"
+        return 99
+    fi
     python3 -m pip install --quiet -r "$SCRIPT_DIR/AI/requirements.txt" >>"$LOG_FILE" 2>&1
 
     # Worker sizing — tune through env in the unit (GUNICORN_WORKERS / _THREADS).
@@ -479,15 +672,27 @@ UNIT
     systemctl daemon-reload
     systemctl enable --now dba-chatbot >>"$LOG_FILE" 2>&1
     ok "Chatbot at http://$NEW_HOST:$FLASK_PORT (4 workers × 8 threads = 32 concurrent users)"
-fi
+}
+qa_phase8_chatbot() {
+    [[ -f /etc/systemd/system/dba-chatbot.service ]] || { warn "dba-chatbot unit missing"; return 1; }
+    systemctl is-active --quiet dba-chatbot || { warn "dba-chatbot service not active"; return 1; }
+    # Give gunicorn a few seconds to bind.
+    local i
+    for i in {1..10}; do
+        curl -fs --max-time 3 "http://127.0.0.1:${FLASK_PORT}/" >/dev/null 2>&1 && break
+        sleep 1
+    done
+    curl -fs --max-time 3 "http://127.0.0.1:${FLASK_PORT}/" >/dev/null 2>&1 || \
+        { warn "chatbot HTTP not responding on :$FLASK_PORT"; return 1; }
+    log "QA: chatbot service active on :$FLASK_PORT"
+}
 
 # --- Phase 9: ticktator ------------------------------------------------------
-if skip SKIP_TICKTATOR; then
-    warn "Phase 9: ticktator — SKIPPED"
-elif [[ ! -f "$SCRIPT_DIR/ticktator.py" ]]; then
-    warn "Phase 9: ticktator.py not found — SKIPPED"
-else
-    phase "Phase 9: ticktator notification handler"
+phase9_ticktator() {
+    if [[ ! -f "$SCRIPT_DIR/ticktator.py" ]]; then
+        warn "ticktator.py not found in $SCRIPT_DIR — skipping"
+        return 99
+    fi
     SITE_NOTIF="/omd/sites/$CHECKMK_SITE/local/share/check_mk/notifications"
     if [[ -d "$SITE_NOTIF" ]]; then
         install -m 0755 -o "$CHECKMK_SITE" -g "$CHECKMK_SITE" "$SCRIPT_DIR/ticktator.py" "$SITE_NOTIF/ticktator"
@@ -504,21 +709,55 @@ ENV
         ok "ticktator at $SITE_NOTIF/ticktator (env: /etc/default/ticktator)"
     else
         warn "$SITE_NOTIF not present yet — re-run with --tags ticktator after the CheckMK site starts"
+        return 1
     fi
-fi
+}
+qa_phase9_ticktator() {
+    local notif="/omd/sites/$CHECKMK_SITE/local/share/check_mk/notifications/ticktator"
+    [[ -x "$notif" ]] || { warn "$notif missing or not executable"; return 1; }
+    [[ -f /etc/default/ticktator ]] || { warn "/etc/default/ticktator missing"; return 1; }
+    [[ -d /var/lib/ticktator ]] || { warn "/var/lib/ticktator missing"; return 1; }
+    log "QA: ticktator notification handler installed"
+}
 
 # --- Phase 10: firewall ------------------------------------------------------
-if skip SKIP_FIREWALL; then
-    warn "Phase 10: firewall — SKIPPED"
-else
-    phase "Phase 10: firewalld"
+phase10_firewall() {
     systemctl enable --now firewalld >>"$LOG_FILE" 2>&1
     for port in $FW_PORTS; do
         firewall-cmd --permanent --add-port="$port" >>"$LOG_FILE" 2>&1 || true
     done
     firewall-cmd --reload >>"$LOG_FILE" 2>&1
     ok "Opened ports: $FW_PORTS"
-fi
+}
+qa_phase10_firewall() {
+    systemctl is-active --quiet firewalld || { warn "firewalld not active"; return 1; }
+    local open
+    open="$(firewall-cmd --list-ports 2>/dev/null || true)"
+    local missing=()
+    for port in $FW_PORTS; do
+        grep -qw -- "$port" <<<"$open" || missing+=("$port")
+    done
+    if (( ${#missing[@]} )); then
+        warn "ports not open: ${missing[*]}"
+        return 1
+    fi
+    log "QA: firewalld active, ports open: $FW_PORTS"
+}
+
+# =============================================================================
+# Run each phase through the QA + retry/skip/continue wrapper.
+# =============================================================================
+run_phase "Phase 1: base packages"           ""              phase1_base_packages   qa_phase1_base_packages
+run_phase "Phase 3: Ansible + collections"   ""              phase3_ansible         qa_phase3_ansible
+run_phase "Phase 3b: GitHub CLI (gh)"        SKIP_GITHUB     phase3b_github_cli     qa_phase3b_github_cli
+run_phase "Phase 4: InfluxDB ${INFLUXDB_VERSION}" SKIP_INFLUXDB phase4_influxdb     qa_phase4_influxdb
+run_phase "Phase 5: CheckMK Raw (site=$CHECKMK_SITE)" SKIP_CHECKMK phase5_checkmk   qa_phase5_checkmk
+run_phase "Phase 5b: nagflux ${NAGFLUX_VERSION}" SKIP_NAGFLUX phase5b_nagflux       qa_phase5b_nagflux
+run_phase "Phase 6: Rundeck"                 SKIP_RUNDECK    phase6_rundeck         qa_phase6_rundeck
+run_phase "Phase 7: Ollama + model $OLLAMA_MODEL" SKIP_OLLAMA phase7_ollama         qa_phase7_ollama
+run_phase "Phase 8: DBA chatbot"             SKIP_CHATBOT    phase8_chatbot         qa_phase8_chatbot
+run_phase "Phase 9: ticktator"               SKIP_TICKTATOR  phase9_ticktator       qa_phase9_ticktator
+run_phase "Phase 10: firewalld"              SKIP_FIREWALL   phase10_firewall       qa_phase10_firewall
 
 # --- summary -----------------------------------------------------------------
 cat <<SUMMARY
