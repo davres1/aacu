@@ -27,3 +27,5 @@ Thumbs.db
 # Bootstrap log artefacts that may end up here during local dev
 bootstrap.log
 *.dump
+AI/inventory/databases.ini
+AI/inventory/hosts.ini
