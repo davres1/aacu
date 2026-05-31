@@ -78,6 +78,105 @@ checkmk:
   password: CHANGE_ME
 
 
+# ---------- SQL Server installation ------------------------------------------
+# Consumed by install_sqlserver.yaml. The ISO (or extracted folder) lives on
+# the Ansible controller and is copied to {{ sql_install.target.stage_dir }}
+# on the Windows host with win_copy, then mounted and handed to the
+# microsoft.sql.server role.
+sql_install:
+  # ---- Source media on the Ansible controller ----
+  source:
+    # Either iso_path or folder_path. iso_path wins if both are set.
+    # Use absolute paths reachable by the ansible user on the controller.
+    iso_path:    /opt/software/SQLServer2022/SQLServer2022-x64-ENU-Dev.iso
+    folder_path: /opt/software/SQLServer2022/extracted/    # used when iso_path is empty
+    # Optional Cumulative Update / Security Update slipstream
+    cu_patch_path: ''                                       # e.g. /opt/software/SQLServer2022/SQLServer2022-KB5040936-x64.exe
+
+  # ---- Where to stage on the Windows target ----
+  target:
+    stage_dir:    'C:\Software\SQLServer2022'
+    iso_filename: 'SQLServer2022.iso'
+    cleanup_after: true        # delete staged ISO after install completes
+
+  # ---- Version / edition ----
+  version: 2022                # 2017 / 2019 / 2022
+  edition: Standard           # Developer / Standard / Enterprise / Express / Web
+  # ansible-vault encrypt_string '<25-char-product-key>' --name 'sql_install_product_key'
+  product_key: ''              # required for Std/Ent; ignored for Developer/Express
+
+  # ---- Instance ----
+  instance_name: MSSQLSERVER
+  instance_id:   MSSQLSERVER
+
+  # Database Engine + extras. Common values:
+  #   SQLENGINE, FULLTEXT, REPLICATION, CONN, IS, BC, DREPLAY_CTLR, DREPLAY_CLT
+  features:
+    - SQLENGINE
+    - FULLTEXT
+    - REPLICATION
+    - CONN
+
+  # ---- Authentication & accounts ----
+  security_mode: SQL           # 'SQL' = Mixed Mode, 'Windows' = Windows-only
+  # ansible-vault encrypt_string 'StrongP@ssw0rd!' --name 'sql_install_sa_password'
+  sa_password: CHANGE_ME
+  sysadmin_accounts:
+    - 'BUILTIN\Administrators'
+    - '{{ ansible_user | default("Administrator") }}'
+
+  # Service accounts. Leave password blank when using a virtual / managed account
+  # (NT Service\MSSQLSERVER, gMSA, etc.) - the role auto-handles those.
+  service_account:    'NT Service\MSSQLSERVER'
+  service_password:   ''
+  agent_account:      'NT Service\SQLSERVERAGENT'
+  agent_password:     ''
+  fulltext_account:   'NT Service\MSSQLFDLauncher'
+  fulltext_password:  ''
+  browser_account:    'NT AUTHORITY\LOCAL SERVICE'
+
+  # ---- Paths on the target ----
+  install_path:   'C:\Program Files\Microsoft SQL Server'
+  shared_dir:     'C:\Program Files\Microsoft SQL Server'
+  shared_wow_dir: 'C:\Program Files (x86)\Microsoft SQL Server'
+  data_dir:       'C:\MSSQL\Data'
+  log_dir:        'C:\MSSQL\Log'
+  tempdb_dir:     'C:\MSSQL\TempDB'
+  tempdb_log_dir: 'C:\MSSQL\TempDB'
+  backup_dir:     'C:\Backups'
+
+  # ---- Engine settings ----
+  collation:        SQL_Latin1_General_CP1_CI_AS
+  tcp_enabled:      true
+  named_pipes:      false
+  port:             1433
+  agent_startup:    Automatic         # Automatic / Manual / Disabled
+  browser_startup:  Manual            # CIS 8.1 - keep off unless needed
+
+  # tempdb sizing (matched to processors; the role honours these)
+  tempdb_file_count: 8
+  tempdb_file_size_mb: 1024
+  tempdb_file_growth_mb: 256
+  tempdb_log_size_mb:   1024
+  tempdb_log_growth_mb: 256
+
+  # Slipstream / update behaviour during install
+  update_enabled:  false              # set true to let setup.exe pull MU updates
+  reboot_if_needed: true              # post-install reboot only if SQL setup demands it
+
+
+# ---------- SQL Server Management Studio (post-install via Chocolatey) -------
+ssms:
+  install:        true
+  choco_package:  sql-server-management-studio     # community choco package
+  version:        ''                               # blank = latest
+  install_args:   ''                               # extra args to choco install
+
+chocolatey:
+  bootstrap:      true                             # install choco itself if missing
+  source:         ''                               # internal nuget feed URL, blank = community
+
+
 # ---------- Backups -----------------------------------------------------------
 backups:
   retention_days: 14

@@ -1,0 +1,286 @@
+---
+# =============================================================================
+# install_sqlserver.yaml
+#
+# Installs SQL Server 2022 (or 2017/2019) on every Windows host in
+# `sql_servers`, using:
+#   - install media copied from the Ansible controller (paths in setup.yaml)
+#   - the microsoft.sql.server role (collection: microsoft.sql)
+#   - chocolatey.chocolatey to add SQL Server Management Studio at the end
+#
+# Tune behaviour by editing the `sql_install:` and `ssms:` blocks in
+# setup.yaml. Secrets (sa_password, product_key, service passwords) should be
+# encrypted with ansible-vault.
+#
+# Run:
+#   ansible-galaxy collection install microsoft.sql chocolatey.chocolatey ansible.windows
+#   ansible-playbook -i /etc/ansible/hosts install_sqlserver.yaml --ask-vault-pass
+#
+# Tag-filtered runs:
+#   --tags stage     copy media to the Windows host (no install)
+#   --tags engine    install the SQL Server engine only
+#   --tags ssms      install SSMS only (assumes engine already present)
+#   --tags verify    run the post-install verification block
+# =============================================================================
+
+- name: Install SQL Server 2022 on Windows hosts
+  hosts: sql_servers
+  gather_facts: true
+  strategy: free
+
+  vars_files:
+    - setup.yaml
+
+  collections:
+    - ansible.windows
+    - chocolatey.chocolatey
+    - microsoft.sql
+
+  vars:
+    # Convenience aliases — keep the rest of the playbook readable.
+    _src_iso:      "{{ sql_install.source.iso_path | default('') }}"
+    _src_folder:   "{{ sql_install.source.folder_path | default('') }}"
+    _stage_dir:    "{{ sql_install.target.stage_dir }}"
+    _iso_target:   "{{ sql_install.target.stage_dir }}\\{{ sql_install.target.iso_filename | default('SQLServer2022.iso') }}"
+    _use_iso:      "{{ _src_iso | length > 0 }}"
+
+  pre_tasks:
+
+    # ---------------------------------------------------------------------
+    # 0. Preconditions
+    # ---------------------------------------------------------------------
+    - name: Verify install media exists on the Ansible controller
+      ansible.builtin.stat:
+        path: "{{ _src_iso if _use_iso else _src_folder }}"
+      delegate_to: localhost
+      become: false
+      register: media_stat
+      run_once: true
+
+    - name: Fail if install media is missing on the controller
+      ansible.builtin.fail:
+        msg: >-
+          Install media not found on the Ansible controller.
+          Expected {{ 'ISO at ' ~ _src_iso if _use_iso else 'folder at ' ~ _src_folder }}.
+          Update sql_install.source in setup.yaml.
+      when: not media_stat.stat.exists
+      run_once: true
+
+    - name: Show install plan
+      ansible.builtin.debug:
+        msg:
+          - "Target host:   {{ inventory_hostname }}"
+          - "SQL version:   {{ sql_install.version }} ({{ sql_install.edition }})"
+          - "Instance:      {{ sql_install.instance_name }}"
+          - "Features:      {{ sql_install.features | join(', ') }}"
+          - "Source:        {{ _src_iso if _use_iso else _src_folder }}"
+          - "Stage to:      {{ _stage_dir }}"
+
+    # ---------------------------------------------------------------------
+    # 1. Stage install media on the Windows target
+    # ---------------------------------------------------------------------
+    - name: Ensure staging directory exists on Windows
+      ansible.windows.win_file:
+        path: "{{ _stage_dir }}"
+        state: directory
+      tags: [stage, engine]
+
+    - name: Copy SQL Server ISO from controller to Windows host
+      ansible.windows.win_copy:
+        src: "{{ _src_iso }}"
+        dest: "{{ _iso_target }}"
+        remote_src: false
+      when: _use_iso
+      tags: [stage, engine]
+
+    - name: Copy SQL Server install folder from controller to Windows host
+      ansible.windows.win_copy:
+        src: "{{ _src_folder }}"
+        dest: "{{ _stage_dir }}\\"
+        remote_src: false
+      when: not _use_iso
+      tags: [stage, engine]
+
+    - name: Copy optional CU/Security update patch
+      ansible.windows.win_copy:
+        src: "{{ sql_install.source.cu_patch_path }}"
+        dest: "{{ _stage_dir }}\\{{ sql_install.source.cu_patch_path | basename }}"
+        remote_src: false
+      when: sql_install.source.cu_patch_path | default('') | length > 0
+      tags: [stage, engine]
+
+    # ---------------------------------------------------------------------
+    # 2. Mount the ISO (when using ISO source) and capture the drive letter
+    # ---------------------------------------------------------------------
+    - name: Mount the SQL Server ISO and return its drive letter
+      ansible.windows.win_shell: |
+        $iso = '{{ _iso_target }}'
+        $img = Get-DiskImage -ImagePath $iso -ErrorAction SilentlyContinue
+        if (-not $img -or -not $img.Attached) {
+            $img = Mount-DiskImage -ImagePath $iso -PassThru
+        }
+        $drive = ($img | Get-Volume).DriveLetter
+        Write-Output ("{0}:" -f $drive)
+      register: iso_mount
+      changed_when: false
+      when: _use_iso
+      tags: [stage, engine]
+
+    - name: Resolve the SQL installation source path
+      ansible.builtin.set_fact:
+        _sql_setup_path: "{{ (iso_mount.stdout | trim) ~ '\\' if _use_iso else (_stage_dir ~ '\\') }}"
+      tags: [stage, engine]
+
+    - name: Open inbound firewall port for SQL Server (TCP {{ sql_install.port | default(1433) }})
+      ansible.windows.win_firewall_rule:
+        name: "SQL Server ({{ sql_install.instance_name }})"
+        localport: "{{ sql_install.port | default(1433) }}"
+        action: allow
+        direction: in
+        protocol: tcp
+        state: present
+        enabled: true
+      tags: [engine]
+
+  # =======================================================================
+  # 3. Install SQL Server via the official Microsoft role
+  # =======================================================================
+  roles:
+    - role: microsoft.sql.server
+      tags: [engine]
+      vars:
+        # Source / version
+        sql_version:              "{{ sql_install.version }}"
+        sql_edition:              "{{ sql_install.edition }}"
+        sql_installation_source:  "{{ _sql_setup_path }}"
+        sql_product_key:          "{{ sql_install.product_key | default('') }}"
+
+        # Instance
+        sql_instance_name:        "{{ sql_install.instance_name }}"
+        sql_instance_id:          "{{ sql_install.instance_id | default(sql_install.instance_name) }}"
+        sql_features:             "{{ sql_install.features }}"
+        sql_collation:            "{{ sql_install.collation }}"
+
+        # Auth + admins
+        sql_security_mode:        "{{ sql_install.security_mode }}"
+        sql_sa_password:          "{{ sql_install.sa_password }}"
+        sql_sysadmin_accounts:    "{{ sql_install.sysadmin_accounts }}"
+
+        # Service accounts (passwords may be blank for virtual / managed accounts)
+        sql_service_account:      "{{ sql_install.service_account }}"
+        sql_service_password:     "{{ sql_install.service_password | default('') }}"
+        sql_agent_account:        "{{ sql_install.agent_account }}"
+        sql_agent_password:       "{{ sql_install.agent_password | default('') }}"
+        sql_fulltext_account:     "{{ sql_install.fulltext_account | default('NT Service\\MSSQLFDLauncher') }}"
+        sql_fulltext_password:    "{{ sql_install.fulltext_password | default('') }}"
+        sql_browser_account:      "{{ sql_install.browser_account | default('NT AUTHORITY\\LOCAL SERVICE') }}"
+
+        # Paths
+        sql_install_path:         "{{ sql_install.install_path }}"
+        sql_shared_dir:           "{{ sql_install.shared_dir }}"
+        sql_shared_wow_dir:       "{{ sql_install.shared_wow_dir | default(sql_install.shared_dir) }}"
+        sql_data_dir:             "{{ sql_install.data_dir }}"
+        sql_log_dir:              "{{ sql_install.log_dir }}"
+        sql_backup_dir:           "{{ sql_install.backup_dir }}"
+        sql_tempdb_dir:           "{{ sql_install.tempdb_dir }}"
+        sql_tempdb_log_dir:       "{{ sql_install.tempdb_log_dir | default(sql_install.tempdb_dir) }}"
+
+        # Network / startup
+        sql_tcp_enabled:          "{{ sql_install.tcp_enabled | default(true) }}"
+        sql_named_pipes_enabled:  "{{ sql_install.named_pipes | default(false) }}"
+        sql_port:                 "{{ sql_install.port | default(1433) }}"
+        sql_agent_startup:        "{{ sql_install.agent_startup | default('Automatic') }}"
+        sql_browser_startup:      "{{ sql_install.browser_startup | default('Manual') }}"
+
+        # tempdb sizing
+        sql_tempdb_file_count:    "{{ sql_install.tempdb_file_count    | default(8) }}"
+        sql_tempdb_file_size:     "{{ sql_install.tempdb_file_size_mb  | default(1024) }}"
+        sql_tempdb_file_growth:   "{{ sql_install.tempdb_file_growth_mb| default(256) }}"
+        sql_tempdb_log_size:      "{{ sql_install.tempdb_log_size_mb   | default(1024) }}"
+        sql_tempdb_log_growth:    "{{ sql_install.tempdb_log_growth_mb | default(256) }}"
+
+        # Slipstream / updates
+        sql_update_enabled:       "{{ sql_install.update_enabled | default(false) }}"
+        sql_reboot_if_needed:     "{{ sql_install.reboot_if_needed | default(true) }}"
+
+  post_tasks:
+
+    # ---------------------------------------------------------------------
+    # 4. Dismount ISO + (optionally) clean up staged media
+    # ---------------------------------------------------------------------
+    - name: Dismount the SQL Server ISO
+      ansible.windows.win_shell: |
+        Dismount-DiskImage -ImagePath '{{ _iso_target }}' -ErrorAction SilentlyContinue | Out-Null
+      changed_when: false
+      failed_when: false
+      when: _use_iso
+      tags: [engine]
+
+    - name: Remove staged install media (sql_install.target.cleanup_after)
+      ansible.windows.win_file:
+        path: "{{ _stage_dir }}"
+        state: absent
+      when: sql_install.target.cleanup_after | default(true)
+      tags: [engine]
+
+    # ---------------------------------------------------------------------
+    # 5. Bootstrap Chocolatey, then install SQL Server Management Studio
+    # ---------------------------------------------------------------------
+    - name: Ensure Chocolatey is installed
+      chocolatey.chocolatey.win_chocolatey:
+        name: chocolatey
+        state: present
+        source: "{{ chocolatey.source | default(omit, true) }}"
+      when: chocolatey.bootstrap | default(true)
+      tags: [ssms]
+
+    - name: Install SQL Server Management Studio (SSMS) via Chocolatey
+      chocolatey.chocolatey.win_chocolatey:
+        name: "{{ ssms.choco_package | default('sql-server-management-studio') }}"
+        version: "{{ ssms.version | default(omit, true) }}"
+        state: present
+        install_args: "{{ ssms.install_args | default(omit, true) }}"
+        source: "{{ chocolatey.source | default(omit, true) }}"
+      when: ssms.install | default(true)
+      register: ssms_install
+      tags: [ssms]
+
+    # ---------------------------------------------------------------------
+    # 6. Verify - services running, port listening, version reported
+    # ---------------------------------------------------------------------
+    - name: Query the SQL Server engine + agent services
+      ansible.windows.win_service:
+        name: "{{ item }}"
+      register: sql_service_state
+      loop:
+        - "{{ 'MSSQLSERVER' if sql_install.instance_name == 'MSSQLSERVER' else 'MSSQL$' ~ sql_install.instance_name }}"
+        - "{{ 'SQLSERVERAGENT' if sql_install.instance_name == 'MSSQLSERVER' else 'SQLAgent$' ~ sql_install.instance_name }}"
+      tags: [verify]
+
+    - name: Probe the SQL TCP port
+      ansible.windows.win_wait_for:
+        host: 127.0.0.1
+        port: "{{ sql_install.port | default(1433) }}"
+        timeout: 60
+      tags: [verify]
+
+    - name: Capture installed SQL Server build (via sqlcmd)
+      ansible.windows.win_shell: |
+        $instance = '{{ "(local)" if sql_install.instance_name == "MSSQLSERVER" else "(local)\\" ~ sql_install.instance_name }}'
+        & sqlcmd -S $instance -E -Q "SELECT @@VERSION" -h -1 -W
+      register: sql_version_probe
+      changed_when: false
+      failed_when: false
+      tags: [verify]
+
+    - name: Installation summary
+      ansible.builtin.debug:
+        msg:
+          - "Host:            {{ inventory_hostname }}"
+          - "Instance:        {{ sql_install.instance_name }}"
+          - "Edition:         {{ sql_install.edition }}  ({{ sql_install.version }})"
+          - "Services:        {% for s in sql_service_state.results %}{{ s.name }}={{ s.state }}{% if not loop.last %}, {% endif %}{% endfor %}"
+          - "TCP port {{ sql_install.port | default(1433) }}:  reachable"
+          - "@@VERSION:       {{ sql_version_probe.stdout_lines | default(['n/a']) | first }}"
+          - "SSMS installed:  {{ ssms.install | default(true) }}"
+      tags: [verify]
