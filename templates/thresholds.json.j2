@@ -1,36 +1,386 @@
+{# =============================================================================
+   thresholds.json.j2 — single source of truth for the chatbot, CheckMK local
+   plugins, and Ansible facts consumers. Rendered to C:\DBA\thresholds.json by
+   dba_automation.yaml -> "Render thresholds.json from setup.yaml".
+
+   New sections added here:
+     - cis              CIS Benchmark scorecard + auto-remediate allowlist
+     - audit            Security/Audit severity rules
+     - database_status  Per-DB state + size + backup colour coding
+     - influxdb         Time-series queries the chatbot uses for charts
+     - dashboard.charts Chart.js / Plotly definitions for the chatbot UI
+     - dashboard.diagrams Mermaid text diagrams ("data flow", "AG topology")
+
+   All new variables fall back to safe defaults via Jinja's `default()` filter,
+   so this template still renders even if setup.yaml has not been updated.
+============================================================================= #}
 {
-  "version": 1,
+  "version": 2,
   "generated_by": "dba_automation.yaml",
   "generated_at": "{{ ansible_date_time.iso8601 | default('') }}",
+
   "backups": {
     "full_max_age_hours": {{ backups.thresholds.full_max_age_hours }},
-    "log_max_age_hours": {{ backups.thresholds.log_max_age_hours }}
+    "log_max_age_hours":  {{ backups.thresholds.log_max_age_hours }}
   },
+
   "disk": {
-    "drive_free_pct_warn": {{ disk.drive_free_pct_warn }},
-    "drive_free_pct_crit": {{ disk.drive_free_pct_crit }},
-    "datafile_free_pct_warn": {{ disk.datafile_free_pct_warn }},
-    "datafile_free_pct_crit": {{ disk.datafile_free_pct_crit }},
-    "autogrowth_danger_mb": {{ disk.autogrowth_danger_mb }}
+    "drive_free_pct_warn":     {{ disk.drive_free_pct_warn }},
+    "drive_free_pct_crit":     {{ disk.drive_free_pct_crit }},
+    "datafile_free_pct_warn":  {{ disk.datafile_free_pct_warn }},
+    "datafile_free_pct_crit":  {{ disk.datafile_free_pct_crit }},
+    "autogrowth_danger_mb":    {{ disk.autogrowth_danger_mb }}
   },
+
   "tempdb": {
-    "full_percent": {{ tempdb.full_percent }},
+    "full_percent":        {{ tempdb.full_percent }},
     "alloc_contention_ms": {{ tempdb.alloc_contention_ms }}
   },
+
   "agent_jobs": {
     "lookback_hours": {{ agent_jobs.lookback_hours }}
   },
+
   "security_audit": {
-    "stale_login_days": {{ security_audit.stale_login_days }},
+    "stale_login_days":    {{ security_audit.stale_login_days }},
     "sysadmin_warn_count": {{ security_audit.sysadmin_warn_count }}
   },
+
   "patch": {
     "hotfix_warn_age_days": {{ patch.hotfix_warn_age_days }},
     "hotfix_crit_age_days": {{ patch.hotfix_crit_age_days }}
   },
+
   "alwayson": {
-    "lag_warn_sec": {{ alwayson.lag_warn_sec }},
-    "lag_crit_sec": {{ alwayson.lag_crit_sec }},
-    "send_queue_warn_kb": {{ alwayson.send_queue_warn_kb }}
+    "lag_warn_sec":      {{ alwayson.lag_warn_sec }},
+    "lag_crit_sec":      {{ alwayson.lag_crit_sec }},
+    "send_queue_warn_kb":{{ alwayson.send_queue_warn_kb }}
+  },
+
+  {# ============================================================
+     CIS Microsoft SQL Server 2022 Benchmark v1.0.0 - scorecard
+     consumed by chatbot to render compliance gauges and lists.
+  ============================================================ #}
+  "cis": {
+    "benchmark":      "CIS Microsoft SQL Server 2022 Benchmark v1.0.0",
+    "report_path":    "C:\\Logs\\SQL_CIS2022_latest.json",
+    "rollback_dir":   "C:\\Logs",
+    "score_thresholds": {
+      "green_min":  {{ (cis.score_thresholds.green_min  | default(95)) if cis is defined else 95 }},
+      "yellow_min": {{ (cis.score_thresholds.yellow_min | default(80)) if cis is defined else 80 }},
+      "red_max":    {{ (cis.score_thresholds.red_max    | default(79)) if cis is defined else 79 }}
+    },
+    "critical_controls": [
+      {%- set crit = (cis.critical_controls | default(['2.1','2.2','2.4','2.5','2.9','2.13','2.17','3.1','4.3','5.2','7.4'])) if cis is defined else ['2.1','2.2','2.4','2.5','2.9','2.13','2.17','3.1','4.3','5.2','7.4'] -%}
+      {%- for c in crit -%}"{{ c }}"{{ "," if not loop.last }}{%- endfor -%}
+    ],
+    "auto_remediate_safe": [
+      {%- set safe = (cis.auto_remediate_safe | default(['2.1','2.2','2.3','2.4','2.5','2.6','2.8','2.9','2.13','2.15','2.17','3.2','4.3','5.2','6.1','7.4','8.1'])) if cis is defined else ['2.1','2.2','2.3','2.4','2.5','2.6','2.8','2.9','2.13','2.15','2.17','3.2','4.3','5.2','6.1','7.4','8.1'] -%}
+      {%- for c in safe -%}"{{ c }}"{{ "," if not loop.last }}{%- endfor -%}
+    ],
+    "manual_only": ["1.1","2.14","3.3","3.5","3.6","3.7","4.1","4.2","7.1","7.2","7.3"],
+    "ansible_fact_key":  "cis_compliance",
+    "score_field":       "compliance_score",
+    "exception_dbs_field":"exception_databases"
+  },
+
+  {# ============================================================
+     Audit / security severity rules - chatbot maps facts to
+     {ok, info, warn, high, critical} colour bands.
+  ============================================================ #}
+  "audit": {
+    "severity_rules": {
+      "sa_enabled":             "critical",
+      "sa_not_renamed":         "high",
+      "xp_cmdshell_enabled":    "critical",
+      "ole_automation_enabled": "high",
+      "clr_enabled":            "high",
+      "ad_hoc_dist_queries":    "high",
+      "trustworthy_user_db":    "high",
+      "guest_connect":          "high",
+      "orphaned_users":         "warn",
+      "force_encryption_off":   "high",
+      "weak_symmetric_key":     "high",
+      "weak_asymmetric_key":    "high",
+      "browser_running":        "warn"
+    },
+    "sysadmin_count_warn":   {{ (audit.sysadmin_count_warn   | default(security_audit.sysadmin_warn_count)) if audit is defined else security_audit.sysadmin_warn_count }},
+    "sysadmin_count_crit":   {{ (audit.sysadmin_count_crit   | default(10)) if audit is defined else 10 }},
+    "stale_login_days":      {{ (audit.stale_login_days      | default(security_audit.stale_login_days)) if audit is defined else security_audit.stale_login_days }},
+    "failed_login_warn_24h": {{ (audit.failed_login_warn_24h | default(50)) if audit is defined else 50 }},
+    "failed_login_crit_24h": {{ (audit.failed_login_crit_24h | default(200)) if audit is defined else 200 }},
+    "categories": [
+      "Authentication",
+      "Surface Area",
+      "Encryption",
+      "Privilege Escalation",
+      "Auditing/Logging",
+      "Patch / Vulnerability"
+    ],
+    "display_columns": ["instance","control","severity","observed","recommendation","captured_at"]
+  },
+
+  {# ============================================================
+     Database status - colour mapping + watch list states.
+     Drives the "DB health" tab in the chatbot.
+  ============================================================ #}
+  "database_status": {
+    "status_colors": {
+      "Normal":              "#28a745",
+      "Online":              "#28a745",
+      "Offline":             "#dc3545",
+      "Restoring":           "#ffc107",
+      "Recovering":          "#ffc107",
+      "Recovery Pending":    "#ffc107",
+      "Suspect":             "#dc3545",
+      "Emergency":           "#dc3545",
+      "Standby":             "#17a2b8",
+      "Read-Only":           "#17a2b8",
+      "Copying":             "#17a2b8",
+      "OfflineSecondary":    "#6c757d"
+    },
+    "watch_states":          ["Recovery","Recovering","Recovery Pending","Suspect","Emergency","Restoring","Offline"],
+    "size_warn_gb":          {{ (database_status.size_warn_gb    | default(500)) if database_status is defined else 500 }},
+    "size_crit_gb":          {{ (database_status.size_crit_gb    | default(1000)) if database_status is defined else 1000 }},
+    "log_growth_warn_pct":   {{ (database_status.log_growth_warn_pct | default(85)) if database_status is defined else 85 }},
+    "backup_age_warn_hours": {{ backups.thresholds.full_max_age_hours }},
+    "backup_age_crit_hours": {{ ((backups.thresholds.full_max_age_hours | int) * 2) }},
+    "vlf_warn_count":        {{ (database_status.vlf_warn_count  | default(1000)) if database_status is defined else 1000 }},
+    "vlf_crit_count":        {{ (database_status.vlf_crit_count  | default(5000)) if database_status is defined else 5000 }},
+    "display_columns": [
+      "instance","database","state","recovery_model","size_gb","data_used_pct","log_used_pct",
+      "last_full_backup","last_log_backup","ag_role","cis_compliant"
+    ]
+  },
+
+  {# ============================================================
+     InfluxDB - chatbot pulls historical/timeseries data from
+     here to render trend lines. Queries are templated; the
+     chatbot fills in {host}, {window}, {bucket} at query time.
+  ============================================================ #}
+  "influxdb": {
+    "host":     "{{ chatbot.influxdb.host     | default('localhost') }}",
+    "port":     {{ chatbot.influxdb.port      | default(8086) }},
+    "database": "{{ chatbot.influxdb.database | default('checkmk') }}",
+    "user":     "{{ chatbot.influxdb.user     | default('checkmk') }}",
+    "ssl":      {{ (chatbot.influxdb.ssl      | default(false)) | string | lower }},
+    "default_window":  "{{ (influxdb.default_window   | default('1h')) if influxdb is defined else '1h' }}",
+    "default_bucket":  "{{ (influxdb.default_bucket   | default('5m')) if influxdb is defined else '5m' }}",
+    "history_window":  "{{ (influxdb.history_window   | default('7d')) if influxdb is defined else '7d' }}",
+    "queries": {
+      "cpu_load":           "SELECT mean(\"value\") FROM \"metrics\" WHERE \"service\"='CPU_load' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(null)",
+      "memory_used_pct":    "SELECT mean(\"value\") FROM \"metrics\" WHERE \"service\"='Memory' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(null)",
+      "disk_free_pct":      "SELECT min(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Filesystem/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(null)",
+      "db_size_mb":         "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^MSSQL_Size/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(previous)",
+      "backup_age_hours":   "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^MSSQL_Backup/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(previous)",
+      "tempdb_used_pct":    "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^MSSQL_TempDB/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(null)",
+      "ag_lag_seconds":     "SELECT max(\"value\") FROM \"metrics\" WHERE \"service\"=~/^MSSQL_AlwaysOn/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(null)",
+      "blocking_sessions":  "SELECT max(\"value\") FROM \"metrics\" WHERE \"service\"='MSSQL_Blocking' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(0)",
+      "agent_job_failures": "SELECT sum(\"value\") FROM \"metrics\" WHERE \"service\"='MSSQL_AgentJobs' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(0)",
+      "cis_score_history":  "SELECT last(\"value\") FROM \"cis_compliance\" WHERE \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(previous)"
+    }
+  },
+
+  {# ============================================================
+     Dashboard - charts + diagrams the chatbot iterates over to
+     render the executive view.
+       chart "type" values understood by the chatbot:
+         gauge | donut | bar | stacked-bar | line | sparkline | heatmap | scorecard
+       diagram "type" values:
+         mermaid (rendered client-side via mermaid.js)
+  ============================================================ #}
+  "dashboard": {
+    "refresh_seconds": {{ (dashboard.refresh_seconds | default(60)) if dashboard is defined else 60 }},
+    "charts": [
+      {
+        "id":     "cis_scorecard",
+        "title":  "CIS Compliance Score",
+        "type":   "gauge",
+        "source": "ansible_local.db_inventory.mssql.*.cis_compliance.compliance_score",
+        "min":    0, "max": 100, "unit": "%",
+        "thresholds": [
+          { "value": 80,  "color": "#dc3545" },
+          { "value": 95,  "color": "#ffc107" },
+          { "value": 100, "color": "#28a745" }
+        ]
+      },
+      {
+        "id":     "cis_exceptions_by_control",
+        "title":  "CIS Exceptions by Control",
+        "type":   "bar",
+        "source": "ansible_local.db_inventory.mssql.*.cis_compliance.controls[?status=='Fail']",
+        "x":      "cis_id",
+        "y":      "count",
+        "color":  "#dc3545"
+      },
+      {
+        "id":     "cis_exceptions_by_database",
+        "title":  "Non-Compliant Databases (top 20)",
+        "type":   "bar",
+        "source": "ansible_local.db_inventory.mssql.*.cis_compliance.database_exceptions",
+        "x":      "database",
+        "y":      "exception_count",
+        "limit":  20
+      },
+      {
+        "id":     "audit_severity_donut",
+        "title":  "Open Audit Findings by Severity",
+        "type":   "donut",
+        "source": "ansible_local.db_inventory.mssql.*.cis_compliance.controls[?status=='Fail']",
+        "group":  "severity",
+        "colors": {
+          "critical": "#dc3545",
+          "high":     "#fd7e14",
+          "warn":     "#ffc107",
+          "info":     "#17a2b8"
+        }
+      },
+      {
+        "id":     "db_status_pie",
+        "title":  "Database State Distribution",
+        "type":   "donut",
+        "source": "ansible_local.db_inventory.mssql.*.databases[*]",
+        "group":  "status",
+        "color_map_from": "database_status.status_colors"
+      },
+      {
+        "id":     "db_size_top",
+        "title":  "Largest Databases (GB)",
+        "type":   "bar",
+        "source": "ansible_local.db_inventory.mssql.*.databases[*]",
+        "x":      "name",
+        "y":      "size_gb",
+        "limit":  15,
+        "thresholds": [
+          { "value": 500,  "color": "#ffc107" },
+          { "value": 1000, "color": "#dc3545" }
+        ]
+      },
+      {
+        "id":     "backup_age_heatmap",
+        "title":  "Backup Age (hours since last full)",
+        "type":   "heatmap",
+        "source": "ansible_local.db_inventory.mssql.*.backups[*]",
+        "x":      "database",
+        "y":      "instance",
+        "value":  "since_full_hours",
+        "thresholds": [
+          { "value": {{ backups.thresholds.full_max_age_hours }},          "color": "#ffc107" },
+          { "value": {{ (backups.thresholds.full_max_age_hours | int)*2 }},"color": "#dc3545" }
+        ]
+      },
+      {
+        "id":     "cpu_load_trend",
+        "title":  "CPU Load (7d)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "cpu_load",
+        "window": "7d",
+        "bucket": "30m"
+      },
+      {
+        "id":     "memory_trend",
+        "title":  "Memory Used % (7d)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "memory_used_pct",
+        "window": "7d",
+        "bucket": "30m"
+      },
+      {
+        "id":     "disk_free_trend",
+        "title":  "Disk Free % per volume (24h)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "disk_free_pct",
+        "window": "24h",
+        "bucket": "10m"
+      },
+      {
+        "id":     "db_size_growth",
+        "title":  "Database Size Growth (30d)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "db_size_mb",
+        "window": "30d",
+        "bucket": "1d"
+      },
+      {
+        "id":     "ag_lag_trend",
+        "title":  "AlwaysOn AG Lag (sec, 24h)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "ag_lag_seconds",
+        "window": "24h",
+        "bucket": "5m",
+        "thresholds": [
+          { "value": {{ alwayson.lag_warn_sec }}, "color": "#ffc107" },
+          { "value": {{ alwayson.lag_crit_sec }}, "color": "#dc3545" }
+        ]
+      },
+      {
+        "id":     "cis_score_history",
+        "title":  "CIS Compliance Trend (30d)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "cis_score_history",
+        "window": "30d",
+        "bucket": "1d",
+        "min":    0, "max": 100
+      },
+      {
+        "id":     "agent_job_failures_spark",
+        "title":  "Agent Job Failures (24h)",
+        "type":   "sparkline",
+        "datasource": "influxdb",
+        "query":  "agent_job_failures",
+        "window": "24h",
+        "bucket": "30m"
+      },
+      {
+        "id":     "patch_age_scorecard",
+        "title":  "Patch Status",
+        "type":   "scorecard",
+        "source": "ansible_local.db_inventory.mssql.*.patch_level",
+        "fields": ["product_level","build_number","update_reference","last_hotfix_days"],
+        "thresholds": [
+          { "field": "last_hotfix_days", "value": {{ patch.hotfix_warn_age_days }}, "color": "#ffc107" },
+          { "field": "last_hotfix_days", "value": {{ patch.hotfix_crit_age_days }}, "color": "#dc3545" }
+        ]
+      }
+    ],
+
+    "diagrams": [
+      {
+        "id":   "data_flow",
+        "title":"Monitoring & Automation Data Flow",
+        "type": "mermaid",
+        "definition": "graph LR\n  subgraph SQLHost[SQL Server Host]\n    SQL[(SQL Instance)]\n    Inv[db_inventory.ps1]\n    CIS[CISBenchmarkSQL2022.ps1]\n    CM[CheckMK Agent]\n  end\n  SQL -->|dbatools| Inv\n  SQL -->|dbatools| CIS\n  Inv -->|JSON facts.d| Ansible[Ansible Facts]\n  CIS -->|JSON| Ansible\n  CM -->|metrics| CheckMK[CheckMK Site]\n  CheckMK -->|nagflux| Influx[(InfluxDB)]\n  Ansible -->|API| Bot[Chatbot Flask]\n  Influx -->|HTTP| Bot\n  Bot --> User((DBA / Exec))"
+      },
+      {
+        "id":   "ag_topology",
+        "title":"AlwaysOn Availability Group Topology",
+        "type": "mermaid",
+        "definition": "graph TB\n  Listener((AG Listener))\n  Primary[(Primary Replica)]\n  Sync[(Sync Secondary)]\n  Async[(Async Secondary)]\n  DR[(DR Replica)]\n  Listener --> Primary\n  Primary ==Sync Commit==> Sync\n  Primary -.Async Commit.-> Async\n  Primary -.Async Commit.-> DR\n  Sync -. Auto-Failover .- Primary"
+      },
+      {
+        "id":   "cis_workflow",
+        "title":"CIS Audit & Remediation Workflow",
+        "type": "mermaid",
+        "definition": "flowchart TD\n  A[Run CISBenchmarkSQL2022.ps1] --> B{Findings}\n  B -->|All Pass| Z[Green - report to dashboard]\n  B -->|Fail| C[Capture BEFORE state]\n  C --> D[Append revert to rollback.sql]\n  D --> E{Approve?}\n  E -->|No| F[Audit only mode]\n  E -->|Yes -WhatIf| G[Dry run - log only]\n  E -->|Yes -Remediate| H[Apply fix]\n  H --> I[Log AFTER state]\n  I --> J[Push score to InfluxDB]\n  J --> Z\n  G --> K[Review rollback.sql with CAB]\n  K --> E"
+      },
+      {
+        "id":   "backup_strategy",
+        "title":"Backup Strategy & Retention",
+        "type": "mermaid",
+        "definition": "gantt\n    title Backup Schedule (rolling 24h)\n    dateFormat HH:mm\n    axisFormat %H:%M\n    section Full\n    Daily Full :a1, 22:00, 60m\n    section Differential\n    Diff #1 :04:00, 15m\n    Diff #2 :10:00, 15m\n    Diff #3 :16:00, 15m\n    section Log\n    Log every 15m :crit, 00:00, 24h"
+      },
+      {
+        "id":   "alert_pipeline",
+        "title":"Alert -> Ticket Pipeline",
+        "type": "mermaid",
+        "definition": "sequenceDiagram\n  participant SQL as SQL Server\n  participant CMK as CheckMK\n  participant Bot as Chatbot\n  participant SNow as ServiceNow\n  SQL->>CMK: local plugin output\n  CMK->>CMK: evaluate thresholds.json\n  CMK->>Bot: webhook (state change)\n  CMK->>SNow: ticktator.py notify\n  SNow-->>CMK: ticket id\n  Bot-->>DBA: chat notification"
+      }
+    ]
   }
 }

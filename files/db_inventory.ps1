@@ -481,6 +481,273 @@ function Get-HaFacts {
 }
 
 # ---------------------------------------------------------------------------
+# CIS Microsoft SQL Server 2022 Benchmark - exception detection
+# ---------------------------------------------------------------------------
+# Lightweight set of CIS controls focused on highlighting WHICH databases /
+# logins / settings are non-compliant. Output is structured as exception lists
+# so the executive dashboard can pivot "show me every DB that fails control X".
+function Get-CisExceptionFacts {
+    param($server, $serverName)
+
+    $cis = @{
+        benchmark             = "CIS Microsoft SQL Server 2022 Benchmark v1.0.0"
+        instance_exceptions   = @()   # instance-level CIS failures
+        database_exceptions   = @{}   # db_name -> list of failing control ids
+        controls              = @()   # detailed per-control records
+        summary               = @{ pass = 0; fail = 0; manual = 0; error = 0 }
+    }
+
+    function _Record {
+        param($id, $title, $level, $status, $observed, $scope = "instance", $database = $null)
+        $rec = @{
+            cis_id      = $id
+            title       = $title
+            cis_level   = $level
+            status      = $status
+            observed    = $observed
+            scope       = $scope
+            database    = $database
+        }
+        $cis.controls += $rec
+        switch ($status) {
+            "Pass"   { $cis.summary.pass++ }
+            "Fail"   { $cis.summary.fail++ }
+            "Manual" { $cis.summary.manual++ }
+            "Error"  { $cis.summary.error++ }
+        }
+        if ($status -eq "Fail") {
+            if ($scope -eq "database" -and $database) {
+                if (-not $cis.database_exceptions.ContainsKey($database)) {
+                    $cis.database_exceptions[$database] = @()
+                }
+                $cis.database_exceptions[$database] += $id
+            } else {
+                $cis.instance_exceptions += @{ cis_id = $id; title = $title; observed = $observed }
+            }
+        }
+    }
+
+    # ----- 2.x Surface area: sp_configure values -----
+    $configChecks = @(
+        @{ Id="2.1";  Name="Ad Hoc Distributed Queries"; Expected=0; Title="Ad Hoc Distributed Queries disabled" }
+        @{ Id="2.2";  Name="clr enabled";                Expected=0; Title="CLR Enabled disabled" }
+        @{ Id="2.3";  Name="cross db ownership chaining"; Expected=0; Title="Cross DB Ownership Chaining disabled" }
+        @{ Id="2.4";  Name="Database Mail XPs";          Expected=0; Title="Database Mail XPs disabled" }
+        @{ Id="2.5";  Name="Ole Automation Procedures";  Expected=0; Title="Ole Automation Procedures disabled" }
+        @{ Id="2.6";  Name="remote access";              Expected=0; Title="Remote Access disabled" }
+        @{ Id="2.8";  Name="scan for startup procs";     Expected=0; Title="Scan For Startup Procs disabled" }
+        @{ Id="2.17"; Name="clr strict security";        Expected=1; Title="CLR Strict Security enabled" }
+        @{ Id="5.2";  Name="default trace enabled";      Expected=1; Title="Default Trace enabled" }
+    )
+    foreach ($cfg in $configChecks) {
+        try {
+            $v = (Get-DbaSpConfigure -SqlInstance $serverName -Name $cfg.Name -ErrorAction Stop).ConfiguredValue
+            $st = if ($v -eq $cfg.Expected) { "Pass" } else { "Fail" }
+            _Record -id $cfg.Id -title $cfg.Title -level "L1" -status $st -observed "value=$v"
+        } catch { _Record -id $cfg.Id -title $cfg.Title -level "L1" -status "Error" -observed $_.Exception.Message }
+    }
+
+    # ----- 2.9 Trustworthy database property (per-database) -----
+    try {
+        $r = Invoke-DbaQuery -SqlInstance $serverName -Query @"
+SELECT name FROM sys.databases
+WHERE is_trustworthy_on = 1 AND name NOT IN ('msdb','model','tempdb','master')
+"@ -ErrorAction Stop
+        if (-not $r) {
+            _Record -id "2.9" -title "TRUSTWORTHY OFF on user DBs" -level "L1" -status "Pass" -observed "No exceptions"
+        } else {
+            foreach ($row in $r) {
+                _Record -id "2.9" -title "TRUSTWORTHY OFF on user DBs" -level "L1" -status "Fail" `
+                        -observed "TRUSTWORTHY=ON" -scope "database" -database $row.name
+            }
+        }
+    } catch { _Record -id "2.9" -title "TRUSTWORTHY OFF on user DBs" -level "L1" -status "Error" -observed $_.Exception.Message }
+
+    # ----- 2.13 / 2.14 / 2.16 sa account state -----
+    try {
+        $sa = Invoke-DbaQuery -SqlInstance $serverName -Query "SELECT name, is_disabled FROM sys.server_principals WHERE sid = 0x01" -ErrorAction Stop
+        _Record -id "2.13" -title "'sa' login disabled" -level "L1" `
+                -status ($(if ($sa.is_disabled -eq 1) { "Pass" } else { "Fail" })) `
+                -observed "name=$($sa.name) disabled=$($sa.is_disabled)"
+        _Record -id "2.14" -title "'sa' login renamed"  -level "L1" `
+                -status ($(if ($sa.name -ne 'sa') { "Pass" } else { "Fail" })) `
+                -observed "current_name=$($sa.name)"
+    } catch { _Record -id "2.13" -title "sa account state" -level "L1" -status "Error" -observed $_.Exception.Message }
+
+    # ----- 2.15 AUTO_CLOSE off on contained DBs (per-database) -----
+    try {
+        $r = Invoke-DbaQuery -SqlInstance $serverName -Query @"
+SELECT name FROM sys.databases WHERE containment <> 0 AND is_auto_close_on = 1
+"@ -ErrorAction Stop
+        if (-not $r) {
+            _Record -id "2.15" -title "AUTO_CLOSE OFF on contained DBs" -level "L1" -status "Pass" -observed "No exceptions"
+        } else {
+            foreach ($row in $r) {
+                _Record -id "2.15" -title "AUTO_CLOSE OFF on contained DBs" -level "L1" -status "Fail" `
+                        -observed "AUTO_CLOSE=ON contained DB" -scope "database" -database $row.name
+            }
+        }
+    } catch { _Record -id "2.15" -title "AUTO_CLOSE on contained DBs" -level "L1" -status "Error" -observed $_.Exception.Message }
+
+    # ----- 3.1 Server authentication mode -----
+    try {
+        $mode = Invoke-DbaQuery -SqlInstance $serverName -Query "SELECT CASE SERVERPROPERTY('IsIntegratedSecurityOnly') WHEN 1 THEN 'Windows' ELSE 'Mixed' END AS m" -ErrorAction Stop
+        _Record -id "3.1" -title "Windows Authentication Mode" -level "L1" `
+                -status ($(if ($mode.m -eq 'Windows') { "Pass" } else { "Fail" })) -observed "Mode=$($mode.m)"
+    } catch { _Record -id "3.1" -title "Server auth mode" -level "L1" -status "Error" -observed $_.Exception.Message }
+
+    # ----- 3.2 guest user CONNECT (per-database) -----
+    try {
+        foreach ($db in $server.Databases | Where-Object { -not $_.IsSystemObject -and $_.IsAccessible }) {
+            try {
+                $r = Invoke-DbaQuery -SqlInstance $serverName -Database $db.Name -Query @"
+SELECT 1 FROM sys.database_permissions dp
+JOIN sys.database_principals pr ON dp.grantee_principal_id = pr.principal_id
+WHERE pr.name = 'guest' AND dp.permission_name = 'CONNECT' AND dp.state_desc = 'GRANT'
+"@ -ErrorAction Stop
+                if ($r) {
+                    _Record -id "3.2" -title "Revoke CONNECT from guest" -level "L1" -status "Fail" `
+                            -observed "guest has CONNECT" -scope "database" -database $db.Name
+                }
+            } catch {}
+        }
+    } catch { _Record -id "3.2" -title "Guest CONNECT" -level "L1" -status "Error" -observed $_.Exception.Message }
+
+    # ----- 3.3 Orphaned users (per-database) -----
+    try {
+        foreach ($db in $server.Databases | Where-Object { -not $_.IsSystemObject -and $_.IsAccessible }) {
+            try {
+                $o = Get-DbaDbOrphanUser -SqlInstance $serverName -Database $db.Name -ErrorAction SilentlyContinue
+                if ($o) {
+                    _Record -id "3.3" -title "Orphaned users dropped" -level "L1" -status "Fail" `
+                            -observed "Orphans: $(($o | ForEach-Object {$_.User}) -join ',')" -scope "database" -database $db.Name
+                }
+            } catch {}
+        }
+    } catch { _Record -id "3.3" -title "Orphaned users" -level "L1" -status "Error" -observed $_.Exception.Message }
+
+    # ----- 3.9 / 3.10 BUILTIN / local Windows groups as SQL logins -----
+    try {
+        $b = Invoke-DbaQuery -SqlInstance $serverName -Query @"
+SELECT name FROM sys.server_principals
+WHERE type_desc = 'WINDOWS_GROUP' AND name LIKE 'BUILTIN\%'
+"@ -ErrorAction Stop
+        _Record -id "3.9" -title "No BUILTIN groups as SQL logins" -level "L1" `
+                -status ($(if (-not $b) { "Pass" } else { "Fail" })) `
+                -observed ($(if ($b) { ($b | ForEach-Object { $_.name }) -join ',' } else { "None" }))
+
+        $l = Invoke-DbaQuery -SqlInstance $serverName -Query @"
+SELECT name FROM sys.server_principals
+WHERE type_desc = 'WINDOWS_GROUP'
+  AND name LIKE CAST(SERVERPROPERTY('MachineName') AS sysname) + '\%'
+"@ -ErrorAction Stop
+        _Record -id "3.10" -title "No Windows local groups as SQL logins" -level "L1" `
+                -status ($(if (-not $l) { "Pass" } else { "Fail" })) `
+                -observed ($(if ($l) { ($l | ForEach-Object { $_.name }) -join ',' } else { "None" }))
+    } catch { _Record -id "3.9" -title "BUILTIN/local groups as logins" -level "L1" -status "Error" -observed $_.Exception.Message }
+
+    # ----- 4.2 / 4.3 SQL login password policy / expiration -----
+    try {
+        $logins = Invoke-DbaQuery -SqlInstance $serverName -Query @"
+SELECT name, is_policy_checked, is_expiration_checked
+FROM sys.sql_logins WHERE is_disabled = 0
+"@ -ErrorAction Stop
+        $badPol = $logins | Where-Object { $_.is_policy_checked -eq $false }
+        _Record -id "4.3" -title "CHECK_POLICY ON for all enabled SQL logins" -level "L1" `
+                -status ($(if (-not $badPol) { "Pass" } else { "Fail" })) `
+                -observed ($(if ($badPol) { ($badPol | ForEach-Object { $_.name }) -join ',' } else { "All enforced" }))
+
+        $sysadmins = Invoke-DbaQuery -SqlInstance $serverName -Query @"
+SELECT p.name FROM sys.sql_logins p
+JOIN sys.server_role_members rm ON rm.member_principal_id = p.principal_id
+JOIN sys.server_principals r ON r.principal_id = rm.role_principal_id
+WHERE r.name = 'sysadmin'
+"@ -ErrorAction Stop
+        $badExp = $logins | Where-Object { $sysadmins.name -contains $_.name -and $_.is_expiration_checked -eq $false }
+        _Record -id "4.2" -title "CHECK_EXPIRATION ON for sysadmin SQL logins" -level "L1" `
+                -status ($(if (-not $badExp) { "Pass" } else { "Fail" })) `
+                -observed ($(if ($badExp) { ($badExp | ForEach-Object { $_.name }) -join ',' } else { "All enforced" }))
+    } catch { _Record -id "4.x" -title "Password policy" -level "L1" -status "Error" -observed $_.Exception.Message }
+
+    # ----- 6.1 DB chaining (per-database) -----
+    try {
+        $r = Invoke-DbaQuery -SqlInstance $serverName -Query @"
+SELECT name FROM sys.databases
+WHERE is_db_chaining_on = 1 AND name NOT IN ('master','msdb','tempdb','model')
+"@ -ErrorAction Stop
+        if (-not $r) {
+            _Record -id "6.1" -title "DB chaining OFF on user DBs" -level "L1" -status "Pass" -observed "No exceptions"
+        } else {
+            foreach ($row in $r) {
+                _Record -id "6.1" -title "DB chaining OFF on user DBs" -level "L1" -status "Fail" `
+                        -observed "DB_CHAINING=ON" -scope "database" -database $row.name
+            }
+        }
+    } catch { _Record -id "6.1" -title "DB chaining" -level "L1" -status "Error" -observed $_.Exception.Message }
+
+    # ----- 7.1 Symmetric key algorithm >= AES_128 (per-database) -----
+    try {
+        foreach ($db in $server.Databases | Where-Object { $_.IsAccessible }) {
+            try {
+                $r = Invoke-DbaQuery -SqlInstance $serverName -Database $db.Name -Query @"
+SELECT name, algorithm_desc FROM sys.symmetric_keys
+WHERE name <> '##MS_DatabaseMasterKey##'
+  AND algorithm_desc NOT IN ('AES_128','AES_192','AES_256')
+"@ -ErrorAction Stop
+                if ($r) {
+                    _Record -id "7.1" -title "Symmetric keys >= AES_128" -level "L1" -status "Fail" `
+                            -observed "Weak keys: $(($r | ForEach-Object { "$($_.name)=$($_.algorithm_desc)" }) -join ',')" `
+                            -scope "database" -database $db.Name
+                }
+            } catch {}
+        }
+    } catch { _Record -id "7.1" -title "Symmetric key algorithm" -level "L1" -status "Error" -observed $_.Exception.Message }
+
+    # ----- 7.2 Asymmetric key length >= 2048 (per-database) -----
+    try {
+        foreach ($db in $server.Databases | Where-Object { -not $_.IsSystemObject -and $_.IsAccessible }) {
+            try {
+                $r = Invoke-DbaQuery -SqlInstance $serverName -Database $db.Name -Query @"
+SELECT name, key_length FROM sys.asymmetric_keys WHERE key_length < 2048
+"@ -ErrorAction Stop
+                if ($r) {
+                    _Record -id "7.2" -title "Asymmetric keys >= 2048" -level "L1" -status "Fail" `
+                            -observed "Weak keys: $(($r | ForEach-Object { "$($_.name)=$($_.key_length)" }) -join ',')" `
+                            -scope "database" -database $db.Name
+                }
+            } catch {}
+        }
+    } catch { _Record -id "7.2" -title "Asymmetric key size" -level "L1" -status "Error" -observed $_.Exception.Message }
+
+    # ----- 7.4 Force encryption -----
+    try {
+        $fe = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server\$($server.ServiceName)\MSSQLServer\SuperSocketNetLib" -Name ForceEncryption -ErrorAction SilentlyContinue).ForceEncryption
+        _Record -id "7.4" -title "Network Force Encryption" -level "L1" `
+                -status ($(if ($fe -eq 1) { "Pass" } else { "Fail" })) -observed "ForceEncryption=$fe"
+    } catch { _Record -id "7.4" -title "Force encryption" -level "L1" -status "Manual" -observed $_.Exception.Message }
+
+    # ----- 8.1 SQL Server Browser service -----
+    try {
+        $svc = Get-CimInstance Win32_Service -Filter "Name = 'SQLBrowser'" -ErrorAction SilentlyContinue
+        if ($svc) {
+            _Record -id "8.1" -title "SQL Server Browser disabled (when not required)" -level "L1" `
+                    -status ($(if ($svc.StartMode -eq 'Disabled' -or $svc.State -ne 'Running') { "Pass" } else { "Fail" })) `
+                    -observed "StartMode=$($svc.StartMode), State=$($svc.State)"
+        }
+    } catch {}
+
+    # Roll-up: total exception count + fail rate
+    $cis.total_exceptions      = $cis.summary.fail
+    $cis.exception_databases   = @($cis.database_exceptions.Keys)
+    $cis.exception_database_count = $cis.exception_databases.Count
+    $cis.compliance_score      = if (($cis.summary.pass + $cis.summary.fail) -gt 0) {
+        [math]::Round(($cis.summary.pass / ($cis.summary.pass + $cis.summary.fail)) * 100, 1)
+    } else { $null }
+
+    return $cis
+}
+
+# ---------------------------------------------------------------------------
 # Main collection
 # ---------------------------------------------------------------------------
 $inventoryData = @{}
@@ -503,6 +770,21 @@ try {
             $instanceInfo.agent       = Get-AgentJobFacts -serverName $serverName
             $instanceInfo.backups     = Get-BackupSummary -serverName $serverName
             $instanceInfo.high_availability = Get-HaFacts -server $server -serverName $serverName
+            $instanceInfo.cis_compliance    = Get-CisExceptionFacts -server $server -serverName $serverName
+
+            # Stamp each database with its CIS failures so dashboards can
+            # filter the database list directly without joining elsewhere.
+            if ($instanceInfo.cis_compliance.database_exceptions) {
+                foreach ($db in $instanceInfo.databases) {
+                    if ($instanceInfo.cis_compliance.database_exceptions.ContainsKey($db.name)) {
+                        $db.cis_exceptions  = @($instanceInfo.cis_compliance.database_exceptions[$db.name])
+                        $db.cis_compliant   = $false
+                    } else {
+                        $db.cis_exceptions  = @()
+                        $db.cis_compliant   = $true
+                    }
+                }
+            }
 
             $inventoryData[$serverName] = $instanceInfo
 
