@@ -115,6 +115,262 @@ Both playbooks install dbatools / dbatools-equivalents, deploy DBA scripts,
 schedule the active-remediation tasks (cron / Task Scheduler), and drop
 the CheckMK local plugins into the agent's `local/` dir.
 
+## Running options — full reference
+
+Every entry point below assumes you are in the repo root unless noted.
+All playbooks share the same inventory (`/etc/ansible/hosts`) and the same
+`setup.yaml`, so options compose: tag filters, `--limit`, `--check`,
+`--ask-vault-pass`, `-e var=value` all work as expected.
+
+### Management host bootstrap (`bootstrap.sh`)
+
+```bash
+sudo ./bootstrap.sh                          # full bootstrap (CheckMK, Ansible, nagflux,
+                                             # Rundeck, Ollama, chatbot service, ticktator,
+                                             # firewall)
+SKIP_NAGFLUX=1 sudo ./bootstrap.sh           # skip nagflux phase
+SKIP_RUNDECK=1 sudo ./bootstrap.sh           # skip Rundeck
+SKIP_OLLAMA=1  sudo ./bootstrap.sh           # skip local LLM install
+SKIP_CHATBOT=1 sudo ./bootstrap.sh           # skip Flask chatbot service
+SKIP_TICKTATOR=1 sudo ./bootstrap.sh         # skip ServiceNow notifier
+GH_TOKEN=ghp_… sudo -E ./bootstrap.sh        # also log gh CLI in with this PAT
+```
+
+### Install SQL Server 2022 on Windows (`install_sqlserver.yaml`)
+
+Uses the `microsoft.sql.server` collection role; media path lives in
+`setup.yaml → sql_install.source.*`. Run once per fresh host.
+
+```bash
+ansible-galaxy collection install microsoft.sql chocolatey.chocolatey ansible.windows
+
+# Full install (engine + SSMS via chocolatey)
+ansible-playbook -i /etc/ansible/hosts install_sqlserver.yaml --ask-vault-pass
+
+# Single host
+ansible-playbook install_sqlserver.yaml --limit sqlprod01 --ask-vault-pass
+
+# Tag-filtered runs
+ansible-playbook install_sqlserver.yaml --tags stage    # copy ISO/folder only, no install
+ansible-playbook install_sqlserver.yaml --tags engine   # engine only (skip SSMS)
+ansible-playbook install_sqlserver.yaml --tags ssms     # SSMS only (engine already present)
+ansible-playbook install_sqlserver.yaml --tags verify   # smoke-test existing install
+
+# Overrides without editing setup.yaml
+ansible-playbook install_sqlserver.yaml \
+    -e sql_install.edition=Developer \
+    -e sql_install.instance_name=SQL01 \
+    --ask-vault-pass
+```
+
+### SQL Server day-2 automation (`dba_automation.yaml`)
+
+```bash
+# Everything: install dbatools, push scripts, render thresholds.json,
+# schedule tasks, drop CheckMK local plugins.
+ansible-playbook -i /etc/ansible/hosts dba_automation.yaml --ask-vault-pass
+
+# Per-host
+ansible-playbook dba_automation.yaml --limit sqlprod01 --ask-vault-pass
+
+# Tag-filtered (the playbook annotates every block — pick what you need):
+ansible-playbook dba_automation.yaml --tags bootstrap      # dbatools, event source, dirs
+ansible-playbook dba_automation.yaml --tags install        # alias for bootstrap+facts+checkmk
+ansible-playbook dba_automation.yaml --tags facts          # push db_inventory.ps1, re-gather
+ansible-playbook dba_automation.yaml --tags config         # render thresholds.json only
+ansible-playbook dba_automation.yaml --tags scripts        # push all PowerShell scripts
+ansible-playbook dba_automation.yaml --tags localplugins   # push CheckMK local checks
+ansible-playbook dba_automation.yaml --tags checkmk        # CheckMK agent + plugins
+ansible-playbook dba_automation.yaml --tags backups        # schedule FULL/DIFF/LOG tasks
+ansible-playbook dba_automation.yaml --tags integrity      # schedule DBCC CHECKDB
+ansible-playbook dba_automation.yaml --tags maintenance    # blocking, deadlocks, tempdb
+ansible-playbook dba_automation.yaml --tags remediation    # active-remediation tasks
+ansible-playbook dba_automation.yaml --tags security       # account/security monitors
+ansible-playbook dba_automation.yaml --tags cleanup        # remove stale logs/tasks
+
+# Dry-run / change-preview
+ansible-playbook dba_automation.yaml --check --diff --ask-vault-pass
+```
+
+### Oracle day-2 automation (`Oracle/dba_automation.yaml`)
+
+```bash
+ansible-playbook -i /etc/ansible/hosts Oracle/dba_automation.yaml --ask-vault-pass
+
+# Same tag vocabulary as the SQL playbook (mapped to shell scripts + cron)
+ansible-playbook Oracle/dba_automation.yaml --tags config       # render thresholds
+ansible-playbook Oracle/dba_automation.yaml --tags scripts      # push shell scripts
+ansible-playbook Oracle/dba_automation.yaml --tags facts        # db_inventory.sh + re-gather
+ansible-playbook Oracle/dba_automation.yaml --tags localplugins # CheckMK Linux plugins
+ansible-playbook Oracle/dba_automation.yaml --tags backups      # RMAN cron jobs
+ansible-playbook Oracle/dba_automation.yaml --tags integrity    # RMAN VALIDATE / DBV
+ansible-playbook Oracle/dba_automation.yaml --tags maintenance  # index/space jobs
+ansible-playbook Oracle/dba_automation.yaml --tags remediation  # active fixes
+ansible-playbook Oracle/dba_automation.yaml --tags security     # account audit
+ansible-playbook Oracle/dba_automation.yaml --tags cleanup
+```
+
+### CIS Microsoft SQL Server 2022 Benchmark (`files/CISBenchmarkSQL2022.ps1`)
+
+Runs on the Windows target — audit-only by default. With `-Remediate` it
+captures the BEFORE state, appends a revert command to a rollback file,
+then applies the fix.
+
+```powershell
+# Audit only (read-only) - writes JSON report to C:\Logs\SQL_CIS2022_<ts>.json
+powershell -ExecutionPolicy Bypass `
+  -File C:\ProgramData\Ansible\CISBenchmarkSQL2022.ps1
+
+# Audit + emit JSON to stdout (for Ansible facts.d / win_shell capture)
+powershell -ExecutionPolicy Bypass `
+  -File CISBenchmarkSQL2022.ps1 -AsAnsibleFact
+
+# L1 only / L2 only
+powershell -File CISBenchmarkSQL2022.ps1 -Level L1
+powershell -File CISBenchmarkSQL2022.ps1 -Level L2
+
+# Restrict to specific controls
+powershell -File CISBenchmarkSQL2022.ps1 -Controls 2.1,2.2,2.4,2.9,4.3
+
+# Dry-run remediation - captures rollback file but does NOT execute fixes
+powershell -File CISBenchmarkSQL2022.ps1 -Remediate -WhatIf `
+  -Controls 2.1,2.2,2.4,2.5,2.9,2.13
+
+# Apply remediation (after change approval). Each change is logged with
+# BEFORE state + revert command; rollback file path is in the JSON output.
+powershell -File CISBenchmarkSQL2022.ps1 -Remediate `
+  -Controls 2.1,2.2,2.4,2.5,2.9,2.13 -AsAnsibleFact
+```
+
+From Ansible:
+
+```bash
+# Audit every Windows host
+ansible sql_servers -m ansible.windows.win_shell \
+  -a 'powershell.exe -ExecutionPolicy Bypass -File C:\ProgramData\Ansible\CISBenchmarkSQL2022.ps1 -AsAnsibleFact'
+```
+
+### Individual PowerShell scripts (`files/*.ps1`)
+
+All scripts auto-discover local instances via the registry, use dbatools,
+log to `C:\Logs\<Name>_<yyyyMMdd>.log` and the Windows Application event log
+with source `SQL Server Health Check`. Read-only by default; active-remediation
+scripts take parameters that gate the destructive action.
+
+```powershell
+# Health / audit (read-only)
+powershell -File C:\DBA\scripts\SecurityAudit.ps1 -StaleLoginDays 90
+powershell -File C:\DBA\scripts\PatchLevelCheck.ps1 -BuildMinAge_Days 180
+powershell -File C:\DBA\scripts\MonitorAgentJobs.ps1
+powershell -File C:\DBA\scripts\MonitorAlwaysOn.ps1
+powershell -File C:\DBA\scripts\MonitorDiskSpace.ps1
+powershell -File C:\DBA\scripts\MonitorTempDB.ps1
+powershell -File C:\DBA\scripts\MonitorAccountSecurity.ps1
+powershell -File C:\DBA\scripts\GetCheckDBStatus.ps1
+powershell -File C:\DBA\scripts\CheckmssqlStatus.ps1
+
+# Active maintenance / remediation (each takes safety parameters)
+powershell -File C:\DBA\scripts\BackupDatabases.ps1 -BackupType Full
+powershell -File C:\DBA\scripts\BackupDatabases.ps1 -BackupType Differential
+powershell -File C:\DBA\scripts\BackupDatabases.ps1 -BackupType Log
+powershell -File C:\DBA\scripts\VerifyBackups.ps1 -SampleCount 3
+powershell -File C:\DBA\scripts\DBCCCheckDB.ps1 -PhysicalOnlyAboveGB 200
+powershell -File C:\DBA\scripts\DetectBlockingLocks.ps1 -AutoKillMinutes 60
+powershell -File C:\DBA\scripts\DetectDeadlocks.ps1 -WindowMinutes 35
+powershell -File C:\DBA\scripts\IndexMaintenance.ps1 -RebuildPct 30 -ReorgPct 10
+
+# CheckMK monitoring login (creates 'checkmk' SQL login with read-only role)
+powershell -File C:\DBA\scripts\createcheckmk.ps1
+```
+
+### Chatbot (`AI/app.py`)
+
+```bash
+# Production: managed by systemd (bootstrap.sh installs the unit)
+sudo systemctl status aacu-chatbot
+sudo systemctl restart aacu-chatbot
+sudo journalctl -u aacu-chatbot -f
+
+# Dev / debug: run Flask directly
+cd AI && python3 app.py                  # http://localhost:5000
+FLASK_DEBUG=1 python3 AI/app.py          # auto-reload + tracebacks
+
+# Override LLM at startup
+ANTHROPIC_API_KEY=sk-… python3 AI/app.py
+OPENAI_API_KEY=sk-…    python3 AI/app.py
+# (model auto-selects from setup.yaml → chatbot.llm priority: anthropic > openai > ollama)
+```
+
+### Inventory / facts tools
+
+```bash
+# Rebuild the chatbot's per-DB catalogue from Ansible facts
+python3 AI/tools/generate_mssql_databases_ini.py            # → AI/inventory/databases.ini
+python3 AI/tools/generate_mssql_databases_ini.py --dry-run
+python3 AI/tools/generate_mssql_databases_ini.py \
+        --from-tree /var/lib/ansible/facts_cache
+
+python3 AI/tools/generate_oracle_databases_ini.py           # → Oracle/inventory/databases.ini
+python3 AI/tools/generate_oracle_databases_ini.py --dry-run
+
+# Push SQL Server inventory back to Rundeck as resource facts
+python3 rundeckfacts.py                                     # writes resources.json
+python3 rundeckfacts.py --project mssql_project --out /var/lib/rundeck/projects/...
+```
+
+### CheckMK → ServiceNow notifier (`ticktator.py`)
+
+Normally invoked by CheckMK as a notification command (see
+`/omd/sites/<site>/etc/check_mk/notify.d/`). Manual run:
+
+```bash
+# Dry-run (no ticket created)
+TICKTATOR_DRY_RUN=1 ./ticktator.py \
+    --host sqlprod01 --service "MSSQL_Backup" --state CRITICAL --output "Backup older than 30h"
+
+# Real run (uses env from /etc/default/ticktator)
+./ticktator.py --host sqlprod01 --service "MSSQL_Backup" --state CRITICAL --output "..."
+
+# Tail the dedup state file
+tail -f /var/lib/ticktator/state.json
+journalctl -u check_mk@<site> -f | grep ticktator
+```
+
+### Legacy CheckMK → InfluxDB poller (`sync_influx.sh`)
+
+```bash
+# Manual one-shot pull (nagflux is the supported path now)
+./sync_influx.sh
+
+# Cron entry (every 5 min)
+*/5 * * * * /opt/aacu/sync_influx.sh >> /var/log/sync_influx.log 2>&1
+```
+
+### Useful one-liners
+
+```bash
+# Re-render thresholds.json without reinstalling anything
+ansible-playbook dba_automation.yaml --tags config --ask-vault-pass
+
+# Re-gather Ansible custom facts only (after editing db_inventory.ps1)
+ansible-playbook dba_automation.yaml --tags facts
+
+# Force CIS scan on every Windows host and pull the report back
+ansible sql_servers -m ansible.windows.win_shell \
+  -a 'powershell -File C:\ProgramData\Ansible\CISBenchmarkSQL2022.ps1 -AsAnsibleFact' \
+  --tree /tmp/cis_results
+
+# Validate YAML / Jinja before pushing
+ansible-playbook dba_automation.yaml --syntax-check
+ansible-playbook install_sqlserver.yaml --syntax-check
+ansible-lint dba_automation.yaml install_sqlserver.yaml
+
+# Vault helpers
+ansible-vault encrypt_string 'StrongP@ssw0rd!' --name 'sa_password'
+ansible-vault view setup.yaml
+ansible-vault edit setup.yaml
+```
+
 ## Building the database catalogue
 
 The chatbot's dropdown reads from `databases.ini`. Generate / refresh both
