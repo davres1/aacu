@@ -32,5 +32,7 @@ TelnetServer: plvm962c3
 https_listen_parameter: 80
 MAILER_PASSWORD: '7D6T>HZLjST%9eF<'
 ebs_version: 122
-
+tgt_racon: 'N'         # Set to 'Y' if target database is RAC (multi-node clone), else 'N'
+tgt_db_nodes: []       # List of RAC node short-hostnames; only used when tgt_racon == 'Y'
+                       # e.g. tgt_db_nodes: ['plvm888m1','plvm888m2']
 email_address: 'sdavre@cloudsmartservice.com,MaryPat.Lammers@penske.com,Ashit.Upadhyay@penske.com'

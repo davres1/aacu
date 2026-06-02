@@ -175,7 +175,7 @@ echo "please check $LOGFILE"
 #{ echo "apps"; echo ${PAPPSPASS}; echo ${PWPSWD}; } | $ADMIN_SCRIPTS_HOME/adstpall.sh -nodbchk  | tee -a $LOGFILE
 
 # APPLPTMp directory permission
-chmod -R 777 ${L_TARGET_RUN_FS}/inst/apps/${{ tgt_db }}_$(`hostname -a`)/temp
+chmod -R 777 ${L_TARGET_RUN_FS}/inst/apps/{{ tgt_db }}_$(hostname -a)/temp
 #Unregister Oracle homes
 cd {{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/oui/bin/
 {{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/oui/bin/runInstaller -detachHome -silent ORACLE_HOME={{ app_tgt_mount }}/{{ current_base }}/FMW_Home/Oracle_EBS-app1

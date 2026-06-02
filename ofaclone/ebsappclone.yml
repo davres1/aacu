@@ -1,11 +1,26 @@
 ---
-# Summary of Steps
-# 1. Stop application
-# 2. copy needed files to target apps server
-# 3. Run clone
-# 4. Run costom Steps
-# ansible-galaxy collection install -r requirements.yml
-#Stop application
+# =============================================================================
+# ebsappclone.yml - Oracle EBS application tier refresh
+#
+# Supported version matrix:
+#   ebs_version : 121 (EBS 12.1) - uses templates/restart121.sh.j2 + appsora121.j2
+#                 122 (EBS 12.2) - uses templates/restart122.sh.j2 + appsora122.j2
+#                                   + dual-FS aware (run/patch), adop-based
+#   db_version  : 11 / 12 / 19    (orthogonal - DB clone runs via ebsdbclone.yml)
+#
+# Many tasks are gated with `when: ebs_version == 122` for 12.2-only steps
+# (current_edition, patch_edition, FS_BASE/RUN_BASE manipulation, inventory.xml,
+# dual-FS context regeneration, weblogic patches, etc.). 12.1 hosts skip those.
+#
+# Steps:
+#   1. Stop application
+#   2. Copy needed files to target apps server (auto_clone.sh, restart{{ ebs_version }}.sh,
+#      mypairfile.txt, pre/post profiles, edition scripts)
+#   3. Run clone (adcfgclone.pl via auto_clone.sh wrapper)
+#   4. Run custom post-clone steps (apppost.sh, autoconfig, softlinks)
+#
+# Prereq: ansible-galaxy collection install -r requirements.yml
+# =============================================================================
 
 - name: Oracle EBS Application Refresh
   hosts: "{{domain}}-{{tgt_env}}-OFA-APP"
@@ -128,8 +143,8 @@
       become: yes
       become_user: applmgr
 
-    - name: Copy clone script to target Application server
-      template: src=templates/restart.sh.j2 dest={{ tgt_dir }}/restart.sh mode=0755
+    - name: Copy restart script to target Application server
+      template: src=templates/restart{{ ebs_version }}.sh.j2 dest={{ tgt_dir }}/restart.sh mode=0755
       become: yes
       become_user: applmgr
 

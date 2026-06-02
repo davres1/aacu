@@ -20,5 +20,5 @@ patch_base: fs2
 db_version: '19'
 src_cdb_name:
 app_src_mount: /u02/oracle/eprod
-
+src_racon: 'Y'         # Set to 'Y' if source database is RAC, else 'N'
 email_address: 'sdavre@cloudsmartservice.com,MaryPat.Lammers@penske.com,Ashit.Upadhyay@penske.com'

@@ -1,7 +1,7 @@
 #!/bin/bash
 source ~/.bash_profile
-touch {{ tgt_dir }}/ofa_{{ src_env }}_db_shart.log
-exec 1> {{ tgt_dir }}/ofa_{{ src_env }}_db_shart.log 2>&1
+touch {{ tgt_dir }}/ofa_{{ src_env }}_db_start.log
+exec 1> {{ tgt_dir }}/ofa_{{ src_env }}_db_start.log 2>&1
 
 export L_DBCONTEXT_NAME={{ src_env }}_`hostname -a`
 export ORACLE_HOME={{ src_oracle_home }}

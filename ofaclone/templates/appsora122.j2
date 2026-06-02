@@ -35,19 +35,19 @@ case $1 in
         while [ `echo $dbstatus` != 'OK' ] && [ `echo $count` != 20 ]; do echo "DB is down. Waiting on database to come up....."; sleep 60; ((count+=1)); echo $count; done
         if [ $dbstatus == 'OK' ]
         then
-        su $ORACLE -c "{{ tgt_dir }}/restart.sh start {{ tgt_apps_pwd }} {{ src_wblg_pswd}}" &
+        su $ORACLE -c "{{ tgt_dir }}/restart.sh start {{ tgt_apps_pwd }} {{ tgt_wblg_pswd}}" &
         fi
         ;;
 'stop')
         echo -n $"Shutting down Oracle Application: "
-        su $ORACLE -c "{{ tgt_dir }}/restart.sh stop {{ tgt_apps_pwd }} {{ src_wblg_pswd}}" &
+        su $ORACLE -c "{{ tgt_dir }}/restart.sh stop {{ tgt_apps_pwd }} {{ tgt_wblg_pswd}}" &
         ;;
 'restart')
         echo -n $"Shutting down Oracle Application: "
-        su $ORACLE -c "{{ tgt_dir }}/restart.sh stop {{ tgt_apps_pwd }} {{ src_wblg_pswd}}" &
+        su $ORACLE -c "{{ tgt_dir }}/restart.sh stop {{ tgt_apps_pwd }} {{ tgt_wblg_pswd}}" &
         sleep 600
         echo -n $"Starting Oracle Application: "
-        su $ORACLE -c "{{ tgt_dir }}/restart.sh start {{ tgt_apps_pwd }} {{ src_wblg_pswd}}" &
+        su $ORACLE -c "{{ tgt_dir }}/restart.sh start {{ tgt_apps_pwd }} {{ tgt_wblg_pswd}}" &
         ;;
 *)
         echo "usage: $0 {start|stop|restart}"

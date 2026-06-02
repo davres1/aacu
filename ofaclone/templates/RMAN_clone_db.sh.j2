@@ -1,140 +1,129 @@
 #!/bin/bash
+# =============================================================================
+# RMAN_clone_db.sh   (rendered from RMAN_clone_db.sh.j2)
+#
+# Refreshes the target Oracle 19c database from the source via RMAN DUPLICATE.
+#
+# RAC awareness:
+#   tgt_racon == 'Y'  -> target is a RAC database (srvctl-managed, multi-node)
+#                          - all instances are stopped via srvctl before drop
+#                          - cluster_database is set FALSE for the duplicate
+#                          - after duplicate, cluster_database is set back TRUE
+#                            and hidden RAC params + extra threads/redo are added
+#                          - database is re-registered with CRS via srvctl
+#   tgt_racon == 'N'  -> target is single-instance (sqlplus-only flow)
+#
+# The duplicate itself runs on exactly ONE node (the host this script is
+# executed on). For RAC, run this from the first node in the cluster.
+# =============================================================================
 
+set -o pipefail
 
-########################################################
-# Define variables
-########################################################
-VAR_INPUT1={{ tgt_db }}
+# $1 = target DB name to clone (CDB name for 19c, DB name for 11g/12c non-CDB).
+# Falls back to {{ tgt_db }} for backward compatibility with callers that
+# don't pass an argument.
+VAR_INPUT1="${1:-{{ tgt_db }}}"
 SCRIPT_NAME=`basename $0 .sh`
 
-typeset -u INSTANCE_NAME_U="${VAR_INPUT1}"		# The Target Instance name in UPPER Case
-typeset -l INSTANCE_NAME="${VAR_INPUT1}"                # The Target Instance name in lower Case
+typeset -u INSTANCE_NAME_U="${VAR_INPUT1}"
+typeset -l INSTANCE_NAME="${VAR_INPUT1}"
 typeset -l HOST=`uname -n`
 export INSTANCE_NAME
 
-## TPM: Updated for 19c: 2021/10/21
-FROM_INSTANCE="{{ src_db }}"
+# RAC flag rendered at template time from tgt_racon var. Default N (safer).
+RACON="{{ (tgt_racon | default('N')) | upper }}"
 
+FROM_INSTANCE="{{ src_db }}"
 TIMESTAMP=`date +%Y%m%d_%H%M`
 
-
 CONNECT_SQLNET_RMAN="{{ cataloguser }}/{{ catalogpswd }}@{{ catalogtns }}"
-
-CATALOG_CONNECT=$CONNECT_SQLNET_RMAN	# Define local RMAN connect string
-DEST_STREAMS=8        			# the number of parallel streams READ into each channel
-DEST_RATE=1000       			# the max io rate (MB/sec) to READ from each channel
+CATALOG_CONNECT=$CONNECT_SQLNET_RMAN
+DEST_STREAMS=8
+DEST_RATE=1000
 RMAN_CHANNEL_SPEC="TYPE DISK MAXOPENFILES ${DEST_STREAMS} RATE ${DEST_RATE}M"
 UNTILSEQUENCE=0
 
 SCRIPT_DIR="{{ tgt_dir }}"
-RMANLOG="${SCRIPT_DIR}/${SCRIPT_NAME}_${INSTANCE_NAME}_${TIMESTAMP}.RMANLOG"	#RMAN log
-LOG="${SCRIPT_DIR}/${SCRIPT_NAME}_${INSTANCE_NAME}_${TIMESTAMP}.LOG"		#Script log
-TEMPLOG="${SCRIPT_DIR}/${SCRIPT_NAME}_${INSTANCE_NAME}_${TIMESTAMP}.TEMPLOG"	#Temporary log
+RMANLOG="${SCRIPT_DIR}/${SCRIPT_NAME}_${INSTANCE_NAME}_${TIMESTAMP}.RMANLOG"
+LOG="${SCRIPT_DIR}/${SCRIPT_NAME}_${INSTANCE_NAME}_${TIMESTAMP}.LOG"
+TEMPLOG="${SCRIPT_DIR}/${SCRIPT_NAME}_${INSTANCE_NAME}_${TIMESTAMP}.TEMPLOG"
 
-########################################################
-# Set up environment
-########################################################
 . set{{ tgt_db }}
 
+echo ""                                                                | tee -a ${LOG}
+echo "#### RACON=${RACON}  ####"                                       | tee -a ${LOG}
+echo "#### Checking for ${INSTANCE_NAME} init file : `date` ####"      | tee -a ${LOG}
 
-
-
-echo "" 						| tee -a ${LOG}
-echo "#### Checking for ${INSTANCE_NAME} init file : `date` ####" 	| tee -a ${LOG}
-
-if [ -f $ORACLE_HOME/dbs/init${INSTANCE_NAME}.ora ]
-then 
-	echo "$ORACLE_HOME/dbs/init${INSTANCE_NAME}.ora file exists, continuing..."       | tee -a ${LOG}
+if [ -f $ORACLE_HOME/dbs/init${INSTANCE_NAME}.ora ]; then
+    echo "$ORACLE_HOME/dbs/init${INSTANCE_NAME}.ora exists, continuing..."  | tee -a ${LOG}
 else
-	echo "$ORACLE_HOME/dbs/init${INSTANCE_NAME}.ora file doesn't exist, exiting !!!"       | tee -a ${LOG}
-	exit 0
+    echo "$ORACLE_HOME/dbs/init${INSTANCE_NAME}.ora missing, exiting !!!"  | tee -a ${LOG}
+    exit 1
 fi
 
-
-
-
 ########################################################
-# Prepare target database for RMAN clone
+# Pre-clone: stop & drop target database
 ########################################################
+echo "#### Prepare target for RMAN clone : `date` ####"  | tee -a ${LOG}
 
-echo "#### Prepare target database for RMAN clone ####"	| tee -a ${LOG}
-echo "" 						| tee -a ${LOG}
-echo "### Shutdown the Instance: `date`" 		| tee -a ${LOG}
-echo "" 						| tee -a ${LOG}
+if [ "${RACON}" = "Y" ]; then
+    echo "### RAC mode - stopping all instances via srvctl"  | tee -a ${LOG}
+    srvctl status database -d ${INSTANCE_NAME}  >> ${LOG} 2>&1 || true
+    srvctl stop  database -d ${INSTANCE_NAME} -o abort -force  >> ${LOG} 2>&1 || true
+    srvctl remove database -d ${INSTANCE_NAME} -force          >> ${LOG} 2>&1 || true
+fi
 
-#srvctl remove database -db {INSTANCE_NAME}
-
-${ORACLE_HOME}/bin/sqlplus -s << EOF
-/ AS SYSDBA
-create pfile=${ORACLE_HOME}/dbs/init${INSTANCE_NAME}backup.ora from spfile;
+# Capture spfile -> pfile, force cluster_database OFF for the DUPLICATE
+${ORACLE_HOME}/bin/sqlplus -s / as sysdba <<EOF | tee -a ${LOG}
+whenever sqlerror exit failure
+create pfile='${ORACLE_HOME}/dbs/init${INSTANCE_NAME}backup.ora' from spfile;
 alter system set cluster_database=FALSE scope=spfile;
-create pfile=${ORACLE_HOME}/dbs/init${INSTANCE_NAME}temp.ora from spfile;
-shutdown abort ;
+create pfile='${ORACLE_HOME}/dbs/init${INSTANCE_NAME}temp.ora' from spfile;
+shutdown abort;
 startup mount restrict;
 drop database;
 exit;
 EOF
 
-
-
-
-echo "" 						| tee -a ${LOG}
-echo "### Start up the Instance: `date`" 		| tee -a ${LOG}
-echo "" 						| tee -a ${LOG}
-
-${ORACLE_HOME}/bin/sqlplus -s << EOF | tee -a ${LOG}
-/ AS SYSDBA
-startup force nomount pfile=${ORACLE_HOME}/dbs/init${INSTANCE_NAME}temp.ora;
+echo "### Start aux instance in nomount : `date`"  | tee -a ${LOG}
+${ORACLE_HOME}/bin/sqlplus -s / as sysdba <<EOF | tee -a ${LOG}
+whenever sqlerror exit failure
+startup force nomount pfile='${ORACLE_HOME}/dbs/init${INSTANCE_NAME}temp.ora';
 create spfile='+ORAREDO02/${INSTANCE_NAME}/spfile${INSTANCE_NAME}.ora' from pfile='${ORACLE_HOME}/dbs/init${INSTANCE_NAME}temp.ora';
 shutdown immediate;
 startup force nomount;
+exit;
 EOF
 
-
 ########################################################
-# Start RMAN and get the last archive log # available
+# Find the last archived sequence on the source via RMAN catalog
 ########################################################
-${ORACLE_HOME}/bin/rman  <<EOF                                  | tee -a ${LOG}
-#
+${ORACLE_HOME}/bin/rman <<EOF | tee -a ${LOG}
 SET ECHO OFF;
-#
 CONNECT AUXILIARY / ;
 CONNECT CATALOG "${CATALOG_CONNECT}" ;
-#
 SET DATABASE '${FROM_INSTANCE}';
-#
 SPOOL LOG TO '${TEMPLOG}' ;
 LIST ARCHIVELOG ALL BACKED UP 1 TIMES TO DISK;
 SPOOL LOG OFF;
 EOF
 
-UNTILSEQUENCE=`tail -5 $TEMPLOG |head -1 |awk '{print $3}'`
-echo "Recover to archive SEQUENCE #: " $UNTILSEQUENCE  |tee -a ${LOG}
-
-### RMAN until clause is non-inclusive, so increment by one
+UNTILSEQUENCE=`tail -5 $TEMPLOG | head -1 | awk '{print $3}'`
+echo "Recover to archive SEQUENCE #: ${UNTILSEQUENCE}"  | tee -a ${LOG}
 UNTILSEQUENCE=`expr $UNTILSEQUENCE + 1`
 
-###echo "UNTIL SEQUENCE " $UNTILSEQUENCE  |tee -a ${LOG}
-
-
 ########################################################
-# Start RMAN and execute the duplicate commands
+# RMAN DUPLICATE
 ########################################################
-echo "#### Clone database using RMAN ####"			| tee -a ${LOG}
-echo "" 							| tee -a ${LOG}
+echo "#### Clone database using RMAN : `date` ####"  | tee -a ${LOG}
 
-${ORACLE_HOME}/bin/rman  <<EOF 					| tee -a ${LOG}
-#
-SET ECHO ON ;
-SPOOL LOG TO '${RMANLOG}' ;
-#
-HOST 'echo " \n\n***Starting RMAN session ";date' ;
-#
+${ORACLE_HOME}/bin/rman <<EOF | tee -a ${LOG}
+SET ECHO ON;
+SPOOL LOG TO '${RMANLOG}';
+HOST 'echo "\n\n***Starting RMAN session ";date';
 CONNECT AUXILIARY / ;
 CONNECT CATALOG ${CATALOG_CONNECT} ;
-#
-HOST 'echo " \n\n***Connected to aux/catalog ";date' ;
-#
+HOST 'echo "\n\n***Connected to aux/catalog ";date';
 RUN
 {
 ALLOCATE AUXILIARY CHANNEL D01 ${RMAN_CHANNEL_SPEC};
@@ -146,58 +135,93 @@ ALLOCATE AUXILIARY CHANNEL D06 ${RMAN_CHANNEL_SPEC};
 ALLOCATE AUXILIARY CHANNEL D07 ${RMAN_CHANNEL_SPEC};
 ALLOCATE AUXILIARY CHANNEL D08 ${RMAN_CHANNEL_SPEC};
 DUPLICATE DATABASE '${FROM_INSTANCE}' TO '${INSTANCE_NAME}'
-#PFILE '${ORACLE_HOME}/dbs/init${INSTANCE_NAME}.ora'
-DB_FILE_NAME_CONVERT '${FROM_INSTANCE}','${INSTANCE_NAME}' 
+DB_FILE_NAME_CONVERT '${FROM_INSTANCE}','${INSTANCE_NAME}'
 UNTIL SEQUENCE $UNTILSEQUENCE
 NOFILENAMECHECK
 NORESUME
 LOGFILE
-  GROUP 1 ('+ORAREDO01', '+ORAREDO02')  SIZE 1G REUSE,
-  GROUP 2 ('+ORAREDO01', '+ORAREDO02')  SIZE 1G REUSE,
-  GROUP 3 ('+ORAREDO01', '+ORAREDO02')  SIZE 1G REUSE,
-  GROUP 4 ('+ORAREDO01', '+ORAREDO02')  SIZE 1G REUSE,
-  GROUP 5 ('+ORAREDO01', '+ORAREDO02')  SIZE 1G REUSE,
-  GROUP 6 ('+ORAREDO01', '+ORAREDO02')  SIZE 1G REUSE,
-  GROUP 7 ('+ORAREDO01', '+ORAREDO02')  SIZE 1G REUSE;
+  GROUP 1 ('+ORAREDO01', '+ORAREDO02') SIZE 1G REUSE,
+  GROUP 2 ('+ORAREDO01', '+ORAREDO02') SIZE 1G REUSE,
+  GROUP 3 ('+ORAREDO01', '+ORAREDO02') SIZE 1G REUSE,
+  GROUP 4 ('+ORAREDO01', '+ORAREDO02') SIZE 1G REUSE,
+  GROUP 5 ('+ORAREDO01', '+ORAREDO02') SIZE 1G REUSE,
+  GROUP 6 ('+ORAREDO01', '+ORAREDO02') SIZE 1G REUSE,
+  GROUP 7 ('+ORAREDO01', '+ORAREDO02') SIZE 1G REUSE;
 }
-#
-HOST 'echo " \n\n***RMAN clone completed ";date' ;
-#
+HOST 'echo "\n\n***RMAN clone completed ";date';
 EXIT
-#
 EOF
 
-###########################################################################
-#  Sleep for 20 seconds to mitigate oracle bug
-#  Bug 17336079 : ORA-00443: BACKGROUND PROCESS "EMNC" DID NOT START
-#  Doc ID 2072622.1 ORA-600 [ktcccod-1]: "EMNC" PROCESS NOT START
-###########################################################################
-echo " "
-echo " `date` " 							| tee -a ${LOG}
-echo " Wait for 20 seconds " 						| tee -a ${LOG}
+# Bug 17336079 / Doc 2072622.1 - "EMNC" process start race
+echo "Sleeping 20s after duplicate to avoid EMNC race"  | tee -a ${LOG}
 sleep 20
 
-
 ########################################################
-# Execute post RMAN clone commands
+# Post-clone: branch on RACON
 ########################################################
-echo " `date` " 							| tee -a ${LOG}
-echo "#### Restart database in noarchivelog mode after RMAN clone ####"	| tee -a ${LOG}
+echo "#### Post-clone restart : `date` ####"  | tee -a ${LOG}
 
+if [ "${RACON}" = "Y" ]; then
+    echo "### RAC mode - re-enabling cluster_database and adding extra threads"  | tee -a ${LOG}
 
-${ORACLE_HOME}/bin/sqlplus -s << EOF
-/ AS SYSDBA
-create spfile from pfile=${ORACLE_HOME}/dbs/init${INSTANCE_NAME}backup.ora;
+    ${ORACLE_HOME}/bin/sqlplus -s / as sysdba <<EOF | tee -a ${LOG}
+whenever sqlerror exit failure
+create spfile from pfile='${ORACLE_HOME}/dbs/init${INSTANCE_NAME}backup.ora';
 shutdown immediate;
 startup mount;
 alter database noarchivelog;
 alter database open;
 alter database backup controlfile to trace;
-alter system set "_lm_global_posts"=true scope=spfile  sid='*';
+-- restore RAC settings
+alter system set cluster_database=TRUE scope=spfile sid='*';
+alter system set "_lm_global_posts"=true scope=spfile sid='*';
 alter system set "_immediate_commit_propagation"=true scope=spfile sid='*';
+-- add redo thread #2 for the second RAC instance (instance #1 already has its thread from source)
+alter database add logfile thread 2
+  group 11 ('+ORAREDO01','+ORAREDO02') size 1G reuse,
+  group 12 ('+ORAREDO01','+ORAREDO02') size 1G reuse,
+  group 13 ('+ORAREDO01','+ORAREDO02') size 1G reuse;
+alter database enable public thread 2;
+alter database add undo tablespace UNDOTBS2 datafile '+ORADATA' size 4G autoextend on;
+alter system set undo_tablespace=UNDOTBS2 scope=spfile sid='${INSTANCE_NAME}2';
+shutdown immediate;
+exit;
 EOF
 
-echo "restart database"
+    echo "### Register with CRS via srvctl"  | tee -a ${LOG}
+{% set _nodes = tgt_db_nodes | default([]) %}
+{% if _nodes | length >= 2 %}
+    srvctl add database -d ${INSTANCE_NAME} \
+        -o ${ORACLE_HOME} \
+        -p '+ORAREDO02/${INSTANCE_NAME}/spfile${INSTANCE_NAME}.ora' \
+        -y AUTOMATIC                                                  >> ${LOG} 2>&1
+{% for _n in _nodes %}
+    srvctl add instance -d ${INSTANCE_NAME} -i ${INSTANCE_NAME}{{ loop.index }} -n {{ _n }}  >> ${LOG} 2>&1
+{% endfor %}
+{% else %}
+    # tgt_db_nodes not set in vars - operator must register instances manually:
+    #   srvctl add database  -d ${INSTANCE_NAME} -o ${ORACLE_HOME} -p '+ORAREDO02/...'
+    #   srvctl add instance  -d ${INSTANCE_NAME} -i ${INSTANCE_NAME}1 -n <node1>
+    #   srvctl add instance  -d ${INSTANCE_NAME} -i ${INSTANCE_NAME}2 -n <node2>
+    echo "WARN: tgt_db_nodes is empty in vars file - skipping srvctl add" | tee -a ${LOG}
+{% endif %}
+    srvctl start database -d ${INSTANCE_NAME}                          >> ${LOG} 2>&1
 
-srvctl stop database -d  {INSTANCE_NAME}
-srvctl start database -d  {INSTANCE_NAME}
+else
+    echo "### Single-instance mode - sqlplus startup only"  | tee -a ${LOG}
+
+    ${ORACLE_HOME}/bin/sqlplus -s / as sysdba <<EOF | tee -a ${LOG}
+whenever sqlerror exit failure
+create spfile from pfile='${ORACLE_HOME}/dbs/init${INSTANCE_NAME}backup.ora';
+shutdown immediate;
+startup mount;
+alter database noarchivelog;
+alter database open;
+alter database backup controlfile to trace;
+-- DO NOT set RAC hidden params on a non-RAC instance
+exit;
+EOF
+fi
+
+echo "#### RMAN clone done : `date` ####"  | tee -a ${LOG}
+exit 0

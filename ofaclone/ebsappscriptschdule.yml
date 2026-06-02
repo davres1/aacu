@@ -1,4 +1,29 @@
 ---
+# =============================================================================
+# ebsappscriptschdule.yml - Deploy maintenance scripts + cron schedule to
+#                            every EBS application server.
+#
+# Supported version matrix:
+#   ebs_version : 121 - pushes templates/scripts/121/*.sh.j2
+#                 122 - pushes templates/scripts/122/*.sh.j2
+#
+# Scripts pushed to {{ tgt_dir }}/scripts/ (both versions):
+#   conreq.sh         cron: 0 *  * * *  (every hour - concurrent request audit)
+#   health_check.sh   cron: 0 *  * * *  (every hour - tier health probe)
+#   space_usage.sh    cron: 0 *  * * *  (every hour - FS usage capture)
+#   internalmon.sh    cron: 0 14 * * *  (14:00 daily - internal monitor)
+#   free.sh           cron: 11 11 * * * (11:11 daily - memory/swap)
+#   project_free.sql                      (SQL helper, called from above)
+#
+# Version-conditional cleanup (one runs per host, gated on ebs_version):
+#   12.1: clean_conc_log.sh      cron: 0 22 * * *  (22:00 daily)
+#   12.2: delete_EBS_logs.sh     cron: 0 22 * * *  (22:00 daily)
+#
+# On-demand scripts pushed but NOT cron-scheduled (operator runs as needed):
+#   12.1 only: ebs_reboot.sh, workflow_mailer_restart.sql.sh
+#   12.2 only: Admin_Managed.sh, empty_file.sh
+# =============================================================================
+
 - name: Start EBS application on "{{ tgt_env }}"
   hosts: "{{domain}}-{{tgt_env}}-OFA-APP"
   remote_user: applmgr
