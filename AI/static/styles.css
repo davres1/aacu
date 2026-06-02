@@ -334,6 +334,27 @@ button { font-family: inherit; }
 }
 .server-picker:hover { border-color: var(--accent); }
 
+/* "Download PDF" button on the topbar - shares the look of the server picker
+   but tinted with the brand accent so it reads as a primary action. */
+.pdf-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12.5px;
+  font-family: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.pdf-btn svg { display: block; }
+.pdf-btn:hover  { border-color: var(--accent); color: var(--accent); }
+.pdf-btn:active { background: rgba(255,255,255,0.05); }
+
 /* =========== Chat =========== */
 .chat {
   flex: 1;

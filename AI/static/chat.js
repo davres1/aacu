@@ -640,6 +640,22 @@ for (const tab of flavorTabs) {
   tab.setAttribute('aria-selected', on ? 'true' : 'false');
 }
 
+// Download PDF report for the active flavor. The browser handles the
+// Content-Disposition attachment so we just navigate to the URL in a hidden
+// anchor - no XHR / blob plumbing needed.
+const pdfBtn = document.getElementById('download-pdf');
+if (pdfBtn) {
+  pdfBtn.addEventListener('click', () => {
+    const flavor = activeFlavor || 'mssql';
+    const a = document.createElement('a');
+    a.href = `/api/${flavor}/report.pdf`;
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+}
+
 async function pingHealth() {
   try {
     const r = await fetch('/api/health');

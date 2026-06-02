@@ -18,11 +18,12 @@ import time
 import traceback
 import uuid
 
-from flask import Flask, g, jsonify, render_template, request
+from flask import Flask, Response, g, jsonify, render_template, request
 
 import settings
 from llm import client as llm_client
 from handlers import influx_handler
+from handlers import report_pdf
 from handlers.mssql  import sql_handler as mssql_sql,  ops_handler as mssql_ops
 from handlers.oracle import sql_handler as oracle_sql, ops_handler as oracle_ops
 from handlers.sql_guard import UnsafeSqlError
@@ -464,6 +465,38 @@ def chat():
         "intent": intent,
         "data":   tool_result,
     })
+
+
+@app.route("/api/<flavor>/report.pdf")
+def report_pdf_endpoint(flavor):
+    """Render the flavor's thresholds template + (optionally) inventory facts
+    into a human-readable PDF and return it as an attachment."""
+    flavor = _normalize_flavor(flavor)
+    # Inventory is optional - a future caller can POST a JSON body containing
+    # the merged ansible_local.db_inventory facts, but for the default GET we
+    # produce a thresholds-only report so the button works without orchestration.
+    inventory = None
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        inventory = payload.get("inventory") or None
+    try:
+        pdf_bytes = report_pdf.build_report(flavor, inventory=inventory)
+    except FileNotFoundError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except Exception as exc:                              # pragma: no cover
+        log.exception("PDF report generation failed")
+        return jsonify({"error": f"PDF render failed: {exc}"}), 500
+
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    fname = f"{flavor}_health_report_{stamp}.pdf"
+    return Response(
+        pdf_bytes,
+        mimetype="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "Cache-Control":       "no-store",
+        },
+    )
 
 
 @app.route("/api/health")
