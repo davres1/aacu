@@ -79,16 +79,18 @@
       tags: [config, always]
 
     # ===================================================================
-    # 2. Render thresholds.json from the project's setup.yaml (if present).
+    # 2. Render thresholds.json from setup.yaml.
+    #    Uses templates/oracle_thresholds.json.j2 (Oracle-flavored:
+    #    tablespace / scheduler_jobs / dataguard / RAC / CIS Oracle 19c
+    #    + Oracle-shaped InfluxDB queries and dashboard charts).
     # ===================================================================
-    - name: Render thresholds.json from setup.yaml
+    - name: Render thresholds.json from setup.yaml (Oracle-flavored)
       template:
-        src: ../templates/thresholds.json.j2
+        src: ../templates/oracle_thresholds.json.j2
         dest: "{{ config_dir }}/thresholds.json"
         owner: "{{ oracle_user }}"
         group: "{{ oracle_group }}"
         mode: '0644'
-      ignore_errors: yes         # template may not exist on every checkout
       tags: [config, localplugins]
 
     # ===================================================================

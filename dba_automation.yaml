@@ -79,7 +79,7 @@
     # ===================================================================
     - name: Render thresholds.json from setup.yaml
       ansible.windows.win_template:
-        src: templates/thresholds.json.j2
+        src: templates/mssql_thresholds.json.j2
         dest: "{{ config_dir }}\\thresholds.json"
       tags: [always, config, localplugins]
 
