@@ -1,0 +1,139 @@
+#!/bin/sh
+program=`basename $0`
+HOST=`uname -n`
+WORK_DIR='{{ tgt_dir }}/scripts'
+LOG_DIR='{{ tgt_dir }}/scripts'
+LOGFILE=${LOG_DIR}/check30.log
+SID=$1
+MAILFILE=$LOG_DIR/MailFile$$.dat
+HEADERFILE=$LOG_DIR/mailheader$$.log
+EMAIL_ADDRESS=sdavre@nabros.com,oic.lteq.support@penske.com
+OUTFILE=$LOG_DIR/check_cmstatus_$$.dat
+
+CMD=status
+ORACLE_SID=$1
+TEMPDIR=/tmp
+
+# Ensure that a SID was provided.
+if test -z "$SID"
+then
+  exit 1
+fi
+
+NODE=`uname -n | awk -F'.' '{print tolower($1)}'`
+
+# Source the environment file
+if test -s $HOME/APPS${SID}_${NODE}.env
+then
+. $HOME/APPS${SID}_${NODE}.env
+else
+  exit 1
+fi
+
+NODE=`uname -n | awk -F'.' '{print tolower($1)}'`
+
+# Source the environment file
+if test -s $HOME/APPS${SID}_${NODE}.env
+then
+. $HOME/APPS${SID}_${NODE}.env
+else
+  exit 1
+fi
+
+# Use TWO_TASK or ORACLE_SID (which ever exists) to identify system.
+if test -z "$TWO_TASK"
+then
+  INST="$ORACLE_SID"
+else
+  INST="$TWO_TASK"
+fi
+
+ENVFILE=$HOME/APPS${SID}_${NODE}.env
+
+
+
+function _icmtestcmd
+{
+  echo "========================================================================="
+  echo "checking Internal concurrent Manager status for Database ${ORACLE_SID}"
+  date
+  echo "========================================================================="
+ echo
+ SYSTEM_PWD=apps/$PSWD
+ case $CMD in
+  status)
+#         echo "** Sending status for Oracle database=${ORACLE_SID}"
+         (echo ${SYSTEM_PWD};
+          echo set pages 0 pause off verify off feedback off termout off;
+          echo " SELECT   f.os_process_id||'    '||f.node_name
+                                FROM              apps.fnd_concurrent_processes f,
+                           apps.fnd_concurrent_queues q
+                                WHERE        f.concurrent_queue_id = q.concurrent_queue_id
+                           AND q.concurrent_queue_name = 'FNDICM'
+                           AND f.process_status_code='A'
+                           AND q.running_processes = 1
+                           GROUP BY   f.os_process_id,f.node_name
+                                ORDER BY   1 desc;")|
+                sqlplus -s > $TEMPDIR/icmppid
+if [ ! -s $TEMPDIR/icmppid  ]; then
+             echo "Database=$ORACLE_SID Internal Cocnurrent Manager is DOWN"
+            echo "Concurrent Managers are DOWN on $TWO_TASK and restarting"| mail -s "$TWO_TASK - Concurrent Managers are DOWN" $EMAIL_ADDRESS
+            $ADMIN_SCRIPTS_HOME/adcmctl.sh start apps/$PSWD
+            sleep 60
+            echo "Concurrent Managers are started on $TWO_TASK "| mail -s "$TWO_TASK - Concurrent Managers STARTED" $EMAIL_ADDRESS
+            return 0
+            echo
+        fi
+
+for LINE in `cat $TEMPDIR/icmppid`
+ do
+ process=`cat $TEMPDIR/icmppid|awk '{print $1}'`
+ server=`cat $TEMPDIR/icmppid|awk '{print $2}'`
+ MATCH=`ps -ef |grep $process |grep -v "grep" | awk  '{print $8}'`
+ echo $process $server $MATCH
+ if [ -n "$MATCH" ] ; then
+ echo $MATCH
+ echo "For Database=$ORACLE_SID , Internal Concurrent Manager is UP and RUNNING on  $server !!"
+            echo
+               return 1
+            echo
+               else
+                  if [ $server != `echo $HOSTNAME|tr a-z A-Z` ]
+                    then
+                      MATCH1=`ssh $server "ps -ef |grep $process |grep -v "grep" | awk  '{print $8}'" `
+                        if [ -n "$MATCH1" ] ; then
+                                echo $MATCH1 
+                                echo "For Database=$ORACLE_SID , Internal Concurrent Manager is UP and RUNNING on  $server !!"
+                                return 1
+                        else
+                                echo "Database=$ORACLE_SID Internal Cocnurrent Manager is DOWN"
+                                echo "Concurrent Managers are DOWN on $TWO_TASK and restarting"| mail -s "$TWO_TASK - Concurrent Managers are DOWN" $EMAIL_ADDRESS
+                                $ADMIN_SCRIPTS_HOME/adcmctl.sh start apps/$PSWD
+                                sleep 60
+                                echo "Concurrent Managers are started on $TWO_TASK "| mail -s "$TWO_TASK - Concurrent Managers are DOWN" $EMAIL_ADDRESS
+                                return 0
+                                echo
+                        fi
+                  fi
+ fi
+ done
+       return 0
+  ;;
+*) echo "nERROR: Invalid option=$CMD (in function _icmtestcmd)"
+            return 2
+            ;;
+  esac
+}
+#
+#MAIN
+#
+if [ "$CMD" = "status" ];
+   then
+          _icmtestcmd $CMD $OSID
+   else
+   echo " Database is down "
+   echo "Database is DOWN on $TWO_TASK and restarting"| mail -s "$TWO_TASK - Database is DOWN" $EMAIL_ADDRESS
+      wait
+   return 1
+fi
+

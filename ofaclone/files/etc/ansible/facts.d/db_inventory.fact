@@ -1,0 +1,133 @@
+#!/bin/bash
+#Ansible Custom facts
+# mkdir -p /etc/ansible/facts.d
+# file db_inventory.fact
+# chmod 777 db_inventory.fact
+# ansible localhost -m setup  -a "filter=ansible_local"
+
+databases=$(ps axo user:16,pid,cmd:16 | awk '/ora_pmon_/ && ! /ASM/ { sub("ora_pmon_","", $3); print $1 "," $2 "," $3 }' )
+
+for db in `echo $databases`
+do
+oracle_os_user=$(echo $db |awk -F, '{print $1}')
+ogroups=$(id -gn ${oracle_os_user})
+oracle_pid=$(echo $db |awk -F, '{print $2}')
+database_name=$(echo $db |awk -F, '{print $3}')
+oracle_home=$(ls -l /proc/${oracle_pid}/cwd | awk '{ print $11 }' | sed 's!/dbs.*!!g')
+homedir="/home/${oracle_os_user}"
+
+cat <<EOF > /tmp/${database_name}_dbstatus.sh
+#/bin/bash
+export ORACLE_HOME=${oracle_home}; export ORACLE_SID=${database_name}; export PATH=${oracle_home}/bin:$PATH:/usr/local/bin:/usr/bin:/bin; export LD_LIBARAY_PATH=${oracle_home}/lib:/usr/lib;
+. ${oracle_home}/${database_name}_`hostname -s`.env
+sqlplus -s / as sysdba > /tmp/status_${database_name} <<E1
+set serveroutput on;
+set pagesize 0 linesize 200 trims on feedback off verify off heading off echo off;
+declare
+db_details VARCHAR2(200);
+begin
+select log_mode||chr(44)||open_mode||chr(44)||database_role||chr(44)||flashback_on||chr(44)||cdb||chr(44)||
+to_char(created,'DD-Mon-YYYY_HH24:MM') ||chr(44)||
+decode(instr(V.banner, 'Enterprise'),0,'Standard','Enterprise') ||chr(44)|| nvl(P.value,'NONE') ||chr(44)||I.version||chr(44)||(select name from v\\\$pdbs where name not like '%SEED%') into db_details
+from v\\\$database D, v\\\$version V, v\\\$parameter P, v\\\$instance I where V.banner like 'Oracle Database%' and P.name = 'control_management_pack_access';
+DBMS_OUTPUT.PUT_LINE (db_details);
+end;
+/
+exit;
+E1
+EOF
+chmod 777 /tmp/${database_name}_dbstatus.sh
+su - oracle -c "/tmp/${database_name}_dbstatus.sh"
+# NOARCHIVELOG,READ WRITE,PRIMARY,NO,NO,16-Feb-2022_14:02,Enterprise,DIAGNOSTIC+TUNING,12.1.0.2.0
+log_mode=$(cat /tmp/status_${database_name}|awk -F, '{print $1}')
+open_mode=$(cat /tmp/status_${database_name}|awk -F, '{print $2}')
+database_role=$(cat /tmp/status_${database_name}|awk -F, '{print $3}')
+flashback_on=$(cat /tmp/status_${database_name}|awk -F, '{print $4}')
+cdbstatus=$(cat /tmp/status_${database_name}|awk -F, '{print $5}')
+created=$(cat /tmp/status_${database_name}|awk -F, '{print $6}')
+database_edition=$(cat /tmp/status_${database_name}|awk -F, '{print $7}')
+control_management_pack_access=$(cat /tmp/status_${database_name}|awk -F, '{print $8}')
+database_version=$(cat /tmp/status_${database_name}|awk -F, '{print $9}')
+pdb_name=$(cat /tmp/status_${database_name}|awk -F, '{print $10}')
+if [[ -f "${oracle_home}/${database_name}_$(hostname -s).env" ]]
+then
+db_type='EBS'
+else
+db_type='NONEBS'
+fi
+
+database_listener=$(ps axo user:16,pid,cmd:16 | grep tnslsnr|grep -v grep |awk '{print $4}')
+#tcp,ofa-db-0.tx-e-app-dev3.local,1521
+list_info=$(export ORACLE_HOME=${oracle_home};  export PATH=$PATH:/usr/local/bin:${oracle_home}/bin:/usr/local/bin:/usr/bin; export LD_LIBARAY_PATH=${oracle_home}/lib:/usr/lib;${oracle_home}/bin/lsnrctl status ${listener}  | grep -i "TCP" | grep -v "Connecting" | sed 's/[()= ]/ /g' | xargs | awk -F' ' '{print $4","$6","$8}')
+database_protocol=$(echo $list_info|awk -F, '{print $1}')
+database_host=$(echo $list_info|awk -F, '{print $2}')
+database_port=$(echo $list_info|awk -F, '{print $3}')
+service_name=$(export ORACLE_HOME=${oracle_home}; export PATH=$PATH:/usr/local/bin:${oracle_home}/bin:/usr/local/bin:/usr/bin; export LD_LIBARAY_PATH=${oracle_home}/lib:/usr/lib;${oracle_home}/bin/lsnrctl status ${listener} | grep "Service" |grep -v "Summary" | sort -u |awk -F'"' '{print $2}' | tr '\n' ',')
+cat << E2
+{ "database_name" : "${database_name}", "oracle_os_user" : "${oracle_os_user}", "oracle_home" : "${oracle_home}", "oracle_user_home" : "${homedir}", "oracle_group" : "${ogroups}", "log_mode" : "${log_mode}", "open_mode" : "${open_mode}", "database_role" : "${database_role}", "flashback_on" : "${flashback_on}", "service_name" : "${service_name}", "database_listener" : "${database_listener}", "database_protocol" : "${database_protocol}", "database_host" : "${database_host}", "database_port" : "${database_port}", "db_type" : "${db_type}", "cdbstatus" : "${cdbstatus}", "pdb_name" : "${pdb_name}", "created" : "${created}", "database_edition" : "${database_edition}", "control_management_pack_access" : "${control_management_pack_access}", "database_version" : "${database_version}" }
+E2
+done
+[root@ofa-db-0(dev3) facts.d]# cat db_inventory.fact
+#!/bin/bash
+databases=$(ps axo user:16,pid,cmd:16 | awk '/ora_pmon_/ && ! /ASM/ { sub("ora_pmon_","", $3); print $1 "," $2 "," $3 }' )
+
+for db in `echo $databases`
+do
+oracle_os_user=$(echo $db |awk -F, '{print $1}')
+ogroups=$(id -gn ${oracle_os_user})
+oracle_pid=$(echo $db |awk -F, '{print $2}')
+database_name=$(echo $db |awk -F, '{print $3}')
+oracle_home=$(ls -l /proc/${oracle_pid}/cwd | awk '{ print $11 }' | sed 's!/dbs.*!!g')
+homedir="/home/${oracle_os_user}"
+
+cat <<EOF > /tmp/${database_name}_dbstatus.sh
+#/bin/bash
+export ORACLE_HOME=${oracle_home}; export ORACLE_SID=${database_name}; export PATH=${oracle_home}/bin:$PATH:/usr/local/bin:/usr/bin:/bin; export LD_LIBARAY_PATH=${oracle_home}/lib:/usr/lib;
+. ${oracle_home}/${database_name}_`hostname -s`.env
+sqlplus -s / as sysdba > /tmp/status_${database_name} <<E1
+set serveroutput on;
+set pagesize 0 linesize 200 trims on feedback off verify off heading off echo off;
+declare
+db_details VARCHAR2(200);
+begin
+select log_mode||chr(44)||open_mode||chr(44)||database_role||chr(44)||flashback_on||chr(44)||cdb||chr(44)||
+to_char(created,'DD-Mon-YYYY_HH24:MM') ||chr(44)||
+decode(instr(V.banner, 'Enterprise'),0,'Standard','Enterprise') ||chr(44)|| nvl(P.value,'NONE') ||chr(44)||I.version||chr(44)||(select name from v\\\$pdbs where name not like '%SEED%') into db_details
+from v\\\$database D, v\\\$version V, v\\\$parameter P, v\\\$instance I where V.banner like 'Oracle Database%' and P.name = 'control_management_pack_access';
+DBMS_OUTPUT.PUT_LINE (db_details);
+end;
+/
+exit;
+E1
+EOF
+chmod 777 /tmp/${database_name}_dbstatus.sh
+su - oracle -c "/tmp/${database_name}_dbstatus.sh"
+# NOARCHIVELOG,READ WRITE,PRIMARY,NO,NO,16-Feb-2022_14:02,Enterprise,DIAGNOSTIC+TUNING,12.1.0.2.0
+log_mode=$(cat /tmp/status_${database_name}|awk -F, '{print $1}')
+open_mode=$(cat /tmp/status_${database_name}|awk -F, '{print $2}')
+database_role=$(cat /tmp/status_${database_name}|awk -F, '{print $3}')
+flashback_on=$(cat /tmp/status_${database_name}|awk -F, '{print $4}')
+cdbstatus=$(cat /tmp/status_${database_name}|awk -F, '{print $5}')
+created=$(cat /tmp/status_${database_name}|awk -F, '{print $6}')
+database_edition=$(cat /tmp/status_${database_name}|awk -F, '{print $7}')
+control_management_pack_access=$(cat /tmp/status_${database_name}|awk -F, '{print $8}')
+database_version=$(cat /tmp/status_${database_name}|awk -F, '{print $9}')
+pdb_name=$(cat /tmp/status_${database_name}|awk -F, '{print $10}')
+if [[ -f "${oracle_home}/${database_name}_$(hostname -s).env" ]]
+then
+db_type='EBS'
+else
+db_type='NONEBS'
+fi
+
+database_listener=$(ps axo user:16,pid,cmd:16 | grep tnslsnr|grep -v grep |awk '{print $4}')
+#tcp,ofa-db-0.tx-e-app-dev3.local,1521
+list_info=$(export ORACLE_HOME=${oracle_home};  export PATH=$PATH:/usr/local/bin:${oracle_home}/bin:/usr/local/bin:/usr/bin; export LD_LIBARAY_PATH=${oracle_home}/lib:/usr/lib;${oracle_home}/bin/lsnrctl status ${listener}  | grep -i "TCP" | grep -v "Connecting" | sed 's/[()= ]/ /g' | xargs | awk -F' ' '{print $4","$6","$8}')
+database_protocol=$(echo $list_info|awk -F, '{print $1}')
+database_host=$(echo $list_info|awk -F, '{print $2}')
+database_port=$(echo $list_info|awk -F, '{print $3}')
+service_name=$(export ORACLE_HOME=${oracle_home}; export PATH=$PATH:/usr/local/bin:${oracle_home}/bin:/usr/local/bin:/usr/bin; export LD_LIBARAY_PATH=${oracle_home}/lib:/usr/lib;${oracle_home}/bin/lsnrctl status ${listener} | grep "Service" |grep -v "Summary" | sort -u |awk -F'"' '{print $2}' | tr '\n' ',')
+cat << E2
+{ "database_name" : "${database_name}", "oracle_os_user" : "${oracle_os_user}", "oracle_home" : "${oracle_home}", "oracle_user_home" : "${homedir}", "oracle_group" : "${ogroups}", "log_mode" : "${log_mode}", "open_mode" : "${open_mode}", "database_role" : "${database_role}", "flashback_on" : "${flashback_on}", "service_name" : "${service_name}", "database_listener" : "${database_listener}", "database_protocol" : "${database_protocol}", "database_host" : "${database_host}", "database_port" : "${database_port}", "db_type" : "${db_type}", "cdbstatus" : "${cdbstatus}", "pdb_name" : "${pdb_name}", "created" : "${created}", "database_edition" : "${database_edition}", "control_management_pack_access" : "${control_management_pack_access}", "database_version" : "${database_version}" }
+E2
+done

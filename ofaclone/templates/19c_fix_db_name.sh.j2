@@ -1,0 +1,104 @@
+#!/bin/bash
+
+touch {{ tgt_dir }}/ofa_{{ tgt_env }}_19c_fix_db_name.log
+exec 1> {{ tgt_dir }}/ofa_{{ tgt_env }}_19c_fix_db_name.log 2>&1
+
+# error handing
+
+_log()
+{
+    data="$*"
+  
+    if [ $# = 0 ] ; then
+        while read -r data; do
+            echo -e "$(date '+%F %T.%N %Z') $data" | tee -a "$_logfile" >&2
+        done
+    else
+        echo -e "$(date '+%F %T.%N %Z') $data" | tee -a "$_logfile" >&2
+    fi
+}
+
+cd {{ tgt_oracle_home }}/appsutil
+source ./txkSetCfgCDB.env -dboraclehome={{ tgt_oracle_home }}
+export ORACLE_SID={{ tgt_cdb|lower }}
+
+sqlplus "/ as sysdba" <<T1
+alter pluggable database "{{ src_db }}" open read write instances=all;
+alter pluggable database "{{ src_db }}" save state;
+create spfile from pfile;
+shutdown immediate;
+startup;
+alter system set db_name={{ tgt_cdb | lower }} scope=spfile;
+shutdown immediate;
+startup;
+exit;
+T1
+
+sqlplus "/ as sysdba" <<T1
+alter pluggable database "{{ src_db }}" close;
+alter pluggable database "{{ src_db }}" close immediate;
+alter pluggable database "{{ src_db }}" unplug into '/tmp/{{ src_db }}.xml';
+drop pluggable database "{{ src_db }}";
+create pluggable database "{{ tgt_db }}" using '/tmp/{{ src_db }}.xml' NOCOPY SERVICE_NAME_CONVERT=('ebs_{{ src_db }}','ebs_{{ tgt_db }}','{{ src_db }}_ebs_patch','{{ tgt_db }}_ebs_patch');
+alter pluggable database "{{ tgt_db }}" open read write;
+alter pluggable database all save state;
+
+DECLARE
+    filename     VARCHAR(500);
+    path         VARCHAR(500); 
+    sql1         VARCHAR(500); 
+    CURSOR c1 IS
+        select distinct TEMPORARY_TABLESPACE from dba_users;
+BEGIN
+    FOR L1 IN c1
+    LOOP
+        BEGIN
+            select substr(file_name,1,Instr(file_name,'/',-1,1) -1)||'/' into path from dba_data_files where rownum<2;
+            sql1 := 'alter tablespace '||L1.TEMPORARY_TABLESPACE||' add tempfile '||chr(39)|| path ||L1.TEMPORARY_TABLESPACE||'01.dbf'||chr(39)||' size 2G autoextend on'; 
+            dbms_output.put_line ( sql1 ||';' );       
+            EXECUTE IMMEDIATE sql1;
+        EXCEPTION WHEN OTHERS
+            THEN
+           dbms_output.put_line ('');
+        END;
+END LOOP;
+END;
+/
+exit;
+T1
+
+cd {{ tgt_oracle_home }}/appsutil/install/{{ tgt_env }}_{{ tgt_db_node }}
+sqlplus / as sysdba @adupdlib.sql {{ tgt_oracle_home }}/lib <<EOF
+exit;
+EOF
+
+echo " Restarting Listener...."
+lsnrctl stop {{ src_cdb_name }}
+export TNS_ADMIN={{ tgt_oracle_home }}/network/admin/{{ tgt_env }}_{{ tgt_db_node }}
+lsnrctl start {{ src_cdb_name }}
+
+sqlplus "/ as sysdba" <<T1
+alter pluggable database all save state;
+shutdown immediate;
+startup;
+alter system register;
+T1
+
+echo "Clean Fnd tables...."
+sqlplus -s apps/{{ src_apps_pswd }}@{{ tgt_db }} << EOF
+exec fnd_conc_clone.setup_clean;
+drop table fnd_oam_context_files_bkp;
+drop table fnd_nodes_bk;
+drop table adop_valid_nodes_bk;
+drop table ad_nodes_config_status_bk;
+create table fnd_oam_context_files_bkp as select * from fnd_oam_context_files;
+create table fnd_nodes_bk as select * from fnd_nodes;
+create table adop_valid_nodes_bk as select * from adop_valid_nodes;
+create table ad_nodes_config_status_bk as select * from ad_nodes_config_status;
+truncate table APPLSYS.fnd_oam_context_files;
+truncate table APPLSYS.fnd_nodes;
+truncate table APPLSYS.adop_valid_nodes;
+truncate table APPLSYS.ad_nodes_config_status;
+commit;
+exit
+EOF

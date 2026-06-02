@@ -1,0 +1,33 @@
+#!/bin/bash
+source ~/.bash_profile
+
+if [ -f ~/.profile ]; then
+. ~/.profile
+elif [ -f ~/.bash_profile ]; then
+#. ~/.bash_profile
+echo ""
+fi
+
+
+. {{ app_tgt_mount }}/EBSapps.env RUN 
+
+
+sqlplus -s apps/$PSWD << EOF
+spool /tmp/{{ patch_number }}.lst
+set echo off;
+set feedback off;
+set heading off;
+select ad_patch.is_patch_applied('R12',-1,{{ patch_number }}) from dual;
+spool off;
+exit;
+EOF
+
+if [ `cat /tmp/{{ patch_number }}.lst|tail -1` == 'NOT_APPLIED' ]
+then
+. {{ app_tgt_mount }}/EBSapps.env RUN
+{ echo {{ tgt_apps_pwd }}; echo {{ tgt_system_pwd }}; echo {{ tgt_wblg_pswd }}; } | adop phase=prepare,apply,finalize,cutover,cleanup patches={{ patch_number }} patchtop={{ tgt_dir }} workers=16
+else
+   echo "==========================================="
+   echo "{{ patch_number }} is already applied in your system."
+   echo "==========================================="
+fi

@@ -1,0 +1,7 @@
+sqlplus apps@dtest
+update apps.XDO_CONFIG_VALUES
+set value='/u02/oracle/dtest/fs_ne/EBSapps/appl/xdo/temp'
+WHERE property_code = 'SYSTEM_TEMP_DIR';
+select value from apps.XDO_CONFIG_VALUES WHERE property_code = 'SYSTEM_TEMP_DIR';
+commit;
+exit;

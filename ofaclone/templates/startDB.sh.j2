@@ -1,0 +1,24 @@
+#!/bin/bash
+source ~/.profile
+touch {{ tgt_dir }}/ofa_{{ tgt_env }}_db_start.log
+exec 1> {{ tgt_dir }}/ofa_{{ tgt_env }}_db_start.log 2>&1
+
+export L_DBCONTEXT_NAME={{ tgt_env }}_`hostname -a`
+export ORACLE_HOME={{ tgt_oracle_home }}
+export L_ORACLEHOME={{ tgt_oracle_home }}
+export L_DBSRV=`hostname -a`
+export L_ORACLESID={{ tgt_db }}
+
+. $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env
+. {{ tgt_oracle_home }}/{{ tgt_db | lower }}_{{ tgt_db_node }}.env
+
+
+sqlplus -s / as sysdba << EOF
+startup;
+ALTER PLUGGABLE DATABASE ALL OPEN;
+ALTER PLUGGABLE DATABASE ALL save state;
+exit
+EOF
+
+$ORACLE_HOME/appsutil/scripts/{{ tgt_env }}_{{ tgt_db_node }}/addlnctl.sh stop {{ tgt_db }}
+$ORACLE_HOME/appsutil/scripts/{{ tgt_env }}_{{ tgt_db_node }}/addlnctl.sh start {{ tgt_db }}

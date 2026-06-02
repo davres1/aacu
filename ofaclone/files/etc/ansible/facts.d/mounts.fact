@@ -1,0 +1,66 @@
+#!/usr/bin/python3  
+import json
+import subprocess
+import os
+import sys
+import boto3
+#Ansible Custom facts
+inst_id = os.popen("wget -q -O- http://169.254.169.254/latest/meta-data/instance-id").read()
+REGION = subprocess.check_output(r"""wget -q -O- http://169.254.169.254/latest/meta-data/placement/availability-zone | sed -e 's/\([1-9]\).$/\1/g'""", shell=True).decode(sys.stdout.encoding).strip()
+server_name = os.popen("hostname").read()
+devices = []
+List = []
+Filters = [
+        {
+            'Name': 'tag:createdby',
+            'Values': [
+                'UpenderThota',
+            ]
+        },
+        {
+            'Name': 'tag:Application',
+            'Values': [
+                'OFADB',
+            ]
+        }
+    ]
+conn = boto3.Session()
+EC2_RESOURCE = conn.resource('ec2', region_name=REGION)
+ec2 = conn.client('ec2', region_name=REGION)
+def render_data(data):
+    return json.dumps(data)
+
+
+volume_list = os.popen(r"""
+        for disk in $(lsblk | grep -E 'u0|data' | awk '{print $1":"$7}'); do
+                vol=$(nvme id-ctrl /dev/$(echo $disk | awk -F ':' '{print $1}') | grep sn | awk '{print $3}')
+                device=$(nvme id-ctrl --raw-binary /dev/$(echo $disk | awk -F ':' '{print $1}') | cut -c3073-3104 | tr -s ' ' | sed 's/ $//g')
+                local_device=$(echo $disk | awk -F ':' '{print $1}')
+                echo "$vol:$(echo "$disk" | awk -F ':' '{print $2}'):$device:/dev/$local_device"
+        done
+        """).read().strip()
+
+response = ec2.describe_snapshots(Filters=Filters)
+snapshots = response['Snapshots']
+for snap in snapshots:
+        for tag in snap['Tags']:
+                if tag["Key"] == 'Mountpoint':
+                        Mountpoint = tag["Value"]
+        snap_id = snap['SnapshotId']
+        date = snap['StartTime']
+        List.append({'Mountpoint': Mountpoint,'snap_id': snap_id, 'date': date})
+        newlist = list(sorted(List, key=lambda k: (k['date'], k['Mountpoint']), reverse=True))
+        VolumeList = newlist[:2]
+        #print(VolumeList)
+
+for item in VolumeList:
+        for r1 in volume_list.split('\n'):
+                i = r1.split(':')
+                vol = i[0].replace('vol', 'vol-')
+                device = i[2]
+                if item["Mountpoint"] == i[1]:
+                        devices.append({ "snapshot_id_clone" : item["snap_id"], "aws_volume_id" : vol,"aws_device_name" : device,"mount_point" : i[1] , "local_device" : i[3], "ec2_id" : inst_id, "region" : REGION })
+
+
+#print(devices)
+print(json.dumps(devices))

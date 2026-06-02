@@ -1,0 +1,36 @@
+---
+- name: Stop EBS application on "{{ tgt_env }}"
+  hosts: "{{domain}}-{{tgt_env}}-OFA-EXT"
+  remote_user: applmgr
+  gather_facts: no
+  ignore_unreachable: yes
+  
+
+  vars: 
+    date: "{{ lookup('pipe', 'date +%Y-%m-%d') }}"
+
+  vars_files:
+    - vars/{{ domain }}/{{ tgt_env }}/targetdbinfo.yaml
+
+  tasks:
+    - name: Create {{ tgt_dir }} directory
+      file: path={{ tgt_dir }} state=directory
+# Set Suffix
+    - set_fact:
+        suffix: "ansible{{ 1000 | random }}"
+      run_once: yes
+
+# Set-up
+# Coping script to server
+    - name: Copy ebs  script to target database server
+      template: src=templates/restart_apache.sh.j2 dest={{ tgt_dir }}/restart_apache.sh mode=0777
+
+
+# Run Stop  command
+    - name: Restart Ebs Apache application - "{{ tgt_env }}""
+      shell: '{{ tgt_dir }}/restart_apache.sh'
+      args:
+        chdir: "{{ tgt_dir }}"
+      register: fail_me
+      failed_when: "fail_me.rc != 0 and fail_me.rc != 369"
+      tags: "etest"

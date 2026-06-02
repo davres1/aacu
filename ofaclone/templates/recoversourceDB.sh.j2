@@ -1,0 +1,46 @@
+#!/bin/bash
+source ~/.bash_profile
+touch {{ tgt_dir }}/ofa_{{ src_env }}_db_shart.log
+exec 1> {{ tgt_dir }}/ofa_{{ src_env }}_db_shart.log 2>&1
+
+export L_DBCONTEXT_NAME={{ src_env }}_`hostname -a`
+export ORACLE_HOME={{ src_oracle_home }}
+export L_ORACLEHOME={{ src_oracle_home }}
+export L_DBSRV=`hostname -a`
+export L_ORACLESID={{ src_db }}
+
+function FN_ORACLE_ENV
+{
+   
+    export ORACLE_HOME={{ src_oracle_home }}
+    if [ -f  $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env ]; then
+      . $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env
+      export G_ENV=0
+    else
+      FN_Error "FN_ORACLE_ENV: the environment file $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env DOES NOT EXIST"
+      export ORACLE_SID=${L_ORACLESID}
+      export LD_LIBRARY_PATH=${ORACLE_HOME}/lib,${ORACLE_HOME}/ctx/lib
+      export PATH=$ORACLE_HOME/bin:$PATH:/usr/ccs/bin:/usr/bin
+      export TNS_ADMIN=$ORACLE_HOME/network/admin/${L_ORACLESID}_${L_DBSRV}
+    fi
+
+}
+
+FN_ORACLE_ENV
+
+. $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env
+. {{ src_oracle_home }}/{{ src_env }}_{{ src_db_node }}.env
+
+
+sqlplus -s / as sysdba << EOF
+startup;
+shutdown immediate;
+exit
+EOF
+
+sleep 90
+
+sqlplus -s / as sysdba << EOF
+startup;
+exit
+EOF

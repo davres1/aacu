@@ -1,0 +1,57 @@
+#!/bin/sh
+. {{ app_tgt_mount }}/EBSapps.env RUN
+
+schemas=bolinf,apps
+appsp={{ tgt_apps_pwd }}
+bolinfp={{ tgt_bolinf_pwd }}
+mode=apply
+
+num=1
+for sfile in `ls -1 {{ tgt_dir }}/sh/*.sh|sort`
+do
+if [ -f $sfile ]
+  then
+ sh $num_$sfile
+fi
+num=$(( $num + 1 ))
+done
+
+
+cd {{ tgt_dir }}/sql
+
+#num=1
+for sch in $(echo ${schemas} | sed "s/,/ /g" | tr [A-Z] [a-z])
+do
+for sfile in `ls -1 *${sch}*${mode}*.sql|sort| tr [A-Z] [a-z]`
+do
+echo ${sfile}
+mv -i $sfile `echo $sfile | tr [A-Z] [a-z]`
+if [[ `echo $sch` ==  "apps" ]]
+then
+pass=$appsp
+echo $pass
+elif [[ `echo $sch` ==  "bolinf" ]]
+then
+pass=$bolinfp
+else
+echo "Not a defind user in the database"
+fi
+if [ -f $sfile ]
+  then
+    spoolfile="$sfile".log
+    sqlplus $sch/$pass << EOF
+    set echo on;
+    spool $spoolfile;
+    SELECT HOST_NAME, INSTANCE_NAME, STATUS FROM V\$INSTANCE;
+    select sys_context('USERENV','SESSION_SCHEMA') as "Current_Schema" from dual;
+    @$sfile;
+    spool off;
+    exit;
+EOF
+else
+  echo "$sfile doesnt exsists"
+fi
+done
+#((num++))
+done
+

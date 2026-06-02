@@ -1,0 +1,12 @@
+
+connect apps/&1@&2
+alter session set container="&2";
+update FND_CONCURRENT_QUEUES set running_processes=0, max_processes=0;
+commit;
+
+connect applsys/&1@&2
+alter session set container="&2";
+truncate table FND_CONCURRENT_PROCESSES;
+truncate table FND_CONCURRENT_REQUESTS ;
+
+exit;

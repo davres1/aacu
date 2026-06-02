@@ -1,0 +1,85 @@
+s_base={{ app_tgt_mount }}
+s_current_base={{ app_tgt_mount }}/{{ current_base }}
+s_other_base={{ app_tgt_mount }}/{{ patch_base }}
+s_ne_base={{ app_tgt_mount }}/fs_ne
+
+# tgt should be upper case
+s_applptmp=/interface/infvmmci/{{ tgt_env|upper }}/outgoing
+
+
+s_appsgroup=dba
+s_appsuser=applmgr
+s_dbuser=applmgr
+s_dbgroup=oinstall
+s_dbdomain={{ tgt_dbdomain }}
+s_at={{ app_tgt_mount }}/{{ current_base }}/EBSapps/appl
+s_com={{ app_tgt_mount }}/{{ current_base }}/EBSapps/comn
+s_tools_oh={{ app_tgt_mount }}/{{ current_base }}/EBSapps/10.1.2
+s_weboh_oh={{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier
+s_fmw_home={{ app_tgt_mount }}/{{ current_base }}/FMW_Home
+s_dbGlnam={{ tgt_env }}
+s_dbSid={{ tgt_env }}
+s_dbhost={{ tgt_db_node }}
+s_clonestage={{ app_tgt_mount }}/{{ current_base }}/EBSapps/comn/clone
+s_dbport={{ tgt_db_port }}
+s_options_symlinks=Options -FollowSymLinks
+s_proxyhost=
+s_proxybypassdomain={{ tgt_appdomain }}
+s_proxyport=80
+s_nonproxyhosts=
+s_smtphost=mailhub
+s_smtpdomainname=vmmc.org
+s_file_edition_type=run
+s_port_pool={{ port_pool }}
+patch_s_port_pool={{ patch_port_pool }}
+s_https_listen_parameter={{ https_listen_parameter }}
+s_admhost={{ tgt_app_node }}
+s_atName={{ tgt_app_node }}
+
+s_webentryurlprotocol=http
+s_url_protocol=http
+s_local_url_protocol=http
+s_webentryhost={{ tgt_webentryhost }}
+s_webentrydomain={{ tgt_appdomain }}
+s_active_webport=80{{ port_pool }}
+s_webssl_port={{ https_listen_parameter }}
+s_endUserMonitoringURL=http://{{ tgt_app_node }}.{{ tgt_appdomain }}:80{{ port_pool }}/oracle_smp_chronos/oracle_smp_chronos_sdk.gi
+s_external_url=http://{{ tgt_app_node }}.{{ tgt_appdomain }}:80{{ port_pool }}
+s_login_page=http://{{ tgt_app_node }}.{{ tgt_appdomain }}:80{{ port_pool }}/OA_HTML/AppsLogin
+s_temp={{ app_tgt_mount }}/{{ current_base }}/inst/apps/{{ tgt_env }}_{{ tgt_app_node }}/temp
+s_contextname={{ tgt_env }}_{{ tgt_app_node }}
+s_hostname={{ tgt_app_node }}
+s_domainname={{ tgt_appdomain }}
+s_cphost={{ tgt_app_node }}
+s_webhost={{ tgt_app_node }}
+s_config_home={{ app_tgt_mount }}/{{ current_base }}/inst/apps/{{ tgt_env }}_{{ tgt_app_node }}
+s_inst_base={{ app_tgt_mount }}
+s_display={{ tgt_app_node }}:10.0
+s_forms-c4ws_display={{ tgt_app_node }}:10.0
+s_ohs_instance=EBS_web_OHS1
+s_webport=80{{ port_pool }}
+s_http_listen_parameter=80{{ port_pool }}
+s_web_applications_status=enabled
+s_web_entry_status=enabled
+s_apcstatus=enabled
+s_root_status=enabled
+s_batch_status=enabled
+s_other_service_group_status=enabled
+s_adminserverstatus=enabled
+s_web_admin_status=enabled
+
+#EXTRA
+s_javamailer_imap_user={{ tgt_env }}_erpwftest@commonspirit.org
+s_javamailer_imapdomainname=gmail.com
+s_javamailer_imaphost=imap
+s_javamailer_reply_to={{ tgt_env }}_erpwftest@commonspirit.org
+s_javamailer_outbound_user={{ tgt_env }}_erpwftest@commonspirit.org
+s_wf_admin_role=*
+s_applptmp=/interface/infvmmci/{{ tgt_env | upper }}/outgoing
+
+#Only for external node
+{% if tgt_env == 'etest' %}
+s_shared_file_system=true
+{% else %}
+s_shared_file_system=false
+{% endif %}

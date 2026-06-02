@@ -1,0 +1,13 @@
+#!/bin/ksh
+#set -x
+
+touch {{ tgt_dir }}/ofa_{{ tgt_env }}_Apache.log
+
+
+. {{ app_tgt_mount }}/EBSapps.env RUN
+
+
+$ADMIN_SCRIPTS_HOME/adapcctl.sh stop | tee -a {{ tgt_dir }}/ofa_{{ tgt_env }}_Apache.log
+sleep 30
+$ADMIN_SCRIPTS_HOME/adapcctl.sh start | tee -a {{ tgt_dir }}/ofa_{{ tgt_env }}_Apache.log
+

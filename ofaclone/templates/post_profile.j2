@@ -1,0 +1,138 @@
+#######################################################################################################
+# Profile:  APPLMGR user
+# Date:  July 14, 2006
+#
+# Profile History:
+# Jul 14, 2006:  spgwsn:        Created New Profile
+# Mar 16, 2007:  spgwsn:        Added LPDEST
+# Aug 18, 2017:  Tom Moloney:   Updated PATH to use /opt/IBM/xlC/13.1.0/bin instead of /usr/vacpp/bin
+# Apr 17, 2020:  Boxley:        Updated for 12.2
+#######################################################################################################
+# Set up Misc UNIX stuff
+########################
+AIXTHREAD_SCOPE=S
+export AIXTHREAD_SCOPE
+
+LANG="C"
+export LANG
+
+LPDEST=islg
+export LPDEST
+
+######################
+# set up default umask
+######################
+umask 022                       # rwxr-xr-x
+
+TERM=vt100
+export TERM
+
+#######################
+# Set up Xterm backspace
+#######################
+/usr/bin/stty erase "^?" kill "^U" intr "^C" eof "^D" > /dev/null
+
+#######################
+# Set up default editor
+#######################
+EDITOR=/usr/bin/vi
+VISUAL=/usr/bin/vi
+export VISUAL EDITOR
+
+#######################
+# kshrc environment
+#######################
+ENV=$HOME/.kshrc
+export ENV
+
+#######################
+# set up history recall
+#######################
+HISTFILE=$HOME/.histfile
+HISTSIZE=200
+rm -f $HISTFILE
+
+##############################
+# Define UNIX command aliases
+##############################
+alias     ll='ls -al'
+alias    lld='ls -alF  | grep ^d'
+alias    llf='ls -alF  | grep ^-'
+alias    lll='ls -alF  | grep ^l'
+alias    boxley='stty erase ^? ; PS1="\$LOGNAME(\$DBNAME)@`hostname`:\$PWD>
+>"; export PS1'
+
+###############################
+# Setup the Oracle Environment
+###############################
+
+OPATCH_PLATFORM_ID=212
+export OPATCH_PLATFORM_ID
+
+DBNAME={{ tgt_env }}
+export DBNAME
+
+if [ -f {{ app_tgt_mount }}/EBSapps.env ]
+then
+ . {{ app_tgt_mount }}/EBSapps.env run
+  alias run='cd $RUN_BASE'
+fi
+
+
+
+
+
+#LDR_CNTRL=MAXDATA=0x80000000
+LDR_CNTRL=MAXDATA=0x80000000@USERREGS
+export LDR_CNTRL
+
+PLATFORM=AIX   # needed for adadmin to run
+export PLATFORM
+
+PS1="\$LOGNAME(\$DBNAME)@`hostname`:\$PWD>
+>"
+export PS1
+
+VMDIR=/usr/vmmc/bin/oracle_scripts
+export VMDIR
+
+#alias vmdir='cd $VMDIR'
+alias scripts='cd $ADMIN_SCRIPTS_HOME'
+alias r12='cd /patches/applmgr/R12_patches'
+alias r12post='cd /patches/applmgr/R12_patches/Post_upg_patches'
+alias confile='cd $INST_TOP/appl/admin'
+alias comn='cd $COMMON_TOP'
+alias appl='cd $APPL_TOP'
+#alias adlogs='cd $INST_TOP/admin/log'
+alias kris='cd $ORACLE_HOME/sysman/config'
+#alias application.log='cd $INST_TOP/logs/ora/10.1.3/j2ee/oacore/oacore_default_group_1'
+alias dbc='cd /usr/vmmc/bin/oracle_scripts/DB_COPY_SCRIPTS'
+
+
+########################################
+# set up path for C++ compiler
+########################################
+###PATH=$PATH:/usr/vacpp/bin
+###export PATH
+PATH=$PATH:/opt/IBM/xlC/13.1.0/bin
+export PATH
+
+#######################
+# Set up Stuff for STAT
+#######################
+STAT_HOME=/u01/stat
+export STAT_HOME
+
+PATH=$PATH:$STAT_HOME/bin
+export PATH
+
+STAT_JAVA_HOME=/usr/java5
+export STAT_JAVA_HOME
+
+########################################
+# attempt to turn off new mail detection
+########################################
+unset MAIL
+unset MAILCHECK
+unset MAILMSG
+export PSWD={{ tgt_apps_pwd }}

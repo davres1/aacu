@@ -1,0 +1,14 @@
+source ~/.bash_profile
+export ORACLE_SID={{ src_db }}
+export ORACLE_HOME={{ tgt_oh }}
+export PATH=$PATH:$ORACLE_HOME/bin
+. {{ tgt_oracle_home }}/{{ tgt_env }}_{{ tgt_db_node }}.env
+
+sqlplus -s / as sysdba << EOF
+startup pfile='{{ old_init }}'
+alter system switch logfile;
+alter database disable block change tracking;
+shutdown immediate;
+startup mount pfile='{{ old_init }}'
+exit
+EOF

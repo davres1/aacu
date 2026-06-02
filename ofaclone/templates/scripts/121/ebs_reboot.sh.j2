@@ -1,0 +1,51 @@
+#!/bin/bash
+
+CRITICAL_HR=24
+## test ##CRITICAL_HR=504
+
+# Detect OS
+OS=$(uname -s)
+
+case $OS in
+  "Linux")
+    # Linux: Use 'uptime -s' to get system start time
+    HOST_START_EPOCH=$(date -d "$(uptime -s)" +%s)
+    ;;
+  "Darwin")
+    # macOS: Use 'sysctl' to get system boot time
+    HOST_START_EPOCH=$(sysctl -n kern.boottime | awk '{print $4}' | tr -d ',')
+    ;;
+  "CYGWIN"*|"MINGW"*|"MSYS"*)
+    # Windows: Use 'systeminfo' to get system boot time
+    HOST_START_EPOCH=$(systeminfo | grep "System Boot Time" | sed 's/.*: //' | xargs -I {} date -d "{}" +%s)
+    ;;
+  "AIX")
+    # AIX: Use 'uptime' to get system start time
+    #HOST_START_EPOCH=$(uptime | awk '{print $3, $4, $5}' | xargs -I {} date -d "{}" +%s)
+    HOST_START_EPOCH=$(perl -e '($u)=`uptime`=~/up\s+(.*),\s+\d+\s+user/; print "Uptime: $u\n";')
+    ;;
+  "SunOS")
+    # SunOS: Use 'uptime' to get system start time
+    #HOST_START_EPOCH=$(uptime | awk '{print $3, $4, $5}' | xargs -I {} date -d "{}" +%s)
+    HOST_START_EPOCH=$(uptime | awk '{print $3, $4, $5}' | xargs -I {} perl -MPOSIX -e 'print time(), "\n"')
+    ;;
+  *)
+    echo "Unsupported OS: $OS"
+    exit 1
+    ;;
+esac
+
+CURRENT_EPOCH=$(date +%s)
+UPTIME_SECONDS=$(( CURRENT_EPOCH - HOST_START_EPOCH ))
+
+D=$((UPTIME_SECONDS / (24 * 60 * 60)))
+H=$(((UPTIME_SECONDS - (D * 24 * 60 * 60)) / (60 * 60)))
+M=$(((UPTIME_SECONDS - ((D * 24 * 60 * 60) + (H * 60 * 60))) / 60))
+S=$((UPTIME_SECONDS - ((D * 24 * 60 * 60) + (H * 60 * 60) + (M * 60))))
+
+if [ ${UPTIME_SECONDS} -lt $((CRITICAL_HR * 60 * 60)) ]; then
+  printf "2 EBS_reboot_${HOSTNAME%%.*} - CRIT : Rebooted within ${CRITICAL_HR} hours (uptime $D days $H hours $M minutes $S seconds)\n"
+else
+  printf "0 EBS_reboot_${HOSTNAME%%.*} - OK : Rebooted outside ${CRITICAL_HR} hours (uptime $D days $H hours $M minutes $S seconds)\n"
+fi
+

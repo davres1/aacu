@@ -1,0 +1,367 @@
+---
+# Summary of Steps
+# 1. Stop application
+# 2. copy needed files to target apps server
+# 3. Run clone
+# 4. Run costom Steps
+# ansible-galaxy collection install -r requirements.yml
+#Stop application
+
+- name: Oracle EBS Application Refresh
+  hosts: "{{domain}}-{{tgt_env}}-OFA-APP"
+  gather_facts: yes
+
+  vars:
+    date: "{{ lookup('pipe', 'date +%Y-%m-%d') }}"
+    project_dir: '/u01/ansible/ofaclone'
+#    templates_source: "/u01/ansible/pipeline/ebsclone/templates"
+
+  vars_files:
+    - vars/{{domain}}/{{ src_env }}sourcedbinfo.yaml
+    - vars/{{domain}}/{{ tgt_env }}/targetdbinfo.yaml
+
+  tasks:
+    - name: Create {{ tgt_dir }} directory
+      file: 
+        path: "{{ tgt_dir }}"
+        state: directory
+        owner: applmgr
+        group: oinstall
+        mode: '0755'
+
+    # Set Suffix
+    - set_fact:
+        suffix: "ansible{{ 1000 | random }}"
+      run_once: yes
+      become: yes
+      become_user: applmgr
+
+    - name: Create directory
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: applmgr
+        group: oinstall
+        mode: 0755
+        recurse: yes
+      loop:
+        - "{{ tgt_dir }}"
+        - "{{ tgt_dir }}/sql"
+        - "{{ tgt_dir }}/sh"
+      become: yes
+      become_user: applmgr
+
+    - name: Create {{ tgt_db }}_{{ tgt_app_node }} directory
+      file: path={{ app_tgt_mount }}/fs1/inst/apps/{{ tgt_db }}_{{ tgt_app_node }}/appl/admin/ state=directory
+      become: yes
+      become_user: applmgr
+    
+#    - name: Copy {{ tgt_db }} oraInst.ora to apps server
+#      copy: src=templates/oraInst.loc.j2 dest=/etc/oraInst.loc mode=0755
+#      become: yes
+#      become_user: applmgr
+
+    - name: Copy the file from source to destination using Method Push
+      tags: sync-push
+      ansible.posix.synchronize:
+        src: "/clone_tar_files/eprod/{{ item }}"
+        dest: "/clone_tar_files/{{ item }}"
+        mode: push
+      delegate_to: eprodapp #"{{groups["{{domain}}-{{src_env}}-OFA-APP"][0]}}"
+      register: syncfile
+      with_items:
+        - "EBSapps_10_1_2_eprod.gtar"
+        - "EBSapps_appl_eprod.gtar"
+        - "EBSapps_comn_eprod.gtar"
+    
+    - name: Copy clone shell script to target Application server
+      copy: src={{ item }} dest={{ tgt_dir }}
+      with_fileglob:
+        - "{{ project_dir }}/files/*"
+      become: yes
+      become_user: applmgr
+
+    - name: Copy pre-build current_edition.sh to target Application server
+      template: src=templates/current_edition.sh.j2 dest={{ tgt_dir }}/current_edition.sh mode=0755
+      become: yes
+      become_user: applmgr
+
+    - name: Copy pre-build patch_edition.sh to target Application server
+      template: src=templates/patch_edition.sh.j2 dest={{ tgt_dir }}/patch_edition.sh mode=0755
+      become: yes
+      become_user: applmgr
+
+    - name: Finding current base of production
+      shell: "sh current_edition.sh"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: applmgr
+
+ 
+    - name: 'Find current base information'
+      shell: cat /tmp/current_base.lst
+      register: data
+
+    - name: Finding patch base of production
+      shell: "sh patch_edition.sh"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: applmgr
+
+ 
+    - name: 'Find patch base information'
+      shell: cat /tmp/patch_base.lst
+      register: data1
+
+    # - set_fact:
+    #     current_base: "{{ lookup('file', '/tmp/current_base.lst') }}"
+    #     patch_base: "{{ lookup('file', '/tmp/current_base.lst') }}"
+
+    - set_fact:
+        current_base: "{{ data.stdout | trim }}"
+        patch_base: "{{ data1.stdout | trim }}"
+
+    - debug:
+        msg: "Run Base is {{ current_base }} and Patch Base is {{ patch_base }}"    
+
+
+    - name: Copy pre-build inventory.xml to target Application server
+      template: src=templates/inventory.xml.j2 dest={{ tgt_dir }}/inventory.xml mode=0755
+      become: yes
+      become_user: applmgr
+
+
+
+    # - name: Copy xml file to local server
+    #   copy: src=files/{{domain}}/{{ tgt_env }}/{{ tgt_db }}_{{ tgt_app_node }}.xml dest={{ app_tgt_mount }}/fs1/inst/apps/{{ tgt_db }}_{{ tgt_app_node }}/appl/admin/{{ tgt_db }}_{{ tgt_app_node }}.xml mode=0755
+    #   become: yes
+    #   become_user: applmgr
+
+#    - name: Copy EBSapps.env file to local server location={{ tgt_db }}
+#      copy: src=files/{{domain}}/{{ tgt_env }}/EBSapps.env dest={{ tgt_dir }}/EBSapps.env mode=0777
+#      become: yes
+#      become_user: applmgr
+
+    # - name: Copy EBSapps.env file to local server location={{ app_tgt_mount }}
+    #   copy: src=files/{{domain}}/{{ tgt_env }}/EBSapps.env dest={{ app_tgt_mount }}/EBSapps.env mode=0777
+    #   become: yes
+    #   become_user: applmgr
+
+    - name: Copy clone script to target Application server
+      template: src=templates/auto_clone.sh.j2 dest={{ tgt_dir }}/auto_clone.sh mode=0755
+      become: yes
+      become_user: applmgr
+
+    - name: Copy clone script to target Application server
+      template: src=templates/restart.sh.j2 dest={{ tgt_dir }}/restart.sh mode=0755
+      become: yes
+      become_user: applmgr
+
+    - name: Copy pairfile to target Application server
+      template: src=templates/mypairfile.txt.j2 dest={{ tgt_dir }}/mypairfile.txt mode=0755
+      become: yes
+      become_user: applmgr
+
+    - name: Copy pre profile file to local server
+      template: src=templates/pre_profile.j2 dest=/home/applmgr/.profile mode=0755
+      become: yes
+      become_user: applmgr
+
+
+    - name: Copy clone post shell script to target Application server
+      template: src=templates/apppost.sh.j2 dest={{ tgt_dir }}/apppost.sh mode=0777
+      become: yes
+      become_user: applmgr
+
+    - name: Copy clone post shell script to target Application server
+      copy: src={{ item }} dest={{ tgt_dir }}/
+      with_fileglob:
+        - "{{ project_dir }}/files/{{domain}}/{{ tgt_env }}/*"
+      become: yes
+      #recurse: yes
+      become_user: applmgr
+
+
+    # Running Application clone using adcfgclone.pl and Start Application
+
+
+    - name: Running untar_APPS_files.sh 
+      shell: "sh untar_APPS_files.sh"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: root
+      become_method: sudo
+
+    - name: Deleting application files from {{ app_tgt_mount }}
+      shell: "sh delete_ALL_old_code.sh {{ tgt_env }}"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: root
+      become_method: sudo
+
+    - name: Moving application files to {{ app_tgt_mount }} on {{ current_base }}
+      shell: "sh move_APPS_files_2_live.sh {{ tgt_env }} {{ current_base }}"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: root
+      become_method: sudo
+
+    - name: Clean Previous run temp files
+      file:
+        path: "{{ item }}" # required. Path to the file being managed.
+        state: absent 
+      loop:
+        - "/tmp/P1"
+        - "/tmp/P2"
+        - "/tmp/P3"
+        - "/tmp/P4"
+        - "/tmp/P5"
+        - "/tmp/P6"
+      become: yes
+      become_user: applmgr
+
+    - name: Running Application clone using adcfgclone.pl with run_base is {{ current_base }}
+      shell: "sh auto_clone.sh {{ src_apps_pswd }} {{ tgt_system_pwd }} {{ tgt_apps_pwd }} {{ tgt_sysadmin_pswd }} {{ src_wblg_pswd }}"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: applmgr
+
+    # Run Application Post steps
+    - name: Copy post profile file to local server
+      template: src=templates/post_profile.j2 dest=/home/applmgr/.profile mode=0755
+      become: yes
+      become_user: applmgr
+
+    # - name: "Copy APPS{{ tgt_env }}_{{ tgt_app_node }}.env file to local server location={{ app_tgt_mount }}"
+    #   copy: src=files/{{domain}}/{{ tgt_env }}/APPS{{ tgt_env }}_{{ tgt_app_node }}.env dest={{ app_tgt_mount }}/{{ current_base }}/EBSapps/appl/APPS{{ tgt_env }}_{{ tgt_app_node }}.env mode=0755
+    #   become: yes
+    #   become_user: applmgr
+
+    - name: "Copy custom{{ tgt_env }}_{{ tgt_app_node }}.env file to local server location={{ app_tgt_mount }}"
+      copy: src=files/{{domain}}/{{ tgt_env }}/custom{{ tgt_env }}_{{ tgt_app_node }}.env dest={{ app_tgt_mount }}/{{ current_base }}/EBSapps/appl/custom{{ tgt_env }}_{{ tgt_app_node }}.env mode=0755
+      become: yes
+      become_user: applmgr
+    
+    - name: "Ansible replace string eprod to {{ tgt_env }} in default.env"
+      replace:
+        path: "{{ app_tgt_mount }}/{{ current_base }}/inst/apps/{{ tgt_env }}_{{ tgt_app_node }}/ora/10.1.2/forms/server/default.env"
+        regexp: 'eprod'
+        replace: "{{ tgt_env }}"
+
+    - name: "Ansible replace string eprod to {{ tgt_env }} in socket.env"
+      replace:
+        path: "{{ app_tgt_mount }}/{{ current_base }}/inst/apps/{{ tgt_env }}_{{ tgt_app_node }}/ora/10.1.2/forms/server/socket.env"
+        regexp: 'eprod'
+        replace: "{{ tgt_env }}"
+
+    - name: "Ansible replace string eprod to {{ tgt_env }} in txkGenDefaultEnv.tmp"
+      replace:
+        path: "{{ app_tgt_mount }}/{{ current_base }}/EBSapps/appl/fnd/12.0.0/admin/template/custom/txkGenDefaultEnv.tmp"
+        regexp: 'eprod'
+        replace: "{{ tgt_env }}"
+
+    - name: "Ansible replace string eprod to {{ tgt_env }} in txkappsprf.sql"
+      replace:
+        path: "{{ app_tgt_mount }}/{{ current_base }}/EBSapps/appl/fnd/12.0.0/admin/template/custom/txkappsprf.sql"
+        regexp: 'EPROD - Production'
+        replace: "{{ tgt_env }} - Copy of EPROD as of {{ date }}"
+
+    - name: "Ansible replace string TelnetServer to {{ tgt_env }} in deviceIP.ini"
+      replace:
+        path: "{{ app_tgt_mount }}/{{ current_base }}/EBSapps/appl/mwa/12.0.0/admin/template/custom/deviceIP.ini"
+        regexp: 'eprodapp.internal.{{domain}}.org'
+        replace: "{{ TelnetServer }}"
+
+
+
+    - name: Running fix_applmgr_softlinks_postclone.sh
+      shell: "sh fix_applmgr_softlinks_postclone.sh {{ tgt_env }}"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: applmgr
+
+
+
+    - name: Running fix_applmgr_files_after_clone.sh
+      shell: "sh fix_applmgr_files_after_clone.sh {{ tgt_env }}"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: applmgr
+
+    - name: Running fix_root_files_after_clone.sh
+      shell: "sh fix_root_files_after_clone.sh {{ tgt_env }}"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: root
+      become_method: sudo
+
+    - name: Copy post clone script 1_applmgr_post1_apply.sh to target Application server
+      template: src=templates/1_applmgr_post1_apply.sh.j2 dest={{ tgt_dir }}/sh/1_applmgr_pos1_apply.sh mode=0777
+      become: yes
+      become_user: applmgr
+
+    - name: Copy post clone script 1_apps_post1_apply.sql to target Application server
+      template: src=templates/1_apps_post1_apply.sql.j2 dest={{ tgt_dir }}/sql/1_apps_post1_apply.sql mode=0777
+      become: yes
+      become_user: applmgr
+
+    - name: Copy post clone script 2_apps_post2_apply.sql to target Application server
+      template: src=templates/2_apps_post2_apply.sql.j2 dest={{ tgt_dir }}/sql/2_apps_post2_apply.sql mode=0777
+      become: yes
+      become_user: applmgr
+
+    - name: Copy post clone script 1_bolinf_post1_apply.sql to target Application server
+      template: src=templates/1_bolinf_post1_apply.sql.j2 dest={{ tgt_dir }}/sql/1_bolinf_post1_apply.sql mode=0777
+      become: yes
+      become_user: applmgr
+      
+      
+      #kbdx_reset_all.sql.j2
+
+    - name: Copy kbdx_reset_all.sql to target Application server
+      template: src=templates/kbdx_reset_all.sql.j2 dest={{ tgt_dir }}/sql/3_apps_kbdx_reset_all_apply.sql mode=0777
+      become: yes
+      become_user: applmgr  
+
+    - name: Run PostSteps on Application Tier from sh directory
+      shell: "{{ tgt_dir }}/apppost.sh"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: applmgr
+
+    # Stop Application
+    - name: Stop Application
+      shell: ". {{ app_tgt_mount }}/EBSapps.env RUN;{{ tgt_dir }}/restart.sh stop {{ tgt_apps_pwd }} {{ tgt_wblg_pswd }}"
+      become: yes
+      become_user: applmgr
+
+    # Start Application
+    - name: Start Application
+      shell: ". {{ app_tgt_mount }}/EBSapps.env RUN;{{ tgt_dir }}/restart.sh start {{ tgt_apps_pwd }} {{ tgt_wblg_pswd }}"
+      become: yes
+      become_user: applmgr
+#Enabling Autostart
+    # - name: Copy Oracle EBS autostart on target
+    #   template: src=templates/appsora.j2 dest=/etc/init.d/appsora mode=0750
+    #   become: yes
+    #   become_user: root
+
+    # - name: Enable appsora service on Application server
+    #   shell: "systemctl enable appsora;/sbin/chkconfig appsora on"
+    #   become: yes
+    #   become_user: root
+    
+    # - name: reload systemctl
+    #   command: systemctl daemon-reload
+    #   become: yes
+    #   become_user: root

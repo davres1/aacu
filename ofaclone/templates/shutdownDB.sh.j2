@@ -1,0 +1,44 @@
+#!/bin/bash
+source ~/.bash_profile
+touch {{ tgt_dir }}/ofa_{{ tgt_env }}_db_shutdown.log
+exec 1> {{ tgt_dir }}/ofa_{{ tgt_env }}_db_shutdown.log 2>&1
+
+export L_DBCONTEXT_NAME={{ tgt_env }}_`hostname -a`
+export ORACLE_HOME={{ tgt_oracle_home }}
+export L_ORACLEHOME={{ tgt_oracle_home }}
+export L_DBSRV=`hostname -a`
+export L_ORACLESID={{ tgt_db }}
+
+function FN_ORACLE_ENV
+{
+   
+    export ORACLE_HOME={{ tgt_oracle_home }}
+    if [ -f  $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env ]; then
+      . $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env
+      export G_ENV=0
+    else
+      FN_Error "FN_ORACLE_ENV: the environment file $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env DOES NOT EXIST"
+      export ORACLE_SID=${L_ORACLESID}
+      export LD_LIBRARY_PATH=${ORACLE_HOME}/lib,${ORACLE_HOME}/ctx/lib
+      export PATH=$ORACLE_HOME/bin:$PATH:/usr/ccs/bin:/usr/bin
+      export TNS_ADMIN=$ORACLE_HOME/network/admin/${L_ORACLESID}_${L_DBSRV}
+    fi
+
+}
+
+FN_ORACLE_ENV
+
+. $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env
+. {{ tgt_oracle_home }}/{{ tgt_env }}_{{ tgt_db_node }}.env
+
+
+# srvctl stop database -d {{ tgt_db }} -force
+
+
+sqlplus -s / as sysdba << EOF
+shut immediate;
+exit
+EOF
+
+#Stop Listener
+#$ORACLE_HOME/bin/lsnrctl stop {{ tgt_db }}

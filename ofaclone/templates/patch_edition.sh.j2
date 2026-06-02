@@ -1,0 +1,31 @@
+#!/bin/sh
+source ~/.profile
+
+. {{ app_tgt_mount }}/EBSapps.env RUN
+
+sqlplus apps/{{ src_apps_pswd }}@{{ src_db_node}}:{{ src_db_port }}/{{ src_db }} <<E1
+set pagesize 0;
+set linesize 100;
+set echo off;
+SET VERIFY OFF;
+set heading off;
+set feedback off;
+spool /tmp/patch_base.tmp
+SELECT EXTRACTVALUE(XMLType(text),'//file_edition_name')
+FROM fnd_oam_context_files
+WHERE name NOT IN ('TEMPLATE','METADATA','config.txt')
+AND CTX_TYPE='A'
+AND (status IS NULL OR UPPER(status) IN ('S','F'))
+AND EXTRACTVALUE(XMLType(text),'//file_edition_type') = 'patch' and name='{{ src_env }}_{{ src_app_node }}';
+spool off;
+exit;
+E1
+
+
+if [ `cat /tmp/patch_base.tmp | tail -2|head -1` == 'fs1' ] || [ `cat /tmp/patch_base.tmp | tail -2|head -1` == 'fs2' ]
+then
+cat /tmp/patch_base.tmp|tail -2|head -1 >/tmp/patch_base.lst
+else
+echo "Cant find patch base. Failing..."
+exit 1
+fi

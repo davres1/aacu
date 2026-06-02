@@ -1,0 +1,7 @@
+#!/bin/bash
+find /u02/app/applmgr/inst/apps/ploicprd_plvm462a1/logs/appl/conc/log -name "*.req" -mtime +30 -exec rm {} \; &
+find /u02/app/applmgr/inst/apps/ploicprd_plvm462a1/logs/appl/conc/log -name "*.txt" -mtime +30 -exec rm {} \; &
+find /u02/app/applmgr/inst/apps/ploicprd_plvm462a1/logs/appl/conc/log -name "*.mgr" -mtime +30 -exec rm {} \; &
+find /u02/app/applmgr/inst/apps/ploicprd_plvm462a1/logs/appl/conc/out -name "*.out" -mtime +30 -exec rm {} \; &
+:>/u02/app/applmgr/inst/apps/ploicprd_plvm462a1/logs/ora/10.1.3/j2ee/oacore/oacore_default_group_1/application.log
+:>/u02/app/applmgr/inst/apps/ploicprd_plvm462a1/logs/ora/10.1.3/j2ee/oacore/oacore_default_group_1/server.log

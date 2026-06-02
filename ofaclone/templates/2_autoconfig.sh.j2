@@ -1,0 +1,61 @@
+#!/bin/bash
+source ~/.profile
+touch {{ tgt_dir }}/ofa_{{ tgt_env }}_autoconfig.log
+exec 1> {{ tgt_dir }}/ofa_{{ tgt_env }}_autoconfig.log 2>&1
+
+export L_DBCONTEXT_NAME={{ tgt_env }}_`hostname -a`
+export ORACLE_HOME={{ tgt_oracle_home }}
+export L_ORACLEHOME={{ tgt_oracle_home }}
+export L_DBSRV=`hostname -a`
+export L_ORACLESID={{ tgt_db }}
+
+function FN_ORACLE_ENV
+{
+   
+    export ORACLE_HOME={{ tgt_oracle_home }}
+    if [ -f  $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env ]; then
+      . $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env
+      export G_ENV=0
+    else
+      FN_Error "FN_ORACLE_ENV: the environment file $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env DOES NOT EXIST"
+      export ORACLE_SID=${L_ORACLESID}
+      export LD_LIBRARY_PATH=${ORACLE_HOME}/lib,${ORACLE_HOME}/ctx/lib
+      export PATH=$ORACLE_HOME/bin:$PATH:/usr/ccs/bin:/usr/bin
+      export TNS_ADMIN=$ORACLE_HOME/network/admin/${L_ORACLESID}_${L_DBSRV}
+    fi
+
+}
+
+FN_ORACLE_ENV
+
+cd {{ tgt_oracle_home }}/appsutil
+source ./txkSetCfgCDB.env -dboraclehome={{ tgt_oracle_home }}
+export ORACLE_SID={{ tgt_db|lower }}
+
+
+sqlplus -s apps/{{ src_apps_pswd }}@{{ tgt_db }}<< EOF
+exec fnd_conc_clone.setup_clean;
+drop table fnd_oam_context_files_bkp;
+drop table fnd_nodes_bk;
+drop table adop_valid_nodes_bk;
+drop table ad_nodes_config_status_bk;
+create table fnd_oam_context_files_bkp as select * from fnd_oam_context_files;
+create table fnd_nodes_bk as select * from fnd_nodes;
+create table adop_valid_nodes_bk as select * from adop_valid_nodes;
+create table ad_nodes_config_status_bk as select * from ad_nodes_config_status;
+truncate table APPLSYS.fnd_oam_context_files;
+truncate table APPLSYS.fnd_nodes;
+truncate table APPLSYS.adop_valid_nodes;
+truncate table APPLSYS.ad_nodes_config_status;
+commit;
+exit
+EOF
+
+cd {{ tgt_oracle_home }}/appsutil/scripts/{{ tgt_db }}_{{ tgt_db_node }}
+./adautocfg.sh appspass={{ src_apps_pswd }}
+
+cd {{ tgt_oracle_home }}/appsutil/install/{{ tgt_db }}_{{ tgt_db_node }}
+sqlplus "/ as sysdba" << EOF
+@adupdlib.sql so ;
+exit;
+EOF

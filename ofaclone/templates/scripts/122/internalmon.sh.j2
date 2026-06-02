@@ -1,0 +1,156 @@
+#!/bin/sh 
+program=`basename $0`
+HOST=`uname -n`
+WORK_DIR='{{ tgt_dir }}/scripts'
+LOG_DIR='{{ tgt_dir }}/scripts'
+LOGFILE=${LOG_DIR}/check30.log
+SID=$1
+MAILFILE=$LOG_DIR/MailFile$$.dat
+HEADERFILE=$LOG_DIR/mailheader$$.log
+EMAIL_ADDRESS={{ email_address }}
+OUTFILE=$LOG_DIR/check_cmstatus_$$.dat
+ORACLE_SID=$1
+TEMPDIR=/tmp
+CMD=status
+
+# Ensure that a CMD was provided.
+if test -z "$CMD"
+then
+  echo "\nERROR: No CMD provided. Usage: $program <SID> <CMD>"
+  echo "Example: $program oralab status"
+  exit 1
+fi
+
+
+# Ensure that a SID was provided.
+if test -z "$SID"
+then
+  exit 1
+fi
+
+NODE=`uname -n | awk -F'.' '{print tolower($1)}'`
+
+# Source the environment file
+if test -s {{ app_tgt_mount }}/EBSapps.env
+then
+. {{ app_tgt_mount }}/EBSapps.env RUN
+else
+  exit 1
+fi
+
+#NODE=`uname -n | awk -F'.' '{print tolower($1)}'`
+
+# Source the environment file
+#if test -s /u01/r12uat/EBSapps.env
+#then
+#. /u01/r12uat/EBSapps.env RUN
+#else
+#  exit 1
+#fi
+
+# Use TWO_TASK or ORACLE_SID (which ever exists) to identify system.
+if test -z "$TWO_TASK"
+then
+  INST="$ORACLE_SID"
+else
+  INST="$TWO_TASK"
+fi
+
+ENVFILE=source $HOME/.bash_profile
+
+
+
+function _icmtestcmd
+{
+  echo "========================================================================="
+  echo "checking Internal concurrent Manager status for Database ${ORACLE_SID}"
+  date
+  echo "========================================================================="
+ echo
+ SYSTEM_PWD=apps/$PSWD
+ case $CMD in
+  status)
+#         echo "** Sending status for Oracle database=${ORACLE_SID}"
+         (echo ${SYSTEM_PWD};
+          echo set pages 0 pause off verify off feedback off termout off;
+          echo " SELECT   f.os_process_id
+                                FROM              apps.fnd_concurrent_processes f,
+                           apps.fnd_concurrent_queues q
+                                WHERE        f.concurrent_queue_id = q.concurrent_queue_id
+                           AND q.concurrent_queue_name = 'FNDICM'
+                           AND f.process_status_code='A'
+                           AND q.running_processes = 1
+                           GROUP BY   f.os_process_id
+                                ORDER BY   1 desc;")|
+                sqlplus -s > $TEMPDIR/icmppid
+ # Helper: return count of active ICM processes
+ icm_count() {
+  sqlplus -s apps/$PSWD <<SQL
+set pages 0 pause off verify off feedback off termout off;
+SELECT COUNT(*) FROM apps.fnd_concurrent_processes f, apps.fnd_concurrent_queues q WHERE f.concurrent_queue_id = q.concurrent_queue_id AND q.concurrent_queue_name = 'FNDICM' AND f.process_status_code='A' AND q.running_processes = 1;
+/
+SQL
+}
+
+ if [ ! -s $TEMPDIR/icmppid  ]; then
+    echo "Database=$ORACLE_SID Internal Concurrent Manager appears DOWN"
+    ATTEMPT=1
+    while [ $ATTEMPT -le 3 ]; do
+      echo "Attempt $ATTEMPT: Restarting Concurrent Managers on $TWO_TASK" 
+      $ADMIN_SCRIPTS_HOME/adcmctl.sh start apps/$PSWD
+      sleep 30
+      CNT=$(icm_count | grep -v "^$" | head -1)
+      if [ "${CNT}" -gt 0 ]; then
+        echo "Concurrent Managers are started on $TWO_TASK" | mail -s "$TWO_TASK - Concurrent Managers STARTED" $EMAIL_ADDRESS
+        return 0
+      fi
+      ATTEMPT=$((ATTEMPT + 1))
+      sleep 30
+    done
+    echo "Concurrent Managers failed to start on $TWO_TASK after 3 attempts" | mail -s "$TWO_TASK - Concurrent Managers FAILED" $EMAIL_ADDRESS
+    return 1
+ fi
+
+ for LINE in `cat $TEMPDIR/icmppid`
+  do
+    MATCH=`ps -ef |grep $LINE |grep -v "grep" | awk  '{print $8}'`
+    if [ -n "$MATCH" ] ; then
+      echo $MATCH
+      echo "For Database=$ORACLE_SID , Internal Concurrent Manager is UP and RUNNING !!"
+      return 0
+    else
+      echo "Database=$ORACLE_SID Internal Concurrent Manager appears DOWN"
+      ATTEMPT=1
+      while [ $ATTEMPT -le 3 ]; do
+        echo "Attempt $ATTEMPT: Restarting Concurrent Managers on $TWO_TASK" 
+        $ADMIN_SCRIPTS_HOME/adcmctl.sh start apps/$PSWD
+        sleep 30
+        CNT=$(icm_count | grep -v "^$" | head -1)
+        if [ "${CNT}" -gt 0 ]; then
+          echo "Concurrent Managers are started on $TWO_TASK" | mail -s "$TWO_TASK - Concurrent Managers STARTED" $EMAIL_ADDRESS
+          return 0
+        fi
+        ATTEMPT=$((ATTEMPT + 1))
+        sleep 30
+      done
+      echo "Concurrent Managers failed to start on $TWO_TASK after 3 attempts" | mail -s "$TWO_TASK - Concurrent Managers FAILED" $EMAIL_ADDRESS
+      return 1
+    fi
+  done
+  return 1
+  ;;
+*) echo "nERROR: Invalid option=$CMD (in function _icmtestcmd)"
+            return 2
+            ;;
+  esac
+}
+#
+#MAIN
+#
+if [ "$CMD" = "status" ]; then
+  _icmtestcmd $CMD $OSID
+else
+  echo "ERROR: Invalid CMD value. Usage: $program <SID> status"
+  exit 2
+fi
+	

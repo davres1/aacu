@@ -1,0 +1,123 @@
+---
+# Summary of Steps
+# 1. Stop target database (if running)
+# 2. Drop database
+# 3. start database recovery
+# 4. Run auto config on target
+#
+
+#     - pause: minutes=1
+
+#Start database cloning
+# - name: ensure wget is installed
+#   yum:
+#     name: wget
+#     state: present
+#     update_cache: true
+#   become: true
+
+- name: Oracle Database Refresh
+  hosts: "{{domain}}-{{tgt_env}}-OFA-DB"
+  gather_facts: yes
+
+  vars:
+    date: "{{ lookup('pipe', 'date +%Y-%m-%d') }}"
+    project_dir: '/u01/ansible/ofaclone'
+
+  vars_files:
+    - vars/{{domain}}/{{ src_env }}sourcedbinfo.yaml
+    - vars/{{domain}}/{{ tgt_env }}/targetdbinfo.yaml
+
+  tasks:
+    - name: Create "{{ tgt_dir }}" directory
+      file: 
+        path: "{{ item }}"
+        state: directory
+        owner: oracle
+        group: oinstall
+        mode: "0755"
+      loop:
+        - "{{ tgt_dir }}/sql"
+        - "{{ project_dir }}/files/{{domain}}/{{ tgt_env }}/sql/"
+        - "{{ tgt_oracle_home }}/oraInventory/"
+
+    # - name: copy Facter File
+    #   copy: 
+    #     src: "{{ project_dir }}/ansible/pipeline/ebsclone/files/etc/ansible/facts.d/db_inventory.fact"
+    #     dest:  '/etc/ansible/facts.d/db_inventory.fact'
+    #     owner: root
+    #     mode: 0777
+    
+    - set_fact:
+        suffix: "ansible{{ 1000 | random }}"
+      run_once: yes
+      become: yes
+      become_user: oracle
+
+    - name: Removing old home from inventory
+      shell: "ELEMENT=`echo {{ tgt_oracle_home }}| rev | cut -d '/' -f '1' |rev`;perl -p -i.bak -e /`echo $ELEMENT`/d /u01/app/oraInventory/ContentsXML/inventory.xml"
+      become: yes
+      become_user: oracle
+
+    - name: Copy database stop script to target database server
+      template: src=templates/stopDB.sh.j2 dest={{ tgt_dir }}/stopDB.sh mode=0777
+      become: yes
+      become_user: oracle
+
+    - name: stoping Database
+      shell: "{{ tgt_dir }}/stopDB.sh"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: oracle
+      ignore_errors: yes
+
+    - name: Copy Rman Script to target database server
+      template: src=templates/RMAN_clone_db.sh.j2 dest={{ tgt_dir }}/RMAN_clone_db.sh mode=0777
+      become: yes
+      become_user: oracle
+
+    # Restart Souce database to recover
+
+    - name: Recover database
+      shell: "{{ tgt_dir }}/RMAN_clone_db.sh {{ tgt_db | lower }}"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: oracle
+
+
+
+    - name: Copy database startup script to target database server
+      template: src=templates/startDB.sh.j2 dest={{ tgt_dir }}/startDB.sh mode=0777
+      become: yes
+      become_user: oracle
+
+    - name: Copy autoconfig on target
+      template: src=templates/2_autoconfig.sh.j2 dest={{ tgt_dir }}/2_autoconfig.sh mode=0777
+      become: yes
+      become_user: oracle
+
+    - name: Copy post clone steps on target
+      template: src=templates/dbpost.sh.j2 dest={{ tgt_dir }}/dbpost.sh mode=0777
+      become: yes
+      become_user: oracle
+
+    # Run autoconfig on target
+    - name: Run autoconfig on Database
+      shell: "{{ tgt_dir }}/2_autoconfig.sh"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: oracle
+      when: db_version != '19'
+
+    # Run Database Post steps
+
+    - name: Run PostSteps on Database
+      shell: "{{ tgt_dir }}/dbpost.sh"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: oracle
+

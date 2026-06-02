@@ -1,0 +1,15 @@
+DECLARE
+    n_component_id NUMBER;
+    l_errcode      NUMBER;
+    l_errstr       VARCHAR2(4000);
+BEGIN
+    SELECT component_id
+    INTO   n_component_id
+    FROM   fnd_svc_components
+    WHERE  component_name = 'Workflow Notification Mailer'; 
+    --use the following two lines to start
+    fnd_svc_component.Start_component(n_component_id, l_errcode, l_errstr);
+    COMMIT;
+END;
+/
+exit;

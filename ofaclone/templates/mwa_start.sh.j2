@@ -1,0 +1,17 @@
+#!/bin/sh
+source ~/.profile
+
+. {{ app_tgt_mount }}/EBSapps.env RUN
+
+touch {{ tgt_dir }}/ofa_mwastart.log
+exec 1> {{ tgt_dir }}/ofa_mwastart.log 2>&1
+
+MWAUSR=sysadmin
+MWAPW={{ tgt_sysadmin_pswd }}
+
+export PATH=$PATH:$ADMIN_SCRIPTS_HOME/mwactl.sh
+
+nohup $ADMIN_SCRIPTS_HOME/mwactl.sh start 2310 &
+nohup $ADMIN_SCRIPTS_HOME/mwactl.sh start 2320 &
+nohup $ADMIN_SCRIPTS_HOME/mwactl.sh start_dispatcher &
+

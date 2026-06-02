@@ -1,0 +1,71 @@
+#!/bin/bash
+source ~/.profile
+touch {{ tgt_dir }}/ofa_{{ tgt_env }}_db_post.log
+exec 1> {{ tgt_dir }}/ofa_{{ tgt_env }}_db_post.log 2>&1
+
+
+export L_DBCONTEXT_NAME={{ tgt_env }}_`hostname`
+export ORACLE_HOME={{ tgt_oracle_home }}
+export L_ORACLEHOME={{ tgt_oracle_home }}
+export L_DBSRV=`hostname -a`
+export L_ORACLESID={{ tgt_db }}
+
+function FN_ORACLE_ENV
+{
+   
+    export ORACLE_HOME={{ tgt_oracle_home }}
+    if [ -f  $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env ]; then
+      . $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env
+      export G_ENV=0
+    else
+      FN_Error "FN_ORACLE_ENV: the environment file $L_ORACLEHOME/${L_DBCONTEXT_NAME}.env DOES NOT EXIST"
+      export ORACLE_SID=${L_ORACLESID}
+      export LD_LIBRARY_PATH=${ORACLE_HOME}/lib,${ORACLE_HOME}/ctx/lib
+      export PATH=$ORACLE_HOME/bin:$PATH:/usr/ccs/bin:/usr/bin
+      export TNS_ADMIN=$ORACLE_HOME/network/admin/${L_ORACLESID}_${L_DBSRV}
+    fi
+
+}
+
+FN_ORACLE_ENV
+
+. $L_ORACLEHOME/"${L_DBCONTEXT_NAME}".env
+
+
+. {{ tgt_oracle_home }}/{{ tgt_db | lower }}_{{ tgt_db_node }}.env
+
+sqlplus "/ as sysdba" <<EOF
+alter user system identified by {{ tgt_system_pwd }} container=all;
+exit;
+EOF
+
+
+
+echo "Clean Concurrent Processes tables"
+sqlplus apps/{{ src_apps_pswd }}@{{ tgt_db }} << EOF
+alter session set container="{{ tgt_db }}";
+update FND_CONCURRENT_QUEUES set running_processes=0, max_processes=0;
+commit;
+exit;
+EOF
+
+sqlplus  applsys/{{ src_apps_pswd }}@{{ tgt_db }} << EOF
+alter session set container="{{ tgt_db }}";
+truncate table FND_CONCURRENT_PROCESSES;
+truncate table FND_CONCURRENT_REQUESTS ;
+exit;
+EOF
+
+echo " changing password "
+sqlplus apps/{{ tgt_apps_pwd }}@{{ tgt_db }} << EOF
+drop database link APPS_TO_APPS.US.ORACLE.COM;
+drop database link EDW_APPS_TO_WH.US.ORACLE.COM;
+create database link EDW_APPS_TO_WH.US.ORACLE.COM connect to apps identified by {{ tgt_apps_pwd }} using '{{ tgt_db|lower }}_BALANCE';
+create database link APPS_TO_APPS.US.ORACLE.COM connect to apps identified by {{ tgt_apps_pwd }} using '{{ tgt_db|lower }}_BALANCE';
+
+
+
+
+exit;
+EOF
+

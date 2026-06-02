@@ -1,0 +1,164 @@
+#!/bin/sh 
+#           1.) Concurrent requests errored or terminated or suspended in last one hour
+#    Input:
+#      1 - DBName
+#**************************************************************
+
+program=`basename $0`
+HOST=`uname -n`
+EMAIL_ADDRESS={{ email_address}}
+
+
+if [ $# -lt 1 ];
+then
+   printf "\n$program: too few arguments specified.\n\n"
+   printf "\n$program: exiting with status 1\n\n"
+   printf "\n=======================================================================\n \n"
+   exit 1;
+fi
+
+SID=$1
+NODE=`hostname -s`
+cname={{ app_tgt_mount }}
+
+
+ENV_FILE=$cname/EBSapps.env
+
+#if [ ! -s $HOME/$ENV_FILE ]; then
+#    NODE=`hostname -s | tr A-Z a-z`
+#    cname=$SID"_"$NODE
+#fi
+
+
+
+#ENV_FILE=$cname".env"
+
+#if [ ! -s $HOME/$ENV_FILE ];
+#then
+# error handling here may be unnecessary
+#  echo "No such file"
+#   exit 1;
+#fi
+
+#. $HOME/$ENV_FILE
+
+source $cname/EBSapps.env RUN
+
+# Use TWO_TASK or ORACLE_SID (which ever exists) to identify system.
+if test -z "$TWO_TASK"
+then
+  INST="$ORACLE_SID"
+else
+  INST=`echo $TWO_TASK|cut -d "_" -f 1`
+fi
+
+LOGFILE=Conreq.htm
+
+sqlplus -s apps/$PSWD <<sqlend
+set head off
+set pagesize 0
+set feedback off
+set pagesize 0
+set linesize 320
+column REQUEST_ID Format 999999999
+column USER_CONCURRENT_PROGRAM_NAME    Format a35
+column COMPLETED          Format a10
+column ERROR          Format a10
+column REQUESTOR          Format a15
+column STARTTIME          Format a20
+column RUNTIME          Format a20
+column COMPLETION_TEXT          Format a170
+spool $LOGFILE
+SELECT b.request_id ||'|'|| a.user_concurrent_program_name ||'|'|| b.phase_code ||'|'|| b.status_code ||'|'|| u.user_name ||'|'|| TO_CHAR (b.actual_start_date, 'MM/DD/YY HH24:MI:SS') ||'|'|| TO_CHAR(ROUND ((b.actual_completion_date - b.actual_start_date) * (60 * 24),2)) ||'|'|| replace(replace(replace( b.completion_text ,chr(10),' ')  ,chr(13),' '),'  ',' ')
+  FROM fnd_concurrent_programs_tl a, fnd_concurrent_requests b, fnd_user u
+ WHERE a.concurrent_program_id = b.concurrent_program_id
+   AND b.phase_code = 'C'
+   AND (b.status_code = 'E' or b.status_code = 'X' or b.status_code = 'S')
+         -- AND b.actual_start_date > sysdate - 1
+        AND actual_completion_date > sysdate - (1/24)
+            AND b.requested_by = u.user_id
+   AND a.LANGUAGE = 'US';
+spool off
+exit
+sqlend
+
+###Send notification if File is not empty
+
+if [[ -s $LOGFILE ]]; then
+
+## Format the sql output as html layout
+         awk -F "|" -v SID="${SID}" -v HOST="${HOST}" 'BEGIN {
+                print "From: prodapp@ebsappprod.penske.com"
+                print "To: {{ email_address }}"
+                print "MIME-Version: 1.0"
+                print "Content-Type: text/html;charset=UTF-8"
+                print "Subject: " SID " Concurrent Programs errored/terminated/suspended in last one hour "
+                print "<html><body><table border=1 cellspacing=0 cellpadding=3>"
+                print "<tr>"
+                print "<td>Request Id</td>";
+                print "<td>Concurrent Program name</td>";
+                print "<td>Phase Code</td>";
+                print "<td>Status Code</td>";
+                print "<td>Requestor</td>";
+                print "<td>starttime</td>";
+                print "<td>Runtime</td>";
+                print "<td>Completion Text</td>";
+                print "</tr>"
+               } {
+                print "<tr>"
+                print "<td>"$1"</td>";
+                print "<td>"$2"</td>";
+                print "<td>"$3"</td>";
+                print "<td>"$4"</td>";
+                print "<td>"$5"</td>";
+                print "<td>"$6"</td>";
+                print "<td>"$7"</td>";
+                print "<td>"$8"</td>";
+                print "</tr>"
+               } END {
+                print "</table></body></html>"
+               } ' $LOGFILE | /usr/sbin/sendmail -t
+
+fi
+
+if [ `cat Conreq.htm |grep 'Workflow Background Process'|wc -l` -gt 1 ]
+then
+## Format the sql output as html layout
+         awk -F "|" -v SID="${SID}" -v HOST="${HOST}" 'BEGIN {
+                print "From: prodapp@ebsappprod.penske.com"
+                print "To: {{ email_address }}"
+                print "MIME-Version: 1.0"
+                print "Content-Type: text/html"
+                print "Subject: " SID " Workflow job is failed which will cause Notification stuck/hung. Please contact IT "
+                print "<html><body><table border=1 cellspacing=0 cellpadding=3>"
+                print "<tr>"
+                print "<td>Request Id</td>";
+                print "<td>Concurrent Program name</td>";
+                print "<td>Phase Code</td>";
+                print "<td>Status Code</td>";
+                print "<td>Requestor</td>";
+                print "<td>starttime</td>";
+                print "<td>Runtime</td>";
+                print "<td>Completion Text</td>";
+                print "</tr>"
+               } {
+                print "<tr>"
+                print "<td>"$1"</td>";
+                print "<td>"$2"</td>";
+                print "<td>"$3"</td>";
+                print "<td>"$4"</td>";
+                print "<td>"$5"</td>";
+                print "<td>"$6"</td>";
+                print "<td>"$7"</td>";
+                print "<td>"$8"</td>";
+                print "</tr>"
+               } END {
+                print "</table></body></html>"
+               } ' $LOGFILE | /usr/sbin/sendmail -t
+
+fi
+
+rm $LOGFILE
+
+exit
+

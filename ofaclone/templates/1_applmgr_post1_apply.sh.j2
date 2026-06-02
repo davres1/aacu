@@ -1,0 +1,115 @@
+#!/bin/bash
+. {{ app_tgt_mount }}/EBSapps.env RUN
+
+touch {{ tgt_dir }}/ofa_{{ tgt_env }}_post_clone.log
+exec 1> {{ tgt_dir }}/ofa_{{ tgt_env }}_post_clone.log 2>&1
+chmod 777 {{ app_tgt_mount }}/fs*/inst/apps/{{ tgt_env }}_{{ tgt_app_node }}/appltmp
+chmod 777 {{ app_tgt_mount }}/fs*/inst/apps/{{ tgt_env }}_{{ tgt_app_node }}/temp
+chmod -R 777 {{ app_tgt_mount }}/fs*/EBSapps/comn/java/classes/oracle/apps/media/temp
+chmod -R 777 {{ app_tgt_mount }}/fs*/EBSapps/appl/*/12.0.0/forms
+chmod -R 777 {{ app_tgt_mount }}/fs*/EBSapps/comn/java/classes/xxvmmc
+mkdir {{ app_tgt_mount }}/fs_ne/EBSapps/appl/xdo
+mkdir {{ app_tgt_mount }}/fs_ne/EBSapps/appl/xdo/temp
+mkdir {{ app_tgt_mount }}/fs_ne/EBSapps/appl/xdo/resource
+mkdir {{ app_tgt_mount }}/fs_ne/EBSapps/appl/xdo/xxvmmc_templates
+mkdir {{ app_tgt_mount }}/fs_ne/EBSapps/appl/bne
+mkdir {{ app_tgt_mount }}/fs_ne/EBSapps/appl/bne/upload
+mkdir {{ app_tgt_mount }}/fs_ne/EBSapps/appl/bne/log
+cd {{ app_tgt_mount }}/fs_ne/EBSapps/appl/bne/log
+touch bne.log
+cd {{ tgt_dir }}
+cp -p VMMC_649_INC.rtf VMMC_NH_10_DAYS_LEFT.rtf  VMMC_NH_CLOSE_ENROLLMENTS.rtf VMMC_NEW_HIRE_GREETING.rtf  VMMC_NH_20_DAYS_LEFT.rtf  VMMC_NH_DEFAULT_ENROLLMENT.rtf {{ app_tgt_mount }}/fs_ne/EBSapps/appl/xdo/xxvmmc_templates/.
+cd {{ app_tgt_mount }}/fs_ne/EBSapps/appl/xdo/resource/
+ln -s /usr/java71/jre/lib/xdodelivery.cfg
+ln -s /usr/java71/jre/lib/xdo.cfg
+ln -s /usr/java71/jre/lib/xdodebug.cfg
+
+echo "Running : installtxkWfClone.sh"
+sh {{ app_tgt_mount }}/{{ current_base }}/inst/apps/{{ tgt_env }}_{{ tgt_app_node }}/admin/installtxkWfClone.sh <<EOF
+apps
+{{ tgt_apps_pwd }}
+EOF
+
+# echo "Running : kbdx_reset_all.sql"
+#sqlplus apps/{{ tgt_apps_pwd }} @{{ app_tgt_mount }}/{{ current_base }}/EBSapps/appl/kbace/3.0/patch/kbx_40066_2018/utilities/kbdx_reset_all.sql applsyspub<<EOF
+#applsyspub
+#/interface/infvmmci/{{ tgt_env|upper }}/outgoing
+#exit;
+#EOF
+
+
+echo "Running : SYSTEM_TEMP_DIR in XDO_CONFIG_VALUES"
+sqlplus apps/{{ tgt_apps_pwd }} <<EOF
+update apps.XDO_CONFIG_VALUES 
+set value='{{ app_tgt_mount }}/fs_ne/EBSapps/appl/xdo/temp' WHERE  property_code = 'SYSTEM_TEMP_DIR';
+select value from apps.XDO_CONFIG_VALUES WHERE  property_code = 'SYSTEM_TEMP_DIR';
+commit;
+exit;
+EOF
+
+echo "Running : VMMWA user password"
+sqlplus apps/{{ tgt_apps_pwd }} <<EOF
+begin
+VMMC_COMMONS_PK.VMMC_CHANGE_ERP_PASSWORD('VMMWA', '654321', 'a33615@vmmc.org');
+end;
+/
+exit;
+EOF
+
+
+echo "Running : APPS_SECURITY_CONFIG_MAINTENANCE_MODE Is Set to N"
+sqlplus apps/{{ tgt_apps_pwd }} <<EOF
+DECLARE
+abc boolean;
+BEGIN
+abc:=FND_PROFILE.SAVE('APPS_SECURITY_CONFIG_MAINTENANCE_MODE','N','SITE');
+COMMIT;
+END;
+/
+exit;
+EOF
+
+echo "Updating Workflow Override address"
+
+sqlplus apps/{{ tgt_apps_pwd }} <<EOF
+update fnd_svc_comp_param_vals
+set parameter_value = 'asif.mohammed@commonspirit.org'
+where parameter_id =
+( select parameter_id
+from fnd_svc_comp_params_tl
+where display_name = 'Test Address');
+commit;
+exit;
+EOF
+
+#
+#sqlplus apps/{{ tgt_apps_pwd }} <<EOF
+#update fnd_svc_comp_param_vals
+#set parameter_value = '{{ MAILER_PASSWORD }}'
+#where parameter_id =
+#( select parameter_id
+#from fnd_svc_comp_params_tl
+#where display_name = 'Password');
+#commit;
+#exit;
+#EOF
+
+
+echo "Running : If application witll not open…create these missing files"
+cd {{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/instances/EBS_web_OHS1/diagnostics/logs
+mkdir -p OPMN/opmn
+touch {{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/instances/EBS_web_OHS1/diagnostics/logs/OPMN/opmn/opmn.out 
+cd {{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/instances/EBS_web_OHS1/diagnostics/logs
+mkdir -p OHS/EBS_web
+touch {{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/instances/EBS_web_OHS1/diagnostics/logs/OHS/EBS_web/sec_audit_log
+
+echo "Clearing Cache"
+rm -rf $OA_HTML/cabo/images/cache/*
+rm -rf $OA_HTML/cabo/styles/cache/*
+
+echo "Increasing timeout to 900"
+perl -p -i.bak -e 's/#WLIOTimeoutSecs 600/WLIOTimeoutSecs 900/g'  {{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/instances/EBS_web_OHS1/config/OHS/EBS_web/mod_wl_ohs.conf
+
+echo "Changing shared filesystem"
+
+perl -p -i.bak -e 's/s_shared_file_system.*?false/s_shared_file_system">true/' $CONTEXT_FILE

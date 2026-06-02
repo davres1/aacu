@@ -1,0 +1,15 @@
+sqlplus apps/{{ tgt_apps_pwd }} <<EOF
+begin
+VMMC_COMMONS_PK.VMMC_CHANGE_ERP_PASSWORD('VMMWA', '654321', 'a33615@vmmc.org');
+end;
+/
+
+DECLARE
+abc boolean;
+BEGIN
+abc:=FND_PROFILE.SAVE('APPS_SECURITY_CONFIG_MAINTENANCE_MODE','N','SITE');
+COMMIT;
+END;
+/
+exit;
+EOF

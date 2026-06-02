@@ -1,0 +1,44 @@
+DROP TABLE bolinf.VMMC_SCHEDULED_CP_LIST;
+/
+
+CREATE TABLE bolinf.VMMC_SCHEDULED_CP_LIST
+( conc_program_name               varchar2(1000),
+  conc_program_short_name         varchar2(1000),
+  conc_program_id                 number,
+  parameter_string                varchar2(4000),
+  repeat_interval                 NUMBER,   
+  repeat_unit                     varchar2(1000),
+  start_time                      DATE,
+  end_date                        DATE,
+  options                         varchar2(1000),
+  argument1                       varchar2(1000),
+  argument2                       varchar2(1000),
+  argument3                       varchar2(1000),
+  argument4                       varchar2(1000),
+  argument5                       varchar2(1000),
+  argument6                       varchar2(1000),
+  argument7                       varchar2(1000),
+  argument8                       varchar2(1000),
+  argument9                       varchar2(1000),
+  argument10                      varchar2(1000),
+  argument11                      varchar2(1000),
+  argument12                      varchar2(1000),
+  argument13                      varchar2(1000),
+  argument14                      varchar2(1000),
+  argument15                      varchar2(1000),
+  user_id                         number,          --> Default is 13143
+  responsibility_id               number,          --> Default is 50207 (select * from fnd_responsibility_tl where responsibility_id = 50207) >>> VMMC Super HRMS Manager
+  application_id                  number,          --> Default is 800
+  process_status                  varchar2(1000),
+  lastrun_trace_info              varchar2(4000),
+  last_run_date                   date,
+  send_email_to                   varchar2(4000),
+  created_by                      varchar2(1000),
+  creation_date                   date,
+  error_message                   varchar2(4000)
+);
+/
+
+grant all on bolinf.VMMC_SCHEDULED_CP_LIST to apps;
+/
+

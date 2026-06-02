@@ -1,0 +1,63 @@
+#!/bin/ksh
+#set -x
+
+touch {{ tgt_dir }}/ofa_{{ tgt_env }}_restart.log
+#exec 1> {{ tgt_dir }}/ofa_{{ tgt_env }}_restart.log  2>&1
+export mode=$1
+export L_APPSPWD=$2
+export L_FMWPWD=$3
+
+. {{ app_tgt_mount }}/EBSapps.env RUN
+
+
+function FN_APPS_CTL
+{
+  l_ctl=${1:?"Missing the control state"}
+
+
+    case $l_ctl in
+    start|START)
+      l_cmd=adstrtal.sh
+      ;;
+    stop|STOP)
+      l_cmd=adstpall.sh
+      ;;
+    *) FN_Print "There is an error in FN_APPS_CTL"
+      export L_ERROR=10
+      ;;
+    esac
+
+  if [ "$4" == "" ]; then
+
+    cd $ADMIN_SCRIPTS_HOME
+    pwd
+    ./${l_cmd}  <<EOF
+apps
+$L_APPSPWD
+${L_FMWPWD}
+EOF
+  else
+    echo " starting the application services on ${2}"
+      cd \${ADMIN_SCRIPTS_HOME}
+      { echo "apps"; echo ${L_APPSPWD}; echo ${L_FMWPWD}; } | ${l_cmd} 
+  fi
+}
+
+echo "Fixing MWA port on 2310 and 2320"
+perl -pi -e  's/^mwa.TelnetPortNumber=.*/mwa.TelnetPortNumber=2310,2320/g' $INST_TOP/admin/install/mwa.cfg
+echo "exporting DISPLAY parameters"
+export DISPLAY={{ tgt_app_node }}:10.0
+echo "Calling script to start/Stop"
+FN_APPS_CTL $mode | tee -a {{ tgt_dir }}/ofa_{{ tgt_env }}_${mode}.log
+
+
+#export PATH=$PATH:$ADMIN_SCRIPTS_HOME/mwactl.sh
+
+#nohup $ADMIN_SCRIPTS_HOME/mwactl.sh start 2310 &
+#nohup $ADMIN_SCRIPTS_HOME/mwactl.sh start 2320 &
+#nohup $ADMIN_SCRIPTS_HOME/mwactl.sh start_dispatcher &
+
+
+#Clear cache
+rm -rf $OA_HTML/cabo/images/cache/*
+rm -rf $OA_HTML/cabo/styles/cache/*

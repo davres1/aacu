@@ -1,0 +1,40 @@
+#!/bin/bash
+touch {{ tgt_dir }}/ofa_{{ tgt_env }}_19c_utlfile_setup.log
+exec 1> {{ tgt_dir }}/ofa_{{ tgt_env }}_19c_utlfile_setup.log 2>&1
+
+# error handing
+
+_log()
+{
+    data="$*"
+  
+    if [ $# = 0 ] ; then
+        while read -r data; do
+            echo -e "$(date '+%F %T.%N %Z') $data" | tee -a "$_logfile" >&2
+        done
+    else
+        echo -e "$(date '+%F %T.%N %Z') $data" | tee -a "$_logfile" >&2
+    fi
+}
+
+cd {{ tgt_oracle_home }}/appsutil
+source ./txkSetCfgCDB.env -dboraclehome={{ tgt_oracle_home }}
+export ORACLE_SID={{ tgt_cdb|lower }}
+
+{ echo {{ src_apps_pswd }}; echo {{ src_system_pwd }}; } | perl {{ tgt_oracle_home }}/appsutil/bin/txkCfgUtlfileDir.pl -contextfile={{ tgt_oracle_home }}/appsutil/{{ tgt_env }}_{{ tgt_db_node }}.xml \
+-oraclehome={{ tgt_oracle_home }} -outdir={{ tgt_oracle_home }}/appsutil/log \
+-mode=setUtlFileDir
+
+{ echo {{ src_apps_pswd }}; echo {{ src_system_pwd }}; echo {{ tgt_oracle_home }}/appsutil/outbound/{{ tgt_env }}_{{ tgt_db_node }}; } | perl {{ tgt_oracle_home }}/appsutil/bin/txkCfgUtlfileDir.pl -contextfile={{ tgt_oracle_home }}/appsutil/{{ tgt_env }}_{{ tgt_db_node }}.xml \
+-oraclehome={{ tgt_oracle_home }} -outdir={{ tgt_oracle_home }}/appsutil/log -mode=createDirObject
+
+
+
+{ echo {{ src_apps_pswd }}; } | perl {{ tgt_oracle_home }}/appsutil/bin/txkCfgUtlfileDir.pl \
+-contextfile={{ tgt_oracle_home }}/appsutil/{{ tgt_env }}_{{ tgt_db_node }}.xml \
+-oraclehome={{ tgt_oracle_home }} -outdir={{ tgt_oracle_home }}/appsutil/log \
+-mode=syncUtlFileDir  -skipautoconfig=yes
+
+
+
+#select value from apps.v$parameter where name='utl_file_dir';

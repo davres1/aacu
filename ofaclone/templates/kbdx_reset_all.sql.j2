@@ -1,0 +1,648 @@
+ALTER SESSION SET PLSQL_WARNINGS = 'DISABLE:ALL';
+set termout off
+spool off
+/*
+ * $Header: /KBX Kube Main/40_CODE_BASE/utilities/kbdx_reset_all.sql 122   11/15/18 5:19p Jkeller1 $
+ * $History: kbdx_reset_all.sql $
+ * 
+ * *****************  Version 122  *****************
+ * User: Jkeller1     Date: 11/15/18   Time: 5:19p
+ * Updated in $/KBX Kube Main/40_CODE_BASE/utilities
+ * 40066 2018
+ * 
+ *  120  Jkeller      2/15/16    40064 2016
+ *  117  Jkeller      9/03/15    kbdx_users_syn.sql
+ *  112  Jkeller      7/03/15    read_only_flag = 'M'
+ *  106  Jkeller      6/10/15    ln_isxxkbx > 0 was = 1
+ *  103  Jkeller      2/08/15    desupport UTL_FILE_DIR
+ *  100  Jkeller      1/16/15    test output dir using LOBMANIP
+ *   90  Jkeller      7/05/14    xxkbx support for secure views
+ *   88  Jkeller      6/26/14    support 'SSO_LOCAL_BOTH_LOGIN'
+ *   86  Jkeller      6/11/14    xxkbx support
+ *
+ * BEGINING 40063 2015 THE KBX SERVER COMPONENT OUTPUT FILE ARE WRITTEN TO THE DIRECTORY PATH STORED
+ *  IN THE ORACLE DIRECTORY OBJECT LOBMANIP.
+ *
+ * ATTENTION: Run this script as the APPS user.
+ *
+ *  KBACE Developers: Here we customize script using kbace.kbdx_test.val1='kbdx_reset_all'
+ *
+ *  DBA when applsyspub public account password is not the Oracle published value of pub, KBACE provided INIKeys.exe
+ *   is needed for KBX Client's Kube Manager.ini. Note that the KBX Client's Kube Manager.ini file can be place on
+ *    common network drive.
+ *
+ *  INSTANCE_NAME of v$instance stored as information only to remind that kbdx_reset_all.sql was run on current instance.
+ *
+ *  The kbace.kbdx_users table is required when using xxkbx_wrapper > 0 and will be installed if not found.
+ *
+ *  If user inputs invalid APPLSYSPUB_ACCT then xkb_action_parameters INSTANCE_NAME will
+ *   show '***EXECUTE $XXKBACE_TOP/utilities/kbdx_reset_all.sql as the APPS USER.***'.
+ *
+ *  For DATASTORE ONLY Installs, DBA may need to manually delete filename TEST.FILE located in the directory path
+ *   specified in kbace.xkb_action_parameters.parameter_name 'LOBMANIP'.
+ * 
+ *  KBACE DEVELOPER SEE BELOW: 
+ *  KEEP VERSION_OF_THIS_SCRIPT UPDATED WHERE leading number is the last SourceSafe version plus one.
+ *  Example: select substr('100 40063_2015_with_xxkbx',1,30) TV from dual;
+ *
+*/
+set echo off
+set feedback off
+set heading off
+set verify off
+set pagesize 55
+set linesize 180
+set tab off
+set serveroutput on FORMAT WRAP
+set serveroutput on size 100000
+col PARAMETER_NAME format A42
+col PARAMETER_VALUE format A107
+set scan on
+  --
+column BSPTH    new_value BASEPATH noprint
+column DBNM     new_value DATABASENAME noprint
+column HSTND    new_value HOSTANDNODE noprint
+column INSTNCNM new_value INSTANCENAME noprint
+column PPSCTS   new_value custom_table_space noprint
+column PPSUSR   new_value apps_account noprint
+column PRLLL    new_value PARALLEL noprint
+column PTH      new_value LOBMANIP noprint
+column HOPW     new_value have_opw noprint
+column HCS      new_value isCustomSecurity noprint
+column TV       new_value VERSION_OF_THIS_SCRIPT noprint
+  --
+  -- KEEP VERSION_OF_THIS_SCRIPT UPDATED WHERE leading number is the last SourceSafe version plus one.
+  --
+select substr('117 40064_2016_with_xxkbx',1,30) TV from dual; 
+  --
+select 0 HCS from dual;
+select 0 HOPW from dual;
+select substr(name,1,30) DBNM from v$database;
+select UPPER(SYS_CONTEXT ('USERENV', 'SESSION_USER')) PPSUSR from dual;
+select upper(i.instance_name) INSTNCNM, upper(i.host_name)||'|'||upper(i.instance_name) HSTND, upper(i.PARALLEL) PRLLL from v$instance i where rownum < 2;
+select basepath BSPTH from fnd_application where application_short_name = 'KBACE';
+select kbdx_file_utils.get_path PTH from dual;
+select tablespace_name PPSCTS from dba_segments where owner = 'KBACE' and segment_type = 'TABLE' and segment_name = 'KBDX_PROCESSES';
+  --
+delete from kbace.kbdx_test where val1 in ('kbdx_reset_all','kbdx_reset_all_summary'); 
+delete from xkb_action_parameters where parameter_name in (
+   'CUSTOM_TABLE_SPACE','CUSTOM_INDEX_SPACE','INSTANCE_NAME','KBDX_USERS',
+   'UTL_FILE_DIR','LOBMANIP','PUBLIC_ACCT','PUBLIC_ACCT_PW','LOBCACHE',
+   'RAC_CACHE','XXKBX_WRAPPER');
+insert into xkb_action_parameters (parameter_name, parameter_value) values ('INSTANCE_NAME', '&&INSTANCENAME' );
+update fnd_oracle_userid fou set fou.read_only_flag = 'M' where oracle_username = 'XXKBX' and fou.read_only_flag <> 'M';
+commit;
+  --
+  -- when isxxkbx enabled make sure required kbace.kbdx_users is present
+  --
+set scan off
+Declare
+ lb_custom_found       boolean                                    := FALSE;
+ ln_count              number                                     := 0; 
+ ln_isxxkbx            number                                     := 0;
+ lv_custom_security    xkb_action_parameters.parameter_value%type := NULL;
+ lv_exec               varchar2(600);
+ lv_value              xkb_action_parameters.parameter_value%type := NULL;
+Begin
+  Begin
+    select NVL(parameter_value,'...null...') into lv_custom_security from xkb_action_parameters where parameter_name = 'CUSTOM_SECURITY';
+    If lv_custom_security <> '...null...' THEN
+      lb_custom_found := TRUE;
+    End If;
+   EXCEPTION
+     WHEN OTHERS THEN
+       lv_custom_security := NULL; lb_custom_found := FALSE;
+  End;
+  If lb_custom_found THEN
+    Begin
+      select parameter_value into lv_value from xkb_action_parameters
+       where parameter_name = 'SSO_LOCAL_BOTH_LOGIN'
+         and parameter_value in ('SSO','LOCAL','BOTH')
+         and ROWNUM < 2;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','define isCustomSecurity = 1');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','define custom_security = '||lv_custom_security);end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','define sso_local_both_login = '||lv_value);end;
+     Exception
+       WHEN OTHERS THEN
+         lv_custom_security := NULL; lb_custom_found := FALSE; --don't ask sso question
+    End;
+  End If;
+  begin kbdx_kube_utilities.insert_test('kbdx_reset_all','define oracle_sid = {{ tgt_db }}');end;
+  ln_isxxkbx := to_number(nvl(fnd_profile.value('KBACE_LICENSE_PLACEMENT'),'0'));
+  begin kbdx_kube_utilities.insert_test('kbdx_reset_all','define isxxkbx = '||to_char(ln_isxxkbx));end;
+  If ln_isxxkbx > 0 THEN --xxkbx schema support layer present and kbdx_users required
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary','XXKBX Schema support SELECTED ['||to_char(ln_isxxkbx)||']');end;
+    insert into xkb_action_parameters (parameter_name, parameter_value) values ('XXKBX_WRAPPER','?');
+    select count(*) into ln_count from dba_objects  where object_name = 'KBDX_USERS'
+       and ((object_type = 'TABLE' and owner = 'KBACE') or (object_type = 'SYNONYM' and owner = 'APPS'));
+    If ln_count < 2  THEN --install table only if required and missing
+      insert into xkb_action_parameters (parameter_name, parameter_value) values('KBDX_USERS','***FAILED*** KBDX_USERS TABLE MISSING ***FAILED***');
+      commit;
+        --collect all variables to keep input more consistent
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','define have_opw = 1');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','define apps_password = &&apps_password');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','define kbace_password = &&kbace_password');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','define custom_table_space = &&custom_table_space');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all',' prompt kbdx_reset_all - Connecting As KBACE');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','conn KBACE'||'/&&'||'kbace_password@&&'||'ORACLE_SID');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','set pagesize 55');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','set linesize 180');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','set serveroutput on FORMAT WRAP');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','set serveroutput on size 100000');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all',' prompt kbdx_reset_all - kbdx_users_t.sql');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','@kbdx_users_t.sql;');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all',' prompt kbdx_reset_all - Connecting As APPS');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','conn &&apps_account'||'/&&'||'apps_password@&&'||'ORACLE_SID');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','set pagesize 55');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','set linesize 180');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','set serveroutput on FORMAT WRAP');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','set serveroutput on size 100000');end;:question:
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt kbdx_reset_all - kbdx_users_syn.sql');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','@kbdx_users_syn.sql;');end;
+    End If;
+  Else
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all','define applsyspub_acct = 'applsyspub');end;
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary','Legacy XXKBX Schema support is ACTIVE');end;
+  End If;
+  begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt');end;
+End;
+/
+set scan on
+set termout off
+spool kbdx_reset_all_tmp.sql;
+Declare
+ CURSOR build_tmp IS
+ select val2 scriptLine from kbace.kbdx_test where val1 = 'kbdx_reset_all' order by val0;
+Begin
+  For i in build_tmp LOOP
+    dbms_output.put_line(i.scriptLine);
+  End Loop;
+End;
+/
+spool off
+set termout on
+set scan on
+select 'START KBDX_RESET_ALL on &&DATABASENAME '||TO_CHAR(SYSDATE, 'DD-MON-YYYY HH24:MI:SS')||' SESSION_USER &&apps_account' from dual;
+prompt
+@kbdx_reset_all_tmp.sql
+  --
+set serveroutput on FORMAT WRAP
+set serveroutput on size 100000
+  --
+  -- Record presences of kbdx_user table.
+  --
+Declare
+ ln_count              number; 
+ ln_isxxkbx            number                                     := 0;
+Begin
+  delete from xkb_action_parameters where parameter_name = 'KBDX_USERS';
+  select count(*) into ln_count from dba_objects where object_name = 'KBDX_USERS' and object_type = 'TABLE' and owner = 'KBACE';
+  If ln_count = 0  THEN
+    If ln_isxxkbx > 0 THEN
+      insert into xkb_action_parameters (parameter_name, parameter_value) values('KBDX_USERS','***FAILED*** KBDX_USERS TABLE MISSING ***FAILED***');
+    Else
+      insert into xkb_action_parameters (parameter_name, parameter_value) values('KBDX_USERS','0');
+    End If;
+  Else
+    insert into xkb_action_parameters (parameter_name, parameter_value) values('KBDX_USERS','1');
+  End If;
+  commit;
+End;
+/
+  --
+  -- *** Security Grants ***
+  --
+Declare
+ lb_valid_publicacct   boolean        := true;
+ ln_isxxkbx            number                                     := 0;
+ lv_exec               varchar2(600);
+   --
+ CURSOR C_REVOKE is
+  select 'REVOKE '||p.privilege||' ON '||p.table_name||' FROM '||p.grantee beRevoked
+    from DBA_TAB_PRIVS p
+   where p.grantor = '&&apps_account'
+     and p.table_name = 'KBDX_SECURITY_PKG'
+     and p.privilege = 'EXECUTE'
+     and p.grantee <> 'XXKBX'; --revoke from applsyspub
+   --
+ CURSOR C_DROP is
+ select 'DROP SYNONYM '||o.owner||'.KBDX_SECURITY_PKG' beDropped
+   from dba_objects o
+  where o.object_type = 'SYNONYM'
+    and o.object_name = 'KBDX_SECURITY_PKG'
+    and o.owner <> 'XXKBX'; --drop from applsyspub
+   --
+Begin
+  For i in C_REVOKE LOOP
+    Begin
+      lv_exec := i.beRevoked;
+      execute immediate lv_exec;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',i.beRevoked);end;
+     EXCEPTION
+       WHEN OTHERS THEN
+         dbms_output.put_line(' ***FAILED*** REVOKE EXECUTE FAILED ***FAILED***'); 
+         dbms_output.put_line(' '||i.beRevoked); --cannot happen
+         begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary','***FAILED: '||i.beRevoked);end;
+    End;
+  End Loop;
+  For i in C_DROP LOOP
+    Begin
+      lv_exec := i.beDropped;
+      execute immediate lv_exec;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',i.beDropped);end;
+     EXCEPTION
+       WHEN OTHERS THEN
+         dbms_output.put_line(' ***FAILED*** DROP SYNONYM FAILED ***FAILED***'); 
+         dbms_output.put_line(' '||i.beDropped); --cannot happen
+         begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary','***FAILED: '||i.beDropped);end;
+    End;
+  End Loop;
+  If ln_isxxkbx <> 2 THEN
+    Begin
+      lv_exec := 'GRANT EXECUTE on KBDX_SECURITY_PKG to '||upper('applsyspub');
+      execute immediate lv_exec;
+      lb_valid_publicacct := true;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_exec);end;
+     EXCEPTION
+       WHEN OTHERS THEN
+         lb_valid_publicacct := false;
+         delete from xkb_action_parameters where parameter_name in ('INSTANCE_NAME');
+         insert into xkb_action_parameters (parameter_name, parameter_value) values ('INSTANCE_NAME', '***EXECUTE $&&BASEPATH/utilities/kbdx_reset_all.sql as the APPS USER.***');
+         commit;
+         dbms_output.put_line(' ***FAILED*** applsyspub is an INVALID DATABACE ACCOUNT NAME ***FAILED***');
+         begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary','FAILED: applsyspub is an INVALID DATABACE ACCOUNT NAME');end;
+         dbms_output.put_line(' ');
+    End;
+    If lb_valid_publicacct THEN
+      Begin
+        lv_exec := 'CREATE SYNONYM applsyspub'||'.KBDX_SECURITY_PKG for &&apps_account'||'.KBDX_SECURITY_PKG';
+        execute immediate lv_exec;
+        begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_exec);end;
+       EXCEPTION
+         WHEN OTHERS THEN
+           begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary','FAILED: '||lv_exec);end;
+           NULL;
+      End;
+    End If; -- lb_valid_publicacct
+  End If;
+End;
+/
+  --
+  -- create an equivalent to kbdx_apps_initialize.sql based on presents of kbace.kbdx_users table
+  --
+delete from kbace.kbdx_test where val1 = 'kbdx_reset_all'; 
+commit;
+  --
+Declare
+ lb_lobcache           boolean        := false;
+ ln_count              number;
+ ln_isCustomSecurity   number         := to_number(&&isCustomSecurity);
+ ln_isxxkbx            number                                     := 0;
+ ln_lobcache_found     number;
+ lv_end_message        varchar2(500);
+ lv_exec               varchar2(200);
+ lv_parallel           varchar2(3)    := '&&PARALLEL';
+BEGIN
+  lv_end_message := 'select ''END KBDX_RESET_ALL on &&DATABASENAME ''||TO_CHAR(SYSDATE, ''DD-MON-YYYY HH24:MI:SS'')||'' SESSION_USER &&apps_account'' from dual;';
+  select count(*) into ln_lobcache_found from all_directories where directory_name = 'LOBCACHE';
+  If ln_lobcache_found = 0 then
+    delete from xkb_action_parameters where parameter_name in ('RAC_CACHE','LOBCACHE');
+    insert into xkb_action_parameters (parameter_name, parameter_value) values ('RAC_CACHE', 'OFF');
+    commit;
+  End if;
+  If lv_parallel = 'YES' AND ln_lobcache_found > 0 then
+    lb_lobcache := true;
+  Else
+    lb_lobcache := false;
+  End if;
+  select count(*) into ln_count from dba_objects where object_name = 'KBDX_USERS' and object_type = 'TABLE' and owner = 'KBACE';
+  If ln_count = 1 THEN --kbdx_user table is available then do work
+    If ln_isxxkbx > 0 THEN
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','Accept xxkbx_password prompt ''Enter value for XXKBX_PASSWORD [PW]: '' hide');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt ');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt Verifing Password by Connecting as XXKBX');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','conn XXKBX'||'/&&'||'xxkbx_password@&&'||'ORACLE_SID');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt ');end;
+      If &&have_opw = 0 THEN
+        begin kbdx_kube_utilities.insert_test('kbdx_reset_all','Accept apps_password prompt ''Reconnecting... Enter apps_password [pw]: '' hide');end;
+      Else
+        begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt Verified... Reconnecting to &&apps_account');end;
+      End If;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','conn &&apps_account'||'/&&'||'apps_password@&&'||'ORACLE_SID');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt ');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','delete from kbace.kbdx_users where user_id = -900;');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','execute kbdx_security_pkg.apps(''&&'||'xxkbx_password'',''&&'||'xxkbx_password'');');end;
+    Else
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','Accept apps_password prompt ''Enter value for APPS_PASSWORD [PW]: '' hide');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt ');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt Verifing Password by Connecting as &&'||'apps_account');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','conn &&apps_account'||'/&&'||'apps_password@&&'||'ORACLE_SID');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt ');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','delete from kbace.kbdx_users where user_id = -900;');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','execute kbdx_security_pkg.apps(''&&'||'apps_password'',''&&'||'apps_password'');');end;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all','commit;');end;
+    End If;
+  End If;
+  If ln_isCustomSecurity = 1 THEN
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary','Active SSO_LOCAL_BOTH_LOGIN found in xkb_action_parameters.');end;
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt ...SINGLE-SIGN-ON detected. Login method is currently &&'||'sso_local_both_login....');end;
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt ');end;
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all','Accept login_method prompt ''Select login method using S=SSO, L=LOCAL, B=BOTH? S/L/B: ''');end;
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all','select ''Login method is now ''||decode(upper(''&&'||'login_method''),''S'',''SSO'',''L'',''LOCAL'',''B'',''BOTH'',''&&'||'sso_local_both_login'')||''.'' from dual;');end;
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all','delete from xkb_action_parameters where parameter_name = ''SSO_LOCAL_BOTH_LOGIN'';');end;
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all','insert into xkb_action_parameters (PARAMETER_NAME , PARAMETER_VALUE) values (''SSO_LOCAL_BOTH_LOGIN'',decode(upper(''&&'||'login_method''),''S'',''SSO'',''L'',''LOCAL'',''B'',''BOTH'',''LOCAL''));');end;
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all','commit;');end;
+  Else
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary','Active SSO_LOCAL_BOTH_LOGIN not found in xkb_action_parameters.');end;
+  End If;
+  If lb_lobcache then
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all','@kbdx_reset_lobcache.sql;');end;
+  End if;
+  begin kbdx_kube_utilities.insert_test('kbdx_reset_all','prompt ');end;
+END;
+/
+set scan on
+set termout off
+spool kbdx_reset_all_tmp.sql;
+Declare
+ CURSOR build_tmp IS
+ select val2 scriptLine from kbace.kbdx_test where val1 = 'kbdx_reset_all' order by val0;
+Begin
+  For i in build_tmp LOOP
+    dbms_output.put_line(i.scriptLine);
+  End Loop;
+End;
+/
+spool off
+set termout on
+set scan on
+@kbdx_reset_all_tmp.sql
+  --
+set serveroutput on FORMAT WRAP
+set serveroutput on size 100000
+  --
+  -- create script similar to sso_local_both_logon.sql
+  --
+delete from kbace.kbdx_test where val1 = 'kbdx_reset_all'; 
+commit;
+  --
+prompt LOBMANIP holds KBX output directory. Enter any path with permissions/space/ownership [replaces UTL_FILE_DIR].
+prompt Current LOBMANIP directory pathname = /interface/infvmmci/{{ tgt_env|upper }}/outgoing
+prompt
+--prompt ...Oracle's utl_file_dir pathnames...
+--select ' path = '||value from v$parameter2 where name = 'utl_file_dir';
+--prompt
+-- Add select sql to suppress LOBMANIP varibale
+-- Accept LOBMANIP prompt 'Enter single directory pathname for LOBMANIP: '
+--
+-- select value into LOBMANIP from v$parameter2 where name = 'utl_file_dir' and value in (select '/interface/infvmmci/'||substr(upper(name),-4)||'/outgoing' from v$database);
+
+delete from xkb_action_parameters where parameter_name in ('UTL_FILE_DIR','LOBMANIP','LOBCACHE');
+insert into xkb_action_parameters (PARAMETER_NAME , PARAMETER_VALUE) values ('UTL_FILE_DIR', trim('/interface/infvmmci/{{ tgt_env|upper }}/outgoing'));
+insert into xkb_action_parameters (PARAMETER_NAME , PARAMETER_VALUE) values ('LOBMANIP', trim('/interface/infvmmci/{{ tgt_env|upper }}/outgoing'));
+commit;
+  --
+  -- *** kbdx_reset_lobmanip.sql ***
+  --
+Declare
+ lb_grant_found        boolean        := false;
+ ln_count              number         := 0;
+ ln_isxxkbx            number                                     := 0;
+ lv_exec               varchar2(600);
+ lv_path               varchar2(4000);
+Begin
+  select parameter_value into lv_path from xkb_action_parameters where parameter_name = 'LOBMANIP';
+  Begin
+    lv_exec := 'drop directory lobmanip';
+    execute immediate lv_exec;
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_exec);end;
+   EXCEPTION
+     WHEN OTHERS THEN
+       begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary','FAILED: '||lv_exec);end;
+       NULL;
+  End;
+  Begin
+    lv_exec := 'create directory lobmanip as '''||lv_path||'''';
+    execute immediate lv_exec;
+    begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_exec);end;
+   EXCEPTION
+     WHEN OTHERS THEN
+       begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary','FAILED: '||lv_exec);end;
+       NULL;
+  End;
+    --
+  If ln_isxxkbx > 0 THEN
+    lb_grant_found := false;
+    select count(*)
+      into ln_count
+      from DBA_TAB_PRIVS p
+     where p.table_name = 'LOBMANIP'
+       and p.grantee = 'XXKBX'
+       and p.privilege = 'READ';
+    If ln_count = 1 THEN
+      lb_grant_found := true;
+      begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary','Found required "Grant READ on directory SYS.LOBMANIP to XXKBX"');end;
+    Else --Required GRANT missing, attempt as APPS.
+      Begin
+        lv_exec := 'Grant READ on directory SYS.LOBMANIP to XXKBX';
+        execute immediate lv_exec;
+        begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_exec);end;
+        lb_grant_found := true;
+       EXCEPTION
+         WHEN OTHERS THEN
+           lb_grant_found := false;
+           begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary','FAILED: '||lv_exec);end;
+           begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary','ATTENTION: DBA must "Grant READ on directory SYS.LOBMANIP to XXKBX" as SYSTEM user.');end;
+           dbms_output.put_line(' ');
+           dbms_output.put_line('ATTENTION: DBA must "Grant READ on directory SYS.LOBMANIP to XXKBX" as SYSTEM user.');
+      End;
+    End If;
+    If lb_grant_found THEN
+      select count(*) into ln_count from dba_objects where object_name = 'KBDX_USERS' and object_type = 'TABLE' and owner = 'KBACE';
+      If ln_count = 1 THEN
+        delete from xkb_action_parameters where parameter_name in ('XXKBX_WRAPPER');
+        insert into xkb_action_parameters (parameter_name, parameter_value) values ('XXKBX_WRAPPER',to_char(ln_isxxkbx));
+        begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary','XXKBX Schema Support ACTIVE ['||to_char(ln_isxxkbx)||']');end;
+      Else
+        NULL; --leave in place recorded earlier values
+      End If;
+    End If;
+    commit;
+  End If;
+End;
+/
+  --
+  -- Clean up
+  --
+set scan on
+set termout off
+spool xxkbx_wrapper_build_tmp.sql;
+prompt -- kbdx_reset_all - kbdx_reset_all_tmp.sql
+prompt -- Produced by kbdx_reset_all.sql while connected to &&DATABASENAME
+spool off
+delete from kbace.kbdx_test where val1 in ('xxkbx_wrapper_build','xxkbx_wrapper_build_summary'); 
+commit;
+  --
+select kbdx_file_utils.get_path PTH from dual;
+  --
+  -- *** Create log now to contain no passwords ***
+  --
+prompt ...Creating kbdx_reset_all.log...
+prompt
+set termout off
+set verify off
+set heading off
+set feedback off
+spool kbdx_reset_all.log
+select 'START KBDX_RESET_ALL on &&DATABASENAME '||TO_CHAR(SYSDATE, 'DD-MON-YYYY HH24:MI:SS')||' SESSION_USER &&apps_account' from dual;
+prompt
+set termout on
+Declare
+   /* much the same test in kbace_diagnostic.sql */
+ l_utl_file_type       UTL_FILE.file_type;
+ ln_missing            number          := 0;
+ lv_file_name          varchar2(32)    := 'TEST.FILE';
+ lv_message            varchar2(1000);
+ lv_parallel           varchar2(3)     := '&&PARALLEL';
+ lv_parameter_value    xkb_action_parameters.parameter_value%type;
+   --
+ CURSOR c_fail IS
+ select val2 from kbace.kbdx_test where val1 = 'kbdx_reset_all_summary' and val2 like 'FAIL%' order by val0;
+   --
+Begin
+   dbms_output.put_line('');
+   dbms_output.put_line('...Testing LOBMANIP...');
+   dbms_output.put_line('');
+   ln_missing := -1;
+   ln_missing := kbdx_file_utils.open_file('LOBMANIP', lv_file_name, 'W');
+   Begin
+      kbdx_file_utils.close_file;
+    EXCEPTION
+      WHEN OTHERS THEN
+        null;
+   End;
+   IF  ln_missing = 1 then
+     lv_message := 'FAILED - NO_DATA_FOUND';
+   ELSIF ln_missing = 2 then
+     lv_message := 'FAILED - UTL_FILE.INVALID_PATH';
+   ELSIF ln_missing = 3 then
+     lv_message := 'FAILED - UTL_FILE.INVALID_MODE';
+   ELSIF ln_missing = 4 then
+     lv_message := 'FAILED - UTL_FILE.INVALID_FILEHANDLE';
+   ELSIF ln_missing = 5 then
+     lv_message := 'FAILED - UTL_FILE.INVALID_OPERATION';
+   ELSIF ln_missing = 6 then
+     lv_message := 'FAILED - UTL_FILE.READ_ERROR';
+   ELSIF ln_missing = 7 then
+     lv_message := 'FAILED - UTL_FILE.WRITE_ERROR';
+   ELSIF ln_missing = 8 then
+     lv_message := 'FAILED - UTL_FILE.INTERNAL_ERROR';
+   ELSIF ln_missing > 0 then
+     lv_message := 'FAILED - kbdx_file_utils returned '||ln_missing;
+   END IF;
+   If ln_missing = 0 then
+     lv_message := 'PASSED - Filename TEST.FILE opened/closed successfully in &&LOBMANIP';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     dbms_output.put_line(' ');
+   Else
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     lv_message := '';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     lv_message := 'WARNING - kbace.xkb_action_parameter ULT_FILE_DIR [LOBMANIP] points to &&LOBMANIP';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     if lv_parallel = 'YES' then
+       lv_message := '          DETECTED Real Application Cluster (RAC). LOBMANIP filepath';
+       dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+       lv_message := '          must be to a shared file system.';
+       dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     end if;
+     lv_message := '';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     lv_message := '          This filepath stores the final output of the KBX Server; report files';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     lv_message := '          with a dot kbx extension. Filepath must be valid, have read/write';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     lv_message := '          permissions and space available. A KBX Server output file, written';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     lv_message := '          to this filepath will exist until the fnd_concurrent_request that';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     lv_message := '          generated the report, has been purged. On UNIX systems, the owner';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     lv_message := '          of this filepath normally must be ORACLE. Remember that the owner of';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     lv_message := '          files created by the UTL_FILE.FOPEN function is the owner of the';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     lv_message := '          shadow process running the instance and is normally ORACLE.';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     lv_message := '          Enter valid directory using $&&BASEPATH/utilities/kbdx_reset_all.sql';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     lv_message := '          <<Tested using LOBMANIP - kbdx_file_utils.open_file>>';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+     lv_message := '';
+     dbms_output.put_line(lv_message); begin kbdx_kube_utilities.insert_test('kbdx_reset_all_summary',lv_message);end;
+   End If;
+   For i in c_fail LOOP
+     dbms_output.put_line(i.val2); 
+   End Loop;
+End;
+/
+commit;
+  --
+set termout off
+prompt
+prompt ...Listing KBACE.XKB_ACTION_PARAMETERS...
+Select substr(PARAMETER_NAME,1,41) PARAMETER_NAME, substr(PARAMETER_VALUE,1,120) PARAMETER_VALUE from xkb_action_parameters order by parameter_name;
+prompt
+Declare
+ CURSOR c_summary IS
+ select val2 from kbace.kbdx_test where val1 = 'kbdx_reset_all_summary' order by val0;
+Begin
+  For i in c_summary LOOP
+    dbms_output.put_line(i.val2); 
+  End Loop;
+  dbms_output.put_line(' '); 
+  dbms_output.put_line('...CONTACT INFO...');
+  dbms_output.put_line('');
+  dbms_output.put_line('SCRIPT:    kbdx_reset_all.sql');
+  dbms_output.put_line('VERSION:   &&VERSION_OF_THIS_SCRIPT');
+  dbms_output.put_line('AUTHOR:    KBACE Technologies, Inc.');
+  dbms_output.put_line('PHONE:     1-800-334-4470');
+  dbms_output.put_line('FAX:       603-821-7030');
+  dbms_output.put_line('EMAIL:     ospkbxsupport@cognizant.com');
+  dbms_output.put_line('WEB:       https://cognizant.com');
+End;
+/
+  --
+select 'END KBDX_RESET_ALL on &&DATABASENAME '||TO_CHAR(SYSDATE, 'DD-MON-YYYY HH24:MI:SS')||' SESSION_USER &&apps_account' from dual;
+spool off
+  --
+  -- Clean up
+  --
+set scan on
+set termout off
+spool kbdx_reset_all_tmp.sql;
+prompt -- kbdx_reset_all - kbdx_reset_all_tmp.sql
+prompt -- Produced by kbdx_reset_all.sql while connected to &&DATABASENAME
+spool off
+delete from kbace.kbdx_test where val1 in ('kbdx_reset_all','kbdx_reset_all_summary'); 
+commit;
+set termout on
+set scan on
+  --
+BEGIN
+  utl_file.FREMOVE(location=>'LOBMANIP', FILENAME=>'TEST.FILE');
+ EXCEPTION
+   WHEN OTHERS THEN
+     NULL;
+END;
+/
+  --
+set feedback on
+set heading on
+set verify off
+set termout on
+exit;

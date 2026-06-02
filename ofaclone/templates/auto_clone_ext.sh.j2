@@ -1,0 +1,480 @@
+#!/bin/bash
+#source ~/.bash_profile
+
+if [ -f ~/.profile ]; then
+#. ~/.profile
+elif [ -f ~/.bash_profile ]; then
+#. ~/.bash_profile
+echo ""
+fi
+
+HOST_NAME=$(hostname)
+GREEN="\033[0;32m"
+RED="\033[0;31m"
+NC="\033[0m" # No Color
+
+if [ $# != 5 ]
+then
+echo "${RED} $0 <PRODDUCTION APPS PASSWORD> <Current system Password> <New APPS Password for DEV> <SYSADMIN PASSWORD> <weblogic passwrd>${NC}"
+fi
+
+echo "Setting up parameters using node_info.txt"
+DIR=$(echo "{{ tgt_db }}"|tr [A-Z] [a-z])
+SDIR=$(echo "{{ src_db }}"|tr [A-Z] [a-z])
+host_name=`hostname|sed 's/\..*//g'`
+
+
+#Parameters
+cdate=$(date +%m-%d-%y)
+echo $cdate
+
+#DIR=$(echo "{{ tgt_db }}"|tr [A-Z] [a-z])
+#SDIR=$(echo "{{ src_db }}"|tr [A-Z] [a-z])
+OLDDIR=junkdir
+WDIR={{ tgt_dir }}
+ENVFILE={{ app_tgt_mount }}/EBSapps.env
+CONTEXTFILE=$WDIR/{{ tgt_db }}_{{ tgt_app_node }}.xml
+LOGFILE=$WDIR/Clone_EXT_"$cdate".log
+PWPSWD=$5
+SYSAPASS=$4
+APPSPASS=$3
+PAPPSPASS=$1
+PSYSPASS=$2
+COMMON_TOP={{ app_tgt_mount }}/{{ current_base }}/EBSapps/comn
+L_TARGET_RUN_FS={{ app_tgt_mount }}/{{ current_base }}
+L_TARGET_PATCH_FS={{ app_tgt_mount }}/{{ patch_base }}
+L_FMW_HOME_FS=$L_TARGET_RUN_FS/FMW_Home
+
+
+
+
+echo "logfile is : $LOGFILE"
+exec 3>&1 1>>${LOGFILE} 2>&1
+
+###### Functions
+# Error handler function for when the shell doesn't cut it
+_Die()
+{
+    _EXITSTATUS="${?}"
+    _BASE=$(basename -- "$0")
+    echo -e "${_BASE}: error: $* [exit status ${?}]" >&2
+    exit ${_EXITSTATUS}
+}
+
+
+
+echo "Cleaning old sessions"
+ps -ef|grep -E 'EBSapps'|awk '{print $2}'|xargs kill -9 
+
+echo "Running adclonectx.pl on RUN Apps Tier"
+
+PERL5LIB={{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/perl/lib/5.10.0:{{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/perl/lib/site_perl/5.10.0:{{ app_tgt_mount }}/{{ current_base }}/EBSapps/appl/au/12.0.0/perl:{{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/ohs/mod_perl/lib/site_perl/5.10.0/aix-thread-multi-64all
+export PERL5LIB
+export PATH={{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/perl/bin:$PATH
+
+cd {{ app_tgt_mount }}/{{ current_base }}/EBSapps/comn/clone/bin
+
+{ echo ${APPSPASS}; echo ${PWPSWD}; } |{{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/perl/bin/perl ./adclonectx.pl \
+addnode contextfile={{ app_tgt_mount }}/{{ current_base }}/inst/apps/{{ tgt_env }}_{{ tgt_app_node }}/appl/admin/{{ tgt_env }}_{{ tgt_app_node }}.xml \
+pairsfile={{ tgt_dir }}/mypairfile.txt \
+dualfs=yes
+
+echo "modify contect file"
+. {{ app_tgt_mount }}/EBSapps.env RUN 
+# make sure remove primary node entry from mod_wl_ohs.conf
+#perl -p -i.bak -e 's/nodes">.*?</nodes"></g' $CONTEXT_FILE
+
+
+$ADMIN_SCRIPTS_HOME/adautocfg.sh appspass=${APPSPASS}
+# to fix redirect issue
+perl -p -i.bak -e "s/({{ tgt_app_node }}.{{ tgt_appdomain }}.*?[,])|(,{{ tgt_app_node }}.{{ tgt_appdomain }}.*)//g" {{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/instances/EBS_web_OHS2/config/OHS/EBS_web/mod_wl_ohs.conf
+
+
+
+sqlplus apps/$APPSPASS <<  EOF
+declare 
+   v_check            boolean;
+   v_profile_name varchar2(240) := 'Node Trust Level';
+   v_profile           varchar2(240);
+   v_value             varchar2(1)   := 3; -- 3 means external, 2 means normal
+   v_node_name    varchar2(240)   := '{{ tgt_app_external_node }}';
+   v_node_id         number;
+begin 
+   --begin
+   select profile_option_name
+     into v_profile
+     from fnd_profile_options_tl
+    where language = 'US'
+      and user_profile_option_name = v_profile_name ;
+     
+    select node_id         
+      into v_node_id        
+    from fnd_nodes
+    where node_name = v_node_name ;
+    --exception
+    --end;
+     
+   v_check := fnd_profile.save( x_name                                  => v_profile              
+                                         , x_value                      => v_value
+                                         , x_level_name                 => 'SERVER'               
+                                         , x_level_value                => v_node_id             
+                              ) ; 
+   if v_check then
+      dbms_output.put_line('Profile '||v_profile_name||' updated with '||v_value);
+      commit;
+   else
+      dbms_output.put_line('Error while updating Profile '||v_profile_name||' with value '||v_value);
+   end if;
+exception
+   when others then
+      dbms_output.put_line('Error: '||sqlerrm);
+end;
+/
+
+declare 
+   v_check            boolean;
+   v_profile_name varchar2(240) := 'Applications Web Agent';
+   v_profile           varchar2(240);
+   v_value             varchar2(2000)   := 'https://vm{{ tgt_app_external_node }}.virginiamason.org:443/pls/etest'; -- 3 means external, 2 means normal
+   v_node_name    varchar2(240)   := '{{ tgt_app_external_node }}';
+   v_node_id         number;
+begin 
+   --begin
+   select profile_option_name
+     into v_profile
+     from fnd_profile_options_tl
+    where language = 'US'
+      and user_profile_option_name = v_profile_name ;
+     
+    select node_id         
+      into v_node_id        
+    from fnd_nodes
+    where node_name = v_node_name ;
+    --exception
+    --end;
+     
+   v_check := fnd_profile.save( x_name                                  => v_profile              
+                                         , x_value                      => v_value
+                                         , x_level_name                 => 'SERVRESP'               
+                                         , x_level_value                => -1  
+                                         ,x_level_value_app_id          =>  -1
+                                         , x_level_value2               => v_node_id      
+                              ) ; 
+   if v_check then
+      dbms_output.put_line('Profile '||v_profile_name||' updated with '||v_value);
+      commit;
+   else
+      dbms_output.put_line('Error while updating Profile '||v_profile_name||' with value '||v_value);
+   end if;
+exception
+   when others then
+      dbms_output.put_line('Error: '||sqlerrm);
+end;
+/
+
+-- framework
+declare 
+   v_check            boolean;
+   v_profile_name varchar2(240) := 'Application Framework Agent';
+   v_profile           varchar2(240);
+   v_value             varchar2(2000)   := 'https://vm{{ tgt_app_external_node }}.virginiamason.org'; -- 3 means external, 2 means normal
+   v_node_name    varchar2(240)   := '{{ tgt_app_external_node }}';
+   v_node_id         number;
+begin 
+   --begin
+   select profile_option_name
+     into v_profile
+     from fnd_profile_options_tl
+    where language = 'US'
+      and user_profile_option_name = v_profile_name ;
+     
+    select node_id         
+      into v_node_id        
+    from fnd_nodes
+    where node_name = v_node_name ;
+    --exception
+    --end;
+     
+   v_check := fnd_profile.save( x_name                                  => v_profile              
+                                         , x_value                      => v_value
+                                         , x_level_name                 => 'SERVRESP'               
+                                         , x_level_value                => -1  
+                                         ,x_level_value_app_id          =>  -1
+                                         , x_level_value2               => v_node_id      
+                              ) ; 
+   if v_check then
+      dbms_output.put_line('Profile '||v_profile_name||' updated with '||v_value);
+      commit;
+   else
+      dbms_output.put_line('Error while updating Profile '||v_profile_name||' with value '||v_value);
+   end if;
+exception
+   when others then
+      dbms_output.put_line('Error: '||sqlerrm);
+end;
+/
+
+
+-- framework
+declare 
+   v_check            boolean;
+   v_profile_name varchar2(240) := 'Applications JSP Agent';
+   v_profile           varchar2(240);
+   v_value             varchar2(2000)   := 'https://vm{{ tgt_app_external_node }}.virginiamason.org'; -- 3 means external, 2 means normal
+   v_node_name    varchar2(240)   := '{{ tgt_app_external_node }}';
+   v_node_id         number;
+begin 
+   --begin
+   select profile_option_name
+     into v_profile
+     from fnd_profile_options_tl
+    where language = 'US'
+      and user_profile_option_name = v_profile_name ;
+     
+    select node_id         
+      into v_node_id        
+    from fnd_nodes
+    where node_name = v_node_name ;
+    --exception
+    --end;
+     
+   v_check := fnd_profile.save( x_name                                  => v_profile              
+                                         , x_value                      => v_value
+                                         , x_level_name                 => 'SERVRESP'               
+                                         , x_level_value                => -1  
+                                         ,x_level_value_app_id          =>  -1
+                                         , x_level_value2               => v_node_id      
+                              ) ; 
+   if v_check then
+      dbms_output.put_line('Profile '||v_profile_name||' updated with '||v_value);
+      commit;
+   else
+      dbms_output.put_line('Error while updating Profile '||v_profile_name||' with value '||v_value);
+   end if;
+exception
+   when others then
+      dbms_output.put_line('Error: '||sqlerrm);
+end;
+/
+
+
+-- framework
+declare 
+   v_check            boolean;
+   v_profile_name varchar2(240) := 'Apps Servlet Agent';
+   v_profile           varchar2(240);
+   v_value             varchar2(2000)   := 'https://vm{{ tgt_app_external_node }}.virginiamason.org/OA_HTML'; -- 3 means external, 2 means normal
+   v_node_name    varchar2(240)   := '{{ tgt_app_external_node }}';
+   v_node_id         number;
+begin 
+   --begin
+   select profile_option_name
+     into v_profile
+     from fnd_profile_options_tl
+    where language = 'US'
+      and user_profile_option_name = v_profile_name ;
+     
+    select node_id         
+      into v_node_id        
+    from fnd_nodes
+    where node_name = v_node_name ;
+    --exception
+    --end;
+     
+   v_check := fnd_profile.save( x_name                                  => v_profile              
+                                         , x_value                      => v_value
+                                         , x_level_name                 => 'SERVRESP'               
+                                         , x_level_value                => -1  
+                                         ,x_level_value_app_id          =>  -1
+                                         , x_level_value2               => v_node_id      
+                              ) ; 
+   if v_check then
+      dbms_output.put_line('Profile '||v_profile_name||' updated with '||v_value);
+      commit;
+   else
+      dbms_output.put_line('Error while updating Profile '||v_profile_name||' with value '||v_value);
+   end if;
+exception
+   when others then
+      dbms_output.put_line('Error: '||sqlerrm);
+end;
+/
+
+
+declare 
+   v_check            boolean;
+   v_profile_name varchar2(240) := 'Applications Web Agent';
+   v_profile           varchar2(240);
+   v_value             varchar2(2000)   := 'http://{{ tgt_app_node }}.internal.vmmc.org:8049/pls/etest'; -- 3 means external, 2 means normal
+   v_node_name    varchar2(240)   := '{{ tgt_app_node }}';
+   v_node_id         number;
+begin 
+   --begin
+   select profile_option_name
+     into v_profile
+     from fnd_profile_options_tl
+    where language = 'US'
+      and user_profile_option_name = v_profile_name ;
+     
+    select node_id         
+      into v_node_id        
+    from fnd_nodes
+    where node_name = v_node_name ;
+    --exception
+    --end;
+     
+   v_check := fnd_profile.save( x_name                                  => v_profile              
+                                         , x_value                      => v_value
+                                         , x_level_name                 => 'SITE'               
+                                         , x_level_value                => -1  
+                                         ,x_level_value_app_id          =>  -1
+                                         , x_level_value2               => v_node_id      
+                              ) ; 
+   if v_check then
+      dbms_output.put_line('Profile '||v_profile_name||' updated with '||v_value);
+      commit;
+   else
+      dbms_output.put_line('Error while updating Profile '||v_profile_name||' with value '||v_value);
+   end if;
+exception
+   when others then
+      dbms_output.put_line('Error: '||sqlerrm);
+end;
+/
+
+-- framework
+declare 
+   v_check            boolean;
+   v_profile_name varchar2(240) := 'Application Framework Agent';
+   v_profile           varchar2(240);
+   v_value             varchar2(2000)   := 'http://{{ tgt_app_node }}.internal.vmmc.org:8049'; -- 3 means external, 2 means normal
+   v_node_name    varchar2(240)   := '{{ tgt_app_node }}';
+   v_node_id         number;
+begin 
+   --begin
+   select profile_option_name
+     into v_profile
+     from fnd_profile_options_tl
+    where language = 'US'
+      and user_profile_option_name = v_profile_name ;
+     
+    select node_id         
+      into v_node_id        
+    from fnd_nodes
+    where node_name = v_node_name ;
+    --exception
+    --end;
+     
+   v_check := fnd_profile.save( x_name                                  => v_profile              
+                                         , x_value                      => v_value
+                                         , x_level_name                 => 'SITE'               
+                                         , x_level_value                => -1  
+                                         ,x_level_value_app_id          =>  -1
+                                         , x_level_value2               => v_node_id      
+                              ) ; 
+   if v_check then
+      dbms_output.put_line('Profile '||v_profile_name||' updated with '||v_value);
+      commit;
+   else
+      dbms_output.put_line('Error while updating Profile '||v_profile_name||' with value '||v_value);
+   end if;
+exception
+   when others then
+      dbms_output.put_line('Error: '||sqlerrm);
+end;
+/
+
+
+-- framework
+declare 
+   v_check            boolean;
+   v_profile_name varchar2(240) := 'Applications JSP Agent';
+   v_profile           varchar2(240);
+   v_value             varchar2(2000)   := 'http://{{ tgt_app_node }}.internal.vmmc.org:8049'; -- 3 means external, 2 means normal
+   v_node_name    varchar2(240)   := '{{ tgt_app_node }}';
+   v_node_id         number;
+begin 
+   --begin
+   select profile_option_name
+     into v_profile
+     from fnd_profile_options_tl
+    where language = 'US'
+      and user_profile_option_name = v_profile_name ;
+     
+    select node_id         
+      into v_node_id        
+    from fnd_nodes
+    where node_name = v_node_name ;
+    --exception
+    --end;
+     
+   v_check := fnd_profile.save( x_name                                  => v_profile              
+                                         , x_value                      => v_value
+                                         , x_level_name                 => 'SITE'               
+                                         , x_level_value                => -1  
+                                         ,x_level_value_app_id          =>  -1
+                                         , x_level_value2               => v_node_id      
+                              ) ; 
+   if v_check then
+      dbms_output.put_line('Profile '||v_profile_name||' updated with '||v_value);
+      commit;
+   else
+      dbms_output.put_line('Error while updating Profile '||v_profile_name||' with value '||v_value);
+   end if;
+exception
+   when others then
+      dbms_output.put_line('Error: '||sqlerrm);
+end;
+/
+
+
+-- framework
+declare 
+   v_check            boolean;
+   v_profile_name varchar2(240) := 'Apps Servlet Agent';
+   v_profile           varchar2(240);
+   v_value             varchar2(2000)   := 'http://{{ tgt_app_node }}.internal.vmmc.org:8049/OA_HTML'; -- 3 means external, 2 means normal
+   v_node_name    varchar2(240)   := '{{ tgt_app_node }}';
+   v_node_id         number;
+begin 
+   --begin
+   select profile_option_name
+     into v_profile
+     from fnd_profile_options_tl
+    where language = 'US'
+      and user_profile_option_name = v_profile_name ;
+     
+    select node_id         
+      into v_node_id        
+    from fnd_nodes
+    where node_name = v_node_name ;
+    --exception
+    --end;
+     
+   v_check := fnd_profile.save( x_name                                  => v_profile              
+                                         , x_value                      => v_value
+                                         , x_level_name                 => 'SITE'               
+                                         , x_level_value                => -1  
+                                         ,x_level_value_app_id          =>  -1
+                                         , x_level_value2               => v_node_id      
+                              ) ; 
+   if v_check then
+      dbms_output.put_line('Profile '||v_profile_name||' updated with '||v_value);
+      commit;
+   else
+      dbms_output.put_line('Error while updating Profile '||v_profile_name||' with value '||v_value);
+   end if;
+exception
+   when others then
+      dbms_output.put_line('Error: '||sqlerrm);
+end;
+/
+
+
+
+exit;
+EOF 
+
+echo "===================================================="
+echo "Clone Completed"
+echo "===================================================="

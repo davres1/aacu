@@ -1,0 +1,203 @@
+#!/bin/bash
+
+
+########################################################
+# Define variables
+########################################################
+VAR_INPUT1={{ tgt_db }}
+SCRIPT_NAME=`basename $0 .sh`
+
+typeset -u INSTANCE_NAME_U="${VAR_INPUT1}"		# The Target Instance name in UPPER Case
+typeset -l INSTANCE_NAME="${VAR_INPUT1}"                # The Target Instance name in lower Case
+typeset -l HOST=`uname -n`
+export INSTANCE_NAME
+
+## TPM: Updated for 19c: 2021/10/21
+FROM_INSTANCE="{{ src_db }}"
+
+TIMESTAMP=`date +%Y%m%d_%H%M`
+
+
+CONNECT_SQLNET_RMAN="{{ cataloguser }}/{{ catalogpswd }}@{{ catalogtns }}"
+
+CATALOG_CONNECT=$CONNECT_SQLNET_RMAN	# Define local RMAN connect string
+DEST_STREAMS=8        			# the number of parallel streams READ into each channel
+DEST_RATE=1000       			# the max io rate (MB/sec) to READ from each channel
+RMAN_CHANNEL_SPEC="TYPE DISK MAXOPENFILES ${DEST_STREAMS} RATE ${DEST_RATE}M"
+UNTILSEQUENCE=0
+
+SCRIPT_DIR="{{ tgt_dir }}"
+RMANLOG="${SCRIPT_DIR}/${SCRIPT_NAME}_${INSTANCE_NAME}_${TIMESTAMP}.RMANLOG"	#RMAN log
+LOG="${SCRIPT_DIR}/${SCRIPT_NAME}_${INSTANCE_NAME}_${TIMESTAMP}.LOG"		#Script log
+TEMPLOG="${SCRIPT_DIR}/${SCRIPT_NAME}_${INSTANCE_NAME}_${TIMESTAMP}.TEMPLOG"	#Temporary log
+
+########################################################
+# Set up environment
+########################################################
+. set{{ tgt_db }}
+
+
+
+
+echo "" 						| tee -a ${LOG}
+echo "#### Checking for ${INSTANCE_NAME} init file : `date` ####" 	| tee -a ${LOG}
+
+if [ -f $ORACLE_HOME/dbs/init${INSTANCE_NAME}.ora ]
+then 
+	echo "$ORACLE_HOME/dbs/init${INSTANCE_NAME}.ora file exists, continuing..."       | tee -a ${LOG}
+else
+	echo "$ORACLE_HOME/dbs/init${INSTANCE_NAME}.ora file doesn't exist, exiting !!!"       | tee -a ${LOG}
+	exit 0
+fi
+
+
+
+
+########################################################
+# Prepare target database for RMAN clone
+########################################################
+
+echo "#### Prepare target database for RMAN clone ####"	| tee -a ${LOG}
+echo "" 						| tee -a ${LOG}
+echo "### Shutdown the Instance: `date`" 		| tee -a ${LOG}
+echo "" 						| tee -a ${LOG}
+
+#srvctl remove database -db {INSTANCE_NAME}
+
+${ORACLE_HOME}/bin/sqlplus -s << EOF
+/ AS SYSDBA
+create pfile=${ORACLE_HOME}/dbs/init${INSTANCE_NAME}backup.ora from spfile;
+alter system set cluster_database=FALSE scope=spfile;
+create pfile=${ORACLE_HOME}/dbs/init${INSTANCE_NAME}temp.ora from spfile;
+shutdown abort ;
+startup mount restrict;
+drop database;
+exit;
+EOF
+
+
+
+
+echo "" 						| tee -a ${LOG}
+echo "### Start up the Instance: `date`" 		| tee -a ${LOG}
+echo "" 						| tee -a ${LOG}
+
+${ORACLE_HOME}/bin/sqlplus -s << EOF | tee -a ${LOG}
+/ AS SYSDBA
+startup force nomount pfile=${ORACLE_HOME}/dbs/init${INSTANCE_NAME}temp.ora;
+create spfile='+ORAREDO02/${INSTANCE_NAME}/spfile${INSTANCE_NAME}.ora' from pfile='${ORACLE_HOME}/dbs/init${INSTANCE_NAME}temp.ora';
+shutdown immediate;
+startup force nomount;
+EOF
+
+
+########################################################
+# Start RMAN and get the last archive log # available
+########################################################
+${ORACLE_HOME}/bin/rman  <<EOF                                  | tee -a ${LOG}
+#
+SET ECHO OFF;
+#
+CONNECT AUXILIARY / ;
+CONNECT CATALOG "${CATALOG_CONNECT}" ;
+#
+SET DATABASE '${FROM_INSTANCE}';
+#
+SPOOL LOG TO '${TEMPLOG}' ;
+LIST ARCHIVELOG ALL BACKED UP 1 TIMES TO DISK;
+SPOOL LOG OFF;
+EOF
+
+UNTILSEQUENCE=`tail -5 $TEMPLOG |head -1 |awk '{print $3}'`
+echo "Recover to archive SEQUENCE #: " $UNTILSEQUENCE  |tee -a ${LOG}
+
+### RMAN until clause is non-inclusive, so increment by one
+UNTILSEQUENCE=`expr $UNTILSEQUENCE + 1`
+
+###echo "UNTIL SEQUENCE " $UNTILSEQUENCE  |tee -a ${LOG}
+
+
+########################################################
+# Start RMAN and execute the duplicate commands
+########################################################
+echo "#### Clone database using RMAN ####"			| tee -a ${LOG}
+echo "" 							| tee -a ${LOG}
+
+${ORACLE_HOME}/bin/rman  <<EOF 					| tee -a ${LOG}
+#
+SET ECHO ON ;
+SPOOL LOG TO '${RMANLOG}' ;
+#
+HOST 'echo " \n\n***Starting RMAN session ";date' ;
+#
+CONNECT AUXILIARY / ;
+CONNECT CATALOG ${CATALOG_CONNECT} ;
+#
+HOST 'echo " \n\n***Connected to aux/catalog ";date' ;
+#
+RUN
+{
+ALLOCATE AUXILIARY CHANNEL D01 ${RMAN_CHANNEL_SPEC};
+ALLOCATE AUXILIARY CHANNEL D02 ${RMAN_CHANNEL_SPEC};
+ALLOCATE AUXILIARY CHANNEL D03 ${RMAN_CHANNEL_SPEC};
+ALLOCATE AUXILIARY CHANNEL D04 ${RMAN_CHANNEL_SPEC};
+ALLOCATE AUXILIARY CHANNEL D05 ${RMAN_CHANNEL_SPEC};
+ALLOCATE AUXILIARY CHANNEL D06 ${RMAN_CHANNEL_SPEC};
+ALLOCATE AUXILIARY CHANNEL D07 ${RMAN_CHANNEL_SPEC};
+ALLOCATE AUXILIARY CHANNEL D08 ${RMAN_CHANNEL_SPEC};
+DUPLICATE DATABASE '${FROM_INSTANCE}' TO '${INSTANCE_NAME}'
+#PFILE '${ORACLE_HOME}/dbs/init${INSTANCE_NAME}.ora'
+DB_FILE_NAME_CONVERT '${FROM_INSTANCE}','${INSTANCE_NAME}' 
+UNTIL SEQUENCE $UNTILSEQUENCE
+NOFILENAMECHECK
+NORESUME
+LOGFILE
+  GROUP 1 ('+ORAREDO01', '+ORAREDO02')  SIZE 1G REUSE,
+  GROUP 2 ('+ORAREDO01', '+ORAREDO02')  SIZE 1G REUSE,
+  GROUP 3 ('+ORAREDO01', '+ORAREDO02')  SIZE 1G REUSE,
+  GROUP 4 ('+ORAREDO01', '+ORAREDO02')  SIZE 1G REUSE,
+  GROUP 5 ('+ORAREDO01', '+ORAREDO02')  SIZE 1G REUSE,
+  GROUP 6 ('+ORAREDO01', '+ORAREDO02')  SIZE 1G REUSE,
+  GROUP 7 ('+ORAREDO01', '+ORAREDO02')  SIZE 1G REUSE;
+}
+#
+HOST 'echo " \n\n***RMAN clone completed ";date' ;
+#
+EXIT
+#
+EOF
+
+###########################################################################
+#  Sleep for 20 seconds to mitigate oracle bug
+#  Bug 17336079 : ORA-00443: BACKGROUND PROCESS "EMNC" DID NOT START
+#  Doc ID 2072622.1 ORA-600 [ktcccod-1]: "EMNC" PROCESS NOT START
+###########################################################################
+echo " "
+echo " `date` " 							| tee -a ${LOG}
+echo " Wait for 20 seconds " 						| tee -a ${LOG}
+sleep 20
+
+
+########################################################
+# Execute post RMAN clone commands
+########################################################
+echo " `date` " 							| tee -a ${LOG}
+echo "#### Restart database in noarchivelog mode after RMAN clone ####"	| tee -a ${LOG}
+
+
+${ORACLE_HOME}/bin/sqlplus -s << EOF
+/ AS SYSDBA
+create spfile from pfile=${ORACLE_HOME}/dbs/init${INSTANCE_NAME}backup.ora;
+shutdown immediate;
+startup mount;
+alter database noarchivelog;
+alter database open;
+alter database backup controlfile to trace;
+alter system set "_lm_global_posts"=true scope=spfile  sid='*';
+alter system set "_immediate_commit_propagation"=true scope=spfile sid='*';
+EOF
+
+echo "restart database"
+
+srvctl stop database -d  {INSTANCE_NAME}
+srvctl start database -d  {INSTANCE_NAME}

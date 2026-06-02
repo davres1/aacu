@@ -1,0 +1,110 @@
+#!/bin/sh
+#           1.) Check concurrent managers target and actual processes
+#    Input:
+#      1 - DBName
+#**************************************************************
+
+program=`basename $0`
+HOST=`uname -n`
+EMAIL_ADDRESS={{ email_address }}
+
+
+if [ $# -lt 1 ];
+then
+   printf "\n$program: too few arguments specified.\n\n"
+   printf "\n$program: exiting with status 1\n\n"
+   printf "\n=======================================================================\n \n"
+   exit 1;
+fi
+
+SID=$1
+NODE=`hostname -s`
+cname="APPS"$SID"_"$NODE
+
+
+ENV_FILE=$cname".env"
+
+if [ ! -s $HOME/$ENV_FILE ]; then
+    NODE=`hostname -s | tr A-Z a-z`
+    cname=$SID"_"$NODE
+fi
+
+
+
+ENV_FILE=$cname".env"
+
+if [ ! -s $HOME/$ENV_FILE ];
+then
+# error handling here may be unnecessary
+  echo "No such file"
+   exit 1;
+fi
+
+. $HOME/$ENV_FILE
+
+# Use TWO_TASK or ORACLE_SID (which ever exists) to identify system.
+if test -z "$TWO_TASK"
+then
+  INST="$ORACLE_SID"
+else
+  INST=`echo $TWO_TASK|cut -d "_" -f 1`
+fi
+
+LOGFILE=ConcMan.htm
+
+sqlplus -s apps/$PSWD <<sqlend
+set head off
+set pagesize 0
+set feedback off
+set pagesize 0
+set linesize 100
+column User_Concurrent_Queue_Name format a35
+column last_update_date format a25
+column Target_Node format a20
+column Running_Processes format 999
+column Max_Processes format 999
+spool $LOGFILE
+select User_Concurrent_Queue_Name ||'|'|| last_update_date||'|'|| Target_Node ||'|'|| Running_Processes ||'|'|| Max_Processes from apps.fnd_concurrent_queues_vl 
+where running_processes != max_processes order by last_update_date;
+spool off
+exit
+sqlend
+
+
+###Send notification if File is not empty
+
+if [[ -s $LOGFILE ]]; then
+
+## Format the sql output as html layout
+         awk -F "|" -v SID="${SID}" -v HOST="${HOST}" 'BEGIN {
+                print "From: applmgr@ploicprd.penske.com"
+                print "To: $EMAIL_ADDRESS "
+                print "MIME-Version: 1.0"
+                print "Content-Type: text/html"
+                print "Subject: " SID " Check Concurrent Managers "
+                print "<html><body><table border=1 cellspacing=0 cellpadding=3>"
+                print "<tr>"
+                print "<td>Manager</td>";
+                print "<td>Last Updated</td>";
+                print "<td>Node</td>";
+                print "<td>Running</td>";
+		print "<td>Max</td>";
+                print "</tr>"
+               } {
+                print "<tr>"
+                print "<td>"$1"</td>";
+                print "<td>"$2"</td>";
+                print "<td>"$3"</td>";
+                print "<td>"$4"</td>";
+		print "<td>"$5"</td>";
+                print "</tr>"
+               } END {
+                print "</table></body></html>"
+               } ' $LOGFILE | sendmail -t
+
+fi
+
+rm $LOGFILE
+
+exit
+

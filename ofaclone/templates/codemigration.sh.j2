@@ -1,0 +1,86 @@
+#!/bin/ksh
+#set -x
+
+log_file={{ tgt_dir }}/ofa_{{ code_dir }}_codemig.log
+exec &> >(tee -a "$log_file")
+
+
+if [ $# -ne 2 ]
+then
+
+   echo "\n\n\n"
+   echo "*************************************************************************"
+   echo "USAGE ERROR for $0"
+   echo "You must pass an instance name"
+   echo "eg, $0 <apply/rollback> <email_address> "
+   echo "*************************************************************************"
+   echo "$0 exiting.\n\n\n"
+   exit 1
+
+fi
+
+#schemas=bolinf,apps
+appsp={{ tgt_apps_pwd }}
+bolinfp={{ tgt_bolinf_pwd }}
+mode=$1
+emailadd=tst@test.com,$2
+
+codepath={{ tgt_dir }}/{{ code_dir }}/`basename {{ org_filename }} .zip`
+#codepath={{ tgt_dir }}/{{ code_dir }}/`echo {{ org_filename }} | cut -f 1,2 -d '.zip'`/`echo {{ org_filename }} | cut -f 1,2 -d '.zip'`
+cd ${codepath}
+
+sendm()
+{
+  ( uuencode $1 $2 ) | mailx -s "$3" $4
+}
+
+echo "Converting file names to lower case"
+for ifile in `ls -1 *.sql|grep -i $(echo $mode)|sort`
+do
+newname=$(echo $ifile | tr [A-Z] [a-z])
+mv -f $ifile $newname
+done
+
+. {{ app_tgt_mount }}/EBSapps.env RUN
+
+for sfile in `ls -1 *.sql|grep -i $(echo $mode)|sort| tr [A-Z] [a-z]`
+do
+#mv -i $sfile `echo $sfile | tr [A-Z] [a-z]`
+sch=$(echo ${sfile}|awk -F_ '{print $2}')
+case ${sch} in
+"apps")
+pass={{ tgt_apps_pwd }}
+;;
+"bolinf")
+pass={{ tgt_bolinf_pwd }}
+;;
+*)
+echo "Not a defind user in the database"
+exit 1;
+;;
+esac
+
+
+    spoolfile="$sfile".log
+    sqlplus "$sch"/"$pass" << EOF
+    set echo on;
+    spool $spoolfile;
+    SELECT HOST_NAME, INSTANCE_NAME, STATUS FROM V\$INSTANCE;
+    select sys_context('USERENV','SESSION_SCHEMA') as "Current_Schema" from dual;
+    @$sfile;
+    spool off;
+    exit;
+EOF
+
+( uuencode ${sfile}.log log_${sfile}.log ) | mailx -s "Database {{ tgt_env }} : Change {{ change_number }} - Logfile - ${sfile}" ${emailadd}
+done
+
+
+#Shell scripts
+for sfile in `ls -1 *.sh|grep -i $(echo $mode)|sort| tr [A-Z] [a-z]`
+do
+mv -i $sfile `echo $sfile | tr [A-Z] [a-z]`
+chmod 777 $sfile
+sh $sfile > ${sfile}.log
+( uuencode ${sfile}.log log_${sfile}.log ) | mailx -s "Database {{ tgt_env }} : Change {{ change_number }} - Logfile - ${sfile}" ${emailadd}
+done

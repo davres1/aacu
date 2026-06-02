@@ -1,0 +1,36 @@
+---
+- name: Oracle Database Start
+  hosts: "{{domain}}-{{tgt_env}}-OFA-DB"
+  #hosts: localhost
+  #connection: local
+  #remote_user: oracle
+  gather_facts: yes
+
+  vars:
+    date: "{{ lookup('pipe', 'date +%Y-%m-%d') }}"
+
+  vars_files:
+    - vars/VMMC/{{ tgt_env }}/targetdbinfo.yaml
+
+  tasks:
+    - name: Create {{ tgt_dir }} directory
+      file: path={{ tgt_dir }} state=directory
+
+    - set_fact:
+        suffix: "ansible{{ 1000 | random }}"
+      run_once: yes
+
+    - name: Copy database start script to target database server
+      template: src=templates/startDB.sh.j2 dest={{ tgt_dir }}/startDB.sh mode=0777
+      become: yes
+      become_user: oracle
+
+    - name: Starting Database
+      shell: "{{ tgt_dir }}/startDB.sh"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: oracle
+      register: fail_me
+
+    - debug: msg={{ fail_me.stdout_lines }}
