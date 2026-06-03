@@ -12,6 +12,7 @@ import re
 import requests
 
 import settings
+from llm import semantic_cache
 
 
 _MSSQL_PROMPT = """You are a SQL Server / InfluxDB operations assistant.
@@ -211,6 +212,26 @@ def chat(messages, max_tokens=None, temperature=None):
         raise LLMError(f"Unexpected LLM response shape: {exc}") from exc
 
 
+def embedding(text):
+    """Return an embedding vector (list[float]) for `text` via LiteLLM.
+
+    Routes by the model prefix in settings.CACHE_EMBED_MODEL, the same way
+    completions route by LITELLM_MODEL. Raises LLMError on any failure so the
+    semantic cache can quietly fall back to a normal LLM classification.
+    """
+    if not _LITELLM_OK:
+        raise LLMError("litellm is not installed (`pip install litellm`)")
+
+    _prime_litellm_env_once()
+    model = settings.CACHE_EMBED_MODEL
+    try:
+        resp = litellm.embedding(model=model, input=[text],
+                                 timeout=settings.LITELLM_TIMEOUT)
+        return list(resp.data[0]["embedding"])
+    except Exception as exc:                       # noqa: BLE001
+        raise LLMError(f"embedding failed (model={model}): {exc}") from exc
+
+
 # ---------------------------------------------------------------------------
 # Higher-level helpers
 # ---------------------------------------------------------------------------
@@ -218,11 +239,56 @@ def chat(messages, max_tokens=None, temperature=None):
 _JSON_BLOCK = re.compile(r"\{.*\}", re.DOTALL)
 
 
+def _parse_intent(raw):
+    """Turn the raw LLM classification text into an intent dict + cacheable flag.
+
+    Returns (intent, cacheable). The textual fallbacks for non-JSON or
+    undecodable output are not worth caching (they're effectively "I didn't
+    understand"), so they come back with cacheable=False.
+    """
+    match = _JSON_BLOCK.search(raw)
+    if not match:
+        return {"action": "chat", "params": {"reply": raw or "Sorry, I didn't catch that."}}, False
+    try:
+        parsed = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return {"action": "chat", "params": {"reply": raw}}, False
+
+    # Tolerate both {"action": "...", "params": {...}} and flat {"action": "...", ...}.
+    if "action" in parsed and "params" in parsed:
+        return parsed, True
+    if "action" in parsed:
+        action = parsed.pop("action")
+        return {"action": action, "params": parsed}, True
+    return {"action": "chat", "params": {"reply": raw}}, False
+
+
 def classify(user_message, known_servers=None, selected_database=None, flavor="mssql"):
     """Return an intent dict for the user's message.
 
     `flavor` picks the LLM system prompt — 'mssql' (default) or 'oracle'.
+
+    A semantic cache short-circuits the LLM call when a near-identical prior
+    question (same flavor + selected database) is found. The cache is fully
+    optional — see llm.semantic_cache.
     """
+    # Partition the cache by flavor + selected DB: the prompt defaults the
+    # 'database' field from the picker, so the same wording under a different
+    # selection is genuinely a different intent.
+    namespace = f"{flavor}:{(selected_database or '').strip().lower() or '-'}"
+
+    vector = None
+    if semantic_cache.enabled():
+        try:
+            vector = embedding(user_message)
+        except LLMError as exc:
+            _log.info("embedding unavailable, skipping cache: %s", exc)
+            vector = None
+        if vector is not None:
+            cached = semantic_cache.lookup(vector, namespace)
+            if cached is not None:
+                return cached
+
     prompt = _system_prompt_for(flavor)
     context_parts = []
     if known_servers:
@@ -240,21 +306,10 @@ def classify(user_message, known_servers=None, selected_database=None, flavor="m
     ]
     raw = chat(messages)
 
-    match = _JSON_BLOCK.search(raw)
-    if not match:
-        return {"action": "chat", "params": {"reply": raw or "Sorry, I didn't catch that."}}
-    try:
-        parsed = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return {"action": "chat", "params": {"reply": raw}}
-
-    # Tolerate both {"action": "...", "params": {...}} and flat {"action": "...", ...}.
-    if "action" in parsed and "params" in parsed:
-        return parsed
-    if "action" in parsed:
-        action = parsed.pop("action")
-        return {"action": action, "params": parsed}
-    return {"action": "chat", "params": {"reply": raw}}
+    intent, cacheable = _parse_intent(raw)
+    if vector is not None and cacheable:
+        semantic_cache.store(vector, user_message, namespace, intent)
+    return intent
 
 
 def summarize(user_message, intent, tool_result):

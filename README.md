@@ -39,7 +39,9 @@ questions about both SQL Server and Oracle estates from one management host.
 │   │   ├── sql_guard.py         # shared SELECT-only gate
 │   │   ├── mssql/               # T-SQL + dbatools handlers
 │   │   └── oracle/              # PL/SQL + sqlplus handlers
-│   ├── llm/client.py            # Ollama / OpenAI / Anthropic, flavor-aware prompts
+│   ├── llm/
+│   │   ├── client.py            # Ollama / OpenAI / Anthropic, flavor-aware prompts
+│   │   └── semantic_cache.py    # LanceDB intent cache for classify() (optional)
 │   ├── playbooks/
 │   │   ├── mssql/               # ad-hoc playbooks the chatbot fires
 │   │   └── oracle/
@@ -301,6 +303,24 @@ OPENAI_API_KEY=sk-…    python3 AI/app.py
 # (model auto-selects from setup.yaml → chatbot.llm priority: anthropic > openai > ollama)
 ```
 
+**Semantic cache** (LanceDB, embedded — no server). Configured under
+`setup.yaml → chatbot.cache`; overridable by env:
+
+```bash
+pip install lancedb pyarrow            # already in AI/requirements.txt
+ollama pull nomic-embed-text           # default embedder when no OpenAI key is set
+
+CACHE_ENABLED=false python3 AI/app.py  # kill-switch (always hit the LLM)
+CACHE_SIMILARITY=0.88 python3 AI/app.py# looser matching → more cache hits
+CACHE_EMBED_MODEL=openai/text-embedding-3-small python3 AI/app.py
+CACHE_DIR=/var/lib/aacu/cache python3 AI/app.py   # relocate the store
+```
+
+The cache auto-selects its embedder the same way as the chat model
+(OpenAI key → `text-embedding-3-small`, else `ollama/nomic-embed-text`) and
+silently no-ops if `lancedb` isn't installed. Hits/misses are logged under
+the `aacu.cache` logger.
+
 ### Inventory / facts tools
 
 ```bash
@@ -404,6 +424,11 @@ http://&lt;management host&gt;:5000
 - **Read-only SQL gate** — every query passes through `handlers/sql_guard.py`;
   any non-SELECT / multi-statement / dangerous keyword is rejected before
   it ever leaves the chatbot process.
+- **Semantic cache** (optional) — `llm/semantic_cache.py` embeds each message
+  and looks it up in an embedded LanceDB store, so a near-identical prior
+  question reuses its structured intent and skips the classify LLM call.
+  Only intent is cached (partitioned by flavor + selected DB), never the
+  summarized reply over live data. No-ops gracefully if `lancedb` is absent.
 - **Ansible output disclosure** under every assistant message shows the
   exact `ansible-playbook …` command, return code, stdout, stderr.
 
@@ -466,3 +491,4 @@ for q in ['SELECT 1', 'DELETE FROM t', 'SELECT 1; DROP TABLE x']:
 | Add a new DBA script for Windows | `files/<Name>.ps1`, then schedule it in `dba_automation.yaml` |
 | Add a new DBA script for Oracle | `Oracle/files/<Name>.sh`, then schedule it in `Oracle/dba_automation.yaml` |
 | Replace Ollama with OpenAI/Claude | `setup.yaml → chatbot.llm.provider` (no code change) |
+| Tune / disable the intent cache | `setup.yaml → chatbot.cache` (`enabled`, `similarity`, `embed_model`) |

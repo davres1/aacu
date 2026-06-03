@@ -10,6 +10,12 @@ Jinja2>=3.1
 # with one API. Model selection is driven by env / setup.yaml.
 litellm>=1.50
 
+# Semantic cache for the classify() step — embedded, file-based vector store
+# (no server). Optional: if missing, the cache silently no-ops and the
+# chatbot falls back to an LLM call for every classification.
+lancedb>=0.13
+pyarrow>=14.0
+
 # Production WSGI server — gthread workers keep blocking Ansible calls
 # off the request thread.
 gunicorn>=22.0

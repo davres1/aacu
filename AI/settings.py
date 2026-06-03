@@ -129,6 +129,31 @@ LITELLM_DEBUG = (_env("LITELLM_DEBUG", str(_path("chatbot", "llm", "debug", defa
 
 
 # ---------------------------------------------------------------------------
+# Semantic cache — LanceDB-backed cache for the classify() step.
+#
+# Near-identical questions ("how big is DB X" / "size of database X") resolve
+# to the same structured intent without a fresh LLM round-trip. Only the
+# language->intent classification is cached, never the summarize() step
+# (which renders live DB/metric data and would go stale).
+#
+# Embeddings go through the same LiteLLM gateway as completions, so the cache
+# inherits whatever provider is configured. Auto-selection mirrors the chat
+# model: OpenAI if a key is set, else local Ollama (nomic-embed-text — pull it
+# with `ollama pull nomic-embed-text`).
+# ---------------------------------------------------------------------------
+def _auto_embed_model():
+    if OPENAI_API_KEY:
+        return "openai/text-embedding-3-small"
+    return "ollama/nomic-embed-text"
+
+
+CACHE_ENABLED     = (_env("CACHE_ENABLED", str(_path("chatbot", "cache", "enabled", default=True))).lower() == "true")
+CACHE_DIR         = _env("CACHE_DIR", _path("chatbot", "cache", "dir", default=os.path.join(BASE_DIR, ".cache", "lancedb")))
+CACHE_SIMILARITY  = float(_env("CACHE_SIMILARITY", _path("chatbot", "cache", "similarity", default=0.92)))
+CACHE_EMBED_MODEL = _env("CACHE_EMBED_MODEL", _path("chatbot", "cache", "embed_model", default="")) or _auto_embed_model()
+
+
+# ---------------------------------------------------------------------------
 # Ansible — both inventories live in /etc/ansible/hosts. Per-flavor group
 # names default to sql_servers / oracle_servers and are overridable.
 # ---------------------------------------------------------------------------

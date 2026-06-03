@@ -304,6 +304,18 @@ chatbot:
     anthropic:
       api_key:  ''
       model:    claude-sonnet-4-6
+  cache:
+    # Semantic cache for the classify() step (LanceDB, embedded — no server).
+    # Near-identical questions reuse a prior structured intent instead of
+    # making a fresh LLM classification call. Only intent is cached, never the
+    # summarized reply (which renders live data). Disable to always hit the LLM.
+    enabled:    true
+    similarity: 0.92            # cosine threshold for a cache hit (0-1)
+    # Leave embed_model empty to auto-select: OpenAI text-embedding-3-small if
+    # an OpenAI key is set, else ollama/nomic-embed-text (run once:
+    # `ollama pull nomic-embed-text`).
+    embed_model: ''
+    # dir: defaults to AI/.cache/lancedb — override to relocate the store.
   sql:
     max_rows: 200
   influxdb:
