@@ -1,0 +1,164 @@
+#!/bin/ksh
+#set -x
+#######################################################################################
+# $Id: delete_ALL_old_db.sh | v 1.4.1 | 2021/12/06 $
+# Script:   delete_ALL_old_db.sh
+# Author:   Jeffrey Zhang, VMMC
+# Date:     Oct 07, 2016
+#
+# Purpose:  This script will delete old ORACLE_HOME, database files, and GRID resources
+#
+# Script History:
+# Jul 17, 2016:  a35312 JZ - Initial draft
+# Oct 09, 2016:  a35312 JZ - Modified to use use env script
+# Mar 13, 2019:  TMoloney: Add -unsupported to crsctl
+# Mar 15, 2019:  TMoloney: Added Code for User Input TO verify ORACLE_HOME is correct
+#                          anytime RM is being used
+# Oct 21, 2021:  TMoloney: Added Code to Support 19c CDB/PDB
+# Nov 06, 2021:  TMoloney: Updates to fix refresh issues
+#######################################################################################
+
+
+########################################################
+# Check to see that INSTANCE is passed as a parameter
+########################################################
+if [ $# != 1 ] ;  then
+
+   echo "\n\n\n"
+   echo "************************************************************"
+   echo "USAGE ERROR for $0"
+   echo "You must pass an ORACLE Instance name "
+   echo "eg. ${0} edba "
+   echo "************************************************************"
+   echo "$0 exiting.\n\n\n"
+   exit 1
+
+fi
+
+INSTANCE=$1
+export INSTANCE
+
+typeset -u UPPER_INSTANCE=`echo $INSTANCE`
+typeset -l LOWER_INSTANCE=`echo $INSTANCE`
+
+## TPM: Added for 19c: 2021-10/21
+UPPER_DBNAME=$(echo $UPPER_INSTANCE|awk '{print substr($0,2)}')
+LOWER_DBNAME=$(echo $LOWER_INSTANCE|awk '{print substr($0,2)}')
+
+
+sdate=`date +%d%b%y`
+HOUR_OF_DAY=`date +'%H'`
+
+typeset -l LOWER_NODE=`uname -n`
+
+ORACLE_DBA="DG-DatabaseTeam@virginiamason.org"
+MAIL=/usr/bin/Mail
+
+
+#########################################################
+# Remove database ASM files
+#########################################################
+echo ""
+
+. /usr/vmmc/bin/oracle_scripts/use +ASM
+
+echo ""
+
+echo "`date` - Removing database ASM files"
+
+#asmcmd ls +*/${UPPER_INSTANCE}/*
+asmcmd rm -rf +*/${UPPER_INSTANCE}/*
+asmcmd ls +*/${UPPER_INSTANCE}/*
+
+## TPM: Added for 19c: 2021-10/21
+#asmcmd ls +*/${UPPER_DBNAME}/*
+asmcmd rm -rf +*/${UPPER_DBNAME}/*
+asmcmd ls +*/${UPPER_INSTANCE}/*
+
+echo ""
+echo "`date` - DONE Removing database ASM files..."
+echo ""
+
+#########################################################
+# Remove GRID Resources for Listener and Database
+#########################################################
+echo ""
+
+echo "####################################################################"
+echo "# Removing GRID resources"
+echo "####################################################################"
+echo "WARNING! "
+echo "You are about to DELETE Grid Resources as follows:"
+echo "   ora.${UPPER_INSTANCE}.lsnr"
+echo "   ora.${LOWER_INSTANCE}.db"
+echo ""
+echo "Verify These are the Correct Instance Resources and type \"yes\" to "
+echo "continue (anything else to abort): \c"
+echo ""
+read Continue
+if [[ ${Continue} != "yes" ]]
+then
+    echo ""
+    echo "Script Aborted! Grid Resources Have NOT Been Removed!"
+    exit
+fi
+
+echo ""
+
+echo "`date` - Removing GRID resources"
+
+crsctl delete res ora.${UPPER_INSTANCE}.lsnr -unsupported
+crsctl delete res ora.${LOWER_INSTANCE}.db -unsupported
+
+echo ""
+echo "`date` - DONE Removing GRID resources"
+
+echo ""
+
+###############################################
+# Source in the DB environment
+# and then call whatever scripts are needed.
+###############################################
+
+echo "`date`"
+echo "Now Setting up the DB Environment..."
+echo ""
+. /usr/vmmc/bin/oracle_scripts/use ${LOWER_INSTANCE}
+
+
+#########################################################
+# Delete datbase code
+#########################################################
+echo ""
+
+echo "####################################################################"
+echo "# Removing Oracle_Home RDBMS Files "
+echo "####################################################################"
+echo "WARNING! "
+echo "You are about to DELETE ALL files under this Oracle Home:"
+echo "   ${ORACLE_HOME}"
+echo ""
+echo "If this is the correct Database Oracle Home, type \"yes\" to "
+echo "continue (anything else to abort): \c"
+echo ""
+read Continue
+if [[ ${Continue} != "yes" ]]
+then
+    echo ""
+    echo "Script Aborted! Old RDBMS Directory Has NOT Been Removed!"
+    echo "Review Why The Oracle Home Was Not Set Correctly!"
+    exit
+fi
+
+echo ""
+echo "`date` - Removing RDBMS Files Under ${ORACLE_HOME}"
+rm -rf ${ORACLE_HOME}
+
+echo ""
+echo "`date` - DONE removing old RDBMS Oracle_Home directory..."
+
+
+#############
+# Exit here
+#############
+exit 0;

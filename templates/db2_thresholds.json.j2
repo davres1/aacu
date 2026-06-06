@@ -1,0 +1,310 @@
+{# =============================================================================
+   db2_thresholds.json.j2 — single source of truth for Db2 (LUW) DBA scripts,
+   CheckMK Linux local plugins, and the chatbot's Db2 tab. Rendered to
+   /opt/dba/thresholds.json by Db2/dba_automation.yaml.
+
+   Mirrors templates/oracle_thresholds.json.j2 section-for-section but uses
+   Db2 vocabulary:
+     - tablespace    kept (SYSIBMADM.TBSP_UTILIZATION)
+     - admin_tasks   replaces scheduler_jobs (Administrative Task Scheduler)
+     - hadr          replaces dataguard
+     - bufferpools   replaces rac (buffer-pool hit ratio)
+     - cis           "CIS IBM Db2 11 Benchmark v1.0.0"
+     - database_status uses Db2 states (ACTIVE, QUIESCED, ROLLFORWARD, ...)
+
+   Every Db2-namespaced key has a Jinja default() fallback so this renders
+   cleanly against the existing setup.yaml without any new entries.
+============================================================================= #}
+{
+  "version":      2,
+  "flavor":       "db2",
+  "generated_by": "Db2/dba_automation.yaml",
+  "generated_at": "{{ ansible_date_time.iso8601 | default('') }}",
+
+  "backups": {
+    "full_max_age_hours":              {{ backups.thresholds.full_max_age_hours }},
+    "log_max_age_hours":                {{ backups.thresholds.log_max_age_hours }},
+    "archivelog_max_age_minutes":       {{ (db2.backups.archivelog_max_age_minutes | default(60)) if db2 is defined else 60 }},
+    "incremental_max_age_hours":        {{ (db2.backups.incremental_max_age_hours | default(30)) if db2 is defined else 30 }},
+    "logarchmeth_required":             true
+  },
+
+  "disk": {
+    "drive_free_pct_warn":     {{ disk.drive_free_pct_warn }},
+    "drive_free_pct_crit":     {{ disk.drive_free_pct_crit }},
+    "datafile_free_pct_warn":  {{ disk.datafile_free_pct_warn }},
+    "datafile_free_pct_crit":  {{ disk.datafile_free_pct_crit }},
+    "logfs_free_pct_warn":     {{ (db2.disk.logfs_free_pct_warn | default(20)) if db2 is defined else 20 }},
+    "logfs_free_pct_crit":     {{ (db2.disk.logfs_free_pct_crit | default(10)) if db2 is defined else 10 }},
+    "relevant_mount_regex":    "(db2|home/db2inst|backup|data|activelog|archlog)"
+  },
+
+  {# Tablespace usage — SYSIBMADM.TBSP_UTILIZATION (WARN_PCT / CRIT_PCT). #}
+  "tablespace": {
+    "used_pct_warn":           {{ (db2.tablespace.used_pct_warn      | default(85)) if db2 is defined else 85 }},
+    "used_pct_crit":           {{ (db2.tablespace.used_pct_crit      | default(95)) if db2 is defined else 95 }},
+    "temp_used_pct_warn":      {{ (db2.tablespace.temp_used_pct_warn | default(80)) if db2 is defined else 80 }},
+    "temp_used_pct_crit":      {{ (db2.tablespace.temp_used_pct_crit | default(92)) if db2 is defined else 92 }},
+    "autoresize_near_max_warn":{{ (db2.tablespace.autoresize_near_max_warn | default(90)) if db2 is defined else 90 }}
+  },
+
+  "admin_tasks": {
+    "lookback_hours":         {{ agent_jobs.lookback_hours }},
+    "long_running_minutes":   {{ agent_jobs.long_running_minutes | default(60) }},
+    "failed_warn_count_24h":  {{ (db2.admin_tasks.failed_warn_count_24h | default(3)) if db2 is defined else 3 }}
+  },
+
+  "security_audit": {
+    "stale_login_days":      {{ security_audit.stale_login_days }},
+    "dbadm_warn_count":      {{ (db2.security_audit.dbadm_warn_count | default(security_audit.sysadmin_warn_count)) if db2 is defined else security_audit.sysadmin_warn_count }},
+    "secadm_warn_count":     {{ (db2.security_audit.secadm_warn_count | default(3)) if db2 is defined else 3 }},
+    "default_password_users_crit": 0,
+    "public_grants_warn":    {{ (db2.security_audit.public_grants_warn | default(0)) if db2 is defined else 0 }},
+    "failed_login_warn_24h": {{ (db2.security_audit.failed_login_warn_24h | default(50)) if db2 is defined else 50 }},
+    "failed_login_crit_24h": {{ (db2.security_audit.failed_login_crit_24h | default(200)) if db2 is defined else 200 }}
+  },
+
+  "patch": {
+    "fixpack_max_age_days": {{ (db2.patch.fixpack_max_age_days | default(patch.build_max_age_days)) if db2 is defined else patch.build_max_age_days }},
+    "min_fixpack":          "{{ (db2.patch.min_fixpack | default('11.5.8.0')) if db2 is defined else '11.5.8.0' }}",
+    "hotfix_warn_age_days": {{ patch.hotfix_warn_age_days }},
+    "hotfix_crit_age_days": {{ patch.hotfix_crit_age_days }}
+  },
+
+  {# HADR (matches MonitorHADR.sh env LAG_WARN_SEC / LAG_CRIT_SEC). #}
+  "hadr": {
+    "lag_warn_sec":            {{ (db2.hadr.lag_warn_sec | default(alwayson.lag_warn_sec)) if db2 is defined else alwayson.lag_warn_sec }},
+    "lag_crit_sec":            {{ (db2.hadr.lag_crit_sec | default(alwayson.lag_crit_sec)) if db2 is defined else alwayson.lag_crit_sec }},
+    "log_gap_warn_kb":         {{ (db2.hadr.log_gap_warn_kb | default(alwayson.send_queue_warn_kb | default(10240))) if db2 is defined else (alwayson.send_queue_warn_kb | default(10240)) }},
+    "peer_window_required":    true,
+    "required_state":          "{{ (db2.hadr.required_state | default('PEER')) if db2 is defined else 'PEER' }}"
+  },
+
+  {# Buffer-pool hit ratio (db2 monitoring). #}
+  "bufferpools": {
+    "hit_ratio_warn_pct":  {{ (db2.bufferpools.hit_ratio_warn_pct | default(90)) if db2 is defined else 90 }},
+    "hit_ratio_crit_pct":  {{ (db2.bufferpools.hit_ratio_crit_pct | default(80)) if db2 is defined else 80 }},
+    "sort_overflow_warn":  {{ (db2.bufferpools.sort_overflow_warn | default(5)) if db2 is defined else 5 }}
+  },
+
+  "cis": {
+    "benchmark":      "CIS IBM Db2 11 Benchmark v1.0.0",
+    "report_path":    "/var/log/dba/db2_cis_latest.json",
+    "score_thresholds": {
+      "green_min":  {{ (db2.cis.score_thresholds.green_min  | default(95)) if db2 is defined else 95 }},
+      "yellow_min": {{ (db2.cis.score_thresholds.yellow_min | default(80)) if db2 is defined else 80 }},
+      "red_max":    {{ (db2.cis.score_thresholds.red_max    | default(79)) if db2 is defined else 79 }}
+    },
+    "critical_controls": [
+      {%- set crit = (db2.cis.critical_controls | default(['1.1','2.1','3.1.1','3.1.4','4.1','5.1','6.1','7.1'])) if db2 is defined else ['1.1','2.1','3.1.1','3.1.4','4.1','5.1','6.1','7.1'] -%}
+      {%- for c in crit -%}"{{ c }}"{{ "," if not loop.last }}{%- endfor -%}
+    ],
+    "auto_remediate_safe": [
+      {%- set safe = (db2.cis.auto_remediate_safe | default(['3.1.1','3.1.4','4.1','5.1'])) if db2 is defined else ['3.1.1','3.1.4','4.1','5.1'] -%}
+      {%- for c in safe -%}"{{ c }}"{{ "," if not loop.last }}{%- endfor -%}
+    ],
+    "manual_only": ["1.1","2.1","6.1","7.1"],
+    "ansible_fact_key":   "cis_compliance",
+    "score_field":        "compliance_score",
+    "exception_dbs_field":"exception_databases"
+  },
+
+  "audit": {
+    "severity_rules": {
+      "dbadm_to_public":          "critical",
+      "default_password":         "critical",
+      "secadm_default_user":      "high",
+      "audit_policy_disabled":    "high",
+      "public_execute_routine":   "high",
+      "trust_all_clients_on":     "high",
+      "ssl_disabled":             "high",
+      "fenced_userid_root":       "warn"
+    },
+    "dbadm_count_warn":      {{ (db2.audit.dbadm_count_warn | default(security_audit.sysadmin_warn_count)) if db2 is defined else security_audit.sysadmin_warn_count }},
+    "dbadm_count_crit":      {{ (db2.audit.dbadm_count_crit | default(10)) if db2 is defined else 10 }},
+    "stale_login_days":      {{ security_audit.stale_login_days }},
+    "failed_login_warn_24h": {{ (db2.audit.failed_login_warn_24h | default(50)) if db2 is defined else 50 }},
+    "failed_login_crit_24h": {{ (db2.audit.failed_login_crit_24h | default(200)) if db2 is defined else 200 }},
+    "categories": [
+      "Authentication",
+      "Privilege & Authority",
+      "Auditing / Logging",
+      "Database Manager Configuration",
+      "Network / SSL",
+      "Patch / Fixpack"
+    ],
+    "display_columns": ["database","control","severity","observed","recommendation","captured_at"]
+  },
+
+  {# Database status — Db2 connection/rollforward states + HADR role map. #}
+  "database_status": {
+    "status_colors": {
+      "ACTIVE":            "#28a745",
+      "ACTIVE_STANDBY":    "#17a2b8",
+      "QUIESCED":          "#ffc107",
+      "ROLLFORWARD":       "#ffc107",
+      "RESTORE_PENDING":   "#ffc107",
+      "BACKUP_PENDING":    "#ffc107",
+      "INACTIVE":          "#dc3545",
+      "UNAVAILABLE":       "#dc3545"
+    },
+    "role_colors": {
+      "PRIMARY":   "#28a745",
+      "STANDBY":   "#17a2b8",
+      "STANDARD":  "#6c757d"
+    },
+    "watch_states":          ["QUIESCED","ROLLFORWARD","RESTORE_PENDING","BACKUP_PENDING","INACTIVE","UNAVAILABLE"],
+    "size_warn_gb":          {{ (db2.database_status.size_warn_gb | default(500))  if db2 is defined else 500 }},
+    "size_crit_gb":          {{ (db2.database_status.size_crit_gb | default(1000)) if db2 is defined else 1000 }},
+    "logarchmeth_required":  true,
+    "backup_age_warn_hours": {{ backups.thresholds.full_max_age_hours }},
+    "backup_age_crit_hours": {{ ((backups.thresholds.full_max_age_hours | int) * 2) }},
+    "display_columns": [
+      "host","db_name","db_status","hadr_role","db_size_gb","logarchmeth1",
+      "last_full_backup","last_log_archive","cis_compliant"
+    ]
+  },
+
+  {# InfluxDB — Db2 metrics shipped by CheckMK / nagflux. #}
+  "influxdb": {
+    "host":     "{{ chatbot.influxdb.host     | default('localhost') }}",
+    "port":     {{ chatbot.influxdb.port      | default(8086) }},
+    "database": "{{ chatbot.influxdb.database | default('checkmk') }}",
+    "user":     "{{ chatbot.influxdb.user     | default('checkmk') }}",
+    "ssl":      {{ (chatbot.influxdb.ssl      | default(false)) | string | lower }},
+    "default_window":  "{{ (db2.influxdb.default_window | default('1h')) if db2 is defined else '1h' }}",
+    "default_bucket":  "{{ (db2.influxdb.default_bucket | default('5m')) if db2 is defined else '5m' }}",
+    "history_window":  "{{ (db2.influxdb.history_window | default('7d')) if db2 is defined else '7d' }}",
+    "queries": {
+      "cpu_load":                "SELECT mean(\"value\") FROM \"metrics\" WHERE \"service\"='CPU_load' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(null)",
+      "memory_used_pct":         "SELECT mean(\"value\") FROM \"metrics\" WHERE \"service\"='Memory' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(null)",
+      "filesystem_free_pct":     "SELECT min(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Filesystem/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(null)",
+      "tablespace_used_pct":     "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Db2_TS/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(previous)",
+      "temp_used_pct":           "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Db2_Temp/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(previous)",
+      "bufferpool_hit_ratio":    "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Db2_BP/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(previous)",
+      "backup_age_hours":        "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Db2_Backup_Full/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(previous)",
+      "log_archive_age_minutes": "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"='Db2_LogArchive_Age' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(previous)",
+      "hadr_log_gap_kb":         "SELECT max(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Db2_HADR_LogGap/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(null)",
+      "blocking_sessions":       "SELECT max(\"value\") FROM \"metrics\" WHERE \"service\"='Db2_Blocking' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(0)",
+      "admin_task_failures":     "SELECT sum(\"value\") FROM \"metrics\" WHERE \"service\"='Db2_AdminTask_Failures' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(0)",
+      "cis_score_history":       "SELECT last(\"value\") FROM \"cis_compliance\" WHERE \"host\"='{host}' AND \"flavor\"='db2' AND time > now() - {window} GROUP BY time({bucket}) fill(previous)"
+    }
+  },
+
+  {# Dashboard — chart + diagram definitions for the chatbot UI. Same shape as
+     the Oracle/SQL templates so AI/handlers iterate without flavor branching. #}
+  "dashboard": {
+    "refresh_seconds": {{ (db2.dashboard.refresh_seconds | default(60)) if db2 is defined else 60 }},
+    "charts": [
+      {
+        "id":     "cis_scorecard",
+        "title":  "CIS IBM Db2 Compliance Score",
+        "type":   "gauge",
+        "source": "ansible_local.db_inventory.db2.*.cis_compliance.compliance_score",
+        "min":    0, "max": 100, "unit": "%",
+        "thresholds": [
+          { "value": 80,  "color": "#dc3545" },
+          { "value": 95,  "color": "#ffc107" },
+          { "value": 100, "color": "#28a745" }
+        ]
+      },
+      {
+        "id":     "tablespace_usage_top",
+        "title":  "Top Tablespaces by Used %",
+        "type":   "bar",
+        "source": "ansible_local.db_inventory.db2.*.tablespaces[*]",
+        "x":      "tablespace_name",
+        "y":      "used_pct",
+        "limit":  15,
+        "thresholds": [
+          { "value": 85, "color": "#ffc107" },
+          { "value": 95, "color": "#dc3545" }
+        ]
+      },
+      {
+        "id":     "bufferpool_hit_ratio",
+        "title":  "Buffer Pool Hit Ratio % (24h)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "bufferpool_hit_ratio",
+        "window": "24h",
+        "bucket": "10m",
+        "thresholds": [
+          { "value": 90, "color": "#ffc107", "below": true },
+          { "value": 80, "color": "#dc3545", "below": true }
+        ]
+      },
+      {
+        "id":     "backup_age_heatmap",
+        "title":  "Backup Age (hours since last FULL)",
+        "type":   "heatmap",
+        "source": "ansible_local.db_inventory.db2.*.backups[*]",
+        "x":      "db",
+        "y":      "host",
+        "value":  "since_full_hours",
+        "thresholds": [
+          { "value": {{ backups.thresholds.full_max_age_hours }},           "color": "#ffc107" },
+          { "value": {{ (backups.thresholds.full_max_age_hours | int)*2 }}, "color": "#dc3545" }
+        ]
+      },
+      {
+        "id":     "hadr_log_gap",
+        "title":  "HADR Log Gap (KB, 24h)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "hadr_log_gap_kb",
+        "window": "24h",
+        "bucket": "5m"
+      },
+      {
+        "id":     "cpu_load_trend",
+        "title":  "CPU Load (7d)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "cpu_load",
+        "window": "7d",
+        "bucket": "30m"
+      },
+      {
+        "id":     "blocking_sessions_spark",
+        "title":  "Blocking Sessions (24h)",
+        "type":   "sparkline",
+        "datasource": "influxdb",
+        "query":  "blocking_sessions",
+        "window": "24h",
+        "bucket": "10m"
+      },
+      {
+        "id":     "cis_score_history",
+        "title":  "CIS Compliance Trend (30d)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "cis_score_history",
+        "window": "30d",
+        "bucket": "1d",
+        "min":    0, "max": 100
+      }
+    ],
+
+    "diagrams": [
+      {
+        "id":   "data_flow",
+        "title":"Db2 Monitoring & Automation Data Flow",
+        "type": "mermaid",
+        "definition": "graph LR\n  subgraph Host[Db2 Linux Host]\n    DB[(Db2 LUW)]\n    Inv[db_inventory.sh]\n    Checks[CheckDb2Status.sh + Monitor*.sh]\n    CM[CheckMK Agent]\n  end\n  DB -->|db2 CLP| Inv\n  DB -->|db2 CLP| Checks\n  Inv -->|JSON facts.d| Ansible[Ansible Facts]\n  Checks -->|local plugin JSON| CM\n  CM -->|nagflux| Influx[(InfluxDB)]\n  Ansible -->|API| Bot[Chatbot Flask]\n  Influx -->|HTTP| Bot\n  Bot --> User((DBA / Exec))"
+      },
+      {
+        "id":   "hadr_topology",
+        "title":"Db2 HADR Topology",
+        "type": "mermaid",
+        "definition": "graph TB\n  App[Application Tier]\n  Primary[(Primary)]\n  Standby[(Principal Standby)]\n  Aux[(Auxiliary Standby)]\n  App --> Primary\n  Primary ==SYNC/NEARSYNC==> Standby\n  Primary -.SUPERASYNC.-> Aux\n  Standby -. ACR takeover .- Primary"
+      },
+      {
+        "id":   "backup_strategy",
+        "title":"Db2 Backup Strategy (rolling 24h)",
+        "type": "mermaid",
+        "definition": "gantt\n    title Daily Db2 Schedule\n    dateFormat HH:mm\n    axisFormat %H:%M\n    section Online Full\n    Daily :a1, 22:00, 120m\n    section Incremental\n    Every 6h :02:30, 60m\n    section Log archive\n    Continuous (LOGARCHMETH1) :crit, 00:00, 24h"
+      }
+    ]
+  }
+}

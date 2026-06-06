@@ -1,0 +1,26 @@
+src_oracle_home: /u01/app/oracle/product/19000
+src_db: eprod
+src_env: eprod
+src_db_node: eproddb
+src_app_node: eprodapp
+src_db_node_ip: 10.118.55.40
+src_db_port: 1543
+src_db_data_mount: /db_data_1/oradata
+src_db_log_mount: /db_data_1/oralogs
+src_system_pwd: Onl14eprod
+src_sysdba_pwd: Onl14eprod
+src_apps_pswd: only4eprod
+src_bolinf_pwd: only2eprod
+src_sysadmin_pswd: buyit4me
+src_kbase_password: only4eprod
+src_wblg_pswd: Weblogic13
+current_base: fs1
+patch_base: fs2
+db_version: '19'
+src_cdb_name:
+app_src_mount: /u02/oracle/eprod
+cataloguser: rcat_owner
+catalogpswd: helix2
+catalogtns: rmanprd.world
+
+email_address: 'sdavre@cloudsmartservice.com,MaryPat.Lammers@penske.com,Ashit.Upadhyay@penske.com'

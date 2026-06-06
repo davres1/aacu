@@ -1,0 +1,173 @@
+---
+# =============================================================================
+# ebsappscriptschdule.yml - Deploy maintenance scripts + cron schedule to
+#                            every EBS application server.
+#
+# Supported version matrix:
+#   ebs_version : 121 - pushes templates/scripts/121/*.sh.j2
+#                 122 - pushes templates/scripts/122/*.sh.j2
+#
+# Scripts pushed to {{ tgt_dir }}/scripts/ (both versions):
+#   conreq.sh         cron: 0 *  * * *  (every hour - concurrent request audit)
+#   health_check.sh   cron: 0 *  * * *  (every hour - tier health probe)
+#   space_usage.sh    cron: 0 *  * * *  (every hour - FS usage capture)
+#   internalmon.sh    cron: 0 14 * * *  (14:00 daily - internal monitor)
+#   free.sh           cron: 11 11 * * * (11:11 daily - memory/swap)
+#   project_free.sql                      (SQL helper, called from above)
+#
+# Version-conditional cleanup (one runs per host, gated on ebs_version):
+#   12.1: clean_conc_log.sh      cron: 0 22 * * *  (22:00 daily)
+#   12.2: delete_EBS_logs.sh     cron: 0 22 * * *  (22:00 daily)
+#
+# On-demand scripts pushed but NOT cron-scheduled (operator runs as needed):
+#   12.1 only: ebs_reboot.sh, workflow_mailer_restart.sql.sh
+#   12.2 only: Admin_Managed.sh, empty_file.sh
+# =============================================================================
+
+- name: Start EBS application on "{{ tgt_env }}"
+  hosts: "{{domain}}-{{tgt_env}}-OFA-APP"
+  remote_user: applmgr
+  gather_facts: yes
+
+  vars:
+    date: "{{ lookup('pipe', 'date +%Y-%m-%d') }}"
+
+  vars_files:
+  - vars/{{ domain }}/{{ tgt_env }}/targetdbinfo.yaml
+
+  tasks:
+  - name: Create {{ tgt_dir }}/scripts directory
+    file: path={{ tgt_dir }}/scripts state=directory
+  # Set Suffix
+  - set_fact:
+      suffix: "ansible{{ 1000 | random }}"
+    run_once: yes
+  # Set-up
+  # Coping script to server
+  - name: Copy ebs script to target database server
+    template: src=templates/restart{{ ebs_version }}.sh.j2 dest={{ tgt_dir }}/scripts/restart.sh mode=0777
+
+  # Copy monitoring and utility scripts to target server
+  - name: Copy conreq.sh to target server
+    template:
+      src: templates/scripts/{{ ebs_version }}/conreq.sh.j2
+      dest: "{{ tgt_dir }}/scripts/conreq.sh"
+      mode: '0755'
+
+  - name: Copy health_check.sh to target server
+    template:
+      src: templates/scripts/{{ ebs_version }}/health_check.sh.j2
+      dest: "{{ tgt_dir }}/scripts/health_check.sh"
+      mode: '0755'
+
+  - name: Copy space_usage.sh to target server
+    template:
+      src: templates/scripts/{{ ebs_version }}/space_usage.sh.j2
+      dest: "{{ tgt_dir }}/scripts/space_usage.sh"
+      mode: '0755'
+
+  - name: Copy internalmon.sh to target server
+    template:
+      src: templates/scripts/{{ ebs_version }}/internalmon.sh.j2
+      dest: "{{ tgt_dir }}/scripts/internalmon.sh"
+      mode: '0755'
+
+  - name: Copy free.sh to target server
+    template:
+      src: templates/scripts/{{ ebs_version }}/free.sh.j2
+      dest: "{{ tgt_dir }}/scripts/free.sh"
+      mode: '0755'
+
+
+  - name: Copy project_free.sql to target server
+    template:
+      src: templates/scripts/{{ ebs_version }}/project_free.sql.j2
+      dest: "{{ tgt_dir }}/scripts/project_free.sql"
+      mode: '0755'
+
+  - name: Copy clean_conc_log.sh to target server
+    template:
+      src: templates/scripts/{{ ebs_version }}/clean_conc_log.sh.j2
+      dest: "{{ tgt_dir }}/scripts/clean_conc_log.sh"
+      mode: '0755'
+    when: ebs_version == '121'
+
+  - name: Copy delete_EBS_logs to target server
+    template:
+      src: templates/scripts/{{ ebs_version }}/delete_EBS_logs.sh.j2
+      dest: "{{ tgt_dir }}/scripts/delete_EBS_logs.sh"
+      mode: '0755'
+    when: ebs_version == '122'
+
+  # Set up cron jobs for monitoring scripts
+  - name: Setup cron job for conreq.sh
+    cron:
+      name: "conreq.sh {{ tgt_env }}"
+      minute: "0"
+      hour: "*"
+      day: "*"
+      month: "*"
+      weekday: "*"
+      job: "{{ tgt_dir }}/scripts/conreq.sh {{ tgt_env }}"
+
+  - name: Setup cron job for health_check.sh
+    cron:
+      name: "health_check.sh {{ tgt_env }}"
+      minute: "0"
+      hour: "*"
+      day: "*"
+      month: "*"
+      weekday: "*"
+      job: "{{ tgt_dir }}/scripts/health_check.sh {{ tgt_env }}"
+
+  - name: Setup cron job for space_usage.sh
+    cron:
+      name: "space_usage.sh {{ tgt_env }}"
+      minute: "0"
+      hour: "*"
+      day: "*"
+      month: "*"
+      weekday: "*"
+      job: "{{ tgt_dir }}/scripts/space_usage.sh {{ tgt_env }}"
+
+  - name: Setup cron job for internalmon.sh
+    cron:
+      name: "internalmon.sh {{ tgt_env }}"
+      minute: "0"
+      hour: "14"
+      day: "*"
+      month: "*"
+      weekday: "*"
+      job: "{{ tgt_dir }}/scripts/internalmon.sh status {{ tgt_env }}"
+
+  - name: Setup cron job for free.sh
+    cron:
+      name: "free.sh {{ tgt_env }} 95"
+      minute: "11"
+      hour: "11"
+      day: "*"
+      month: "*"
+      weekday: "*"
+      job: "{{ tgt_dir }}/scripts/free.sh {{ tgt_env }} 95"
+
+  - name: Setup cron job for clean_conc_log.sh
+    cron:
+      name: "clean_conc_log.sh"
+      minute: "00"
+      hour: "22"
+      day: "*"
+      month: "*"
+      weekday: "*"
+      job: "{{ tgt_dir }}/scripts/clean_conc_log.sh"
+    when: ebs_version == '121'
+
+  - name: Setup cron job for delete_EBS_logs.sh
+    cron:
+      name: "delete_EBS_logs.sh"
+      minute: "00"
+      hour: "22"
+      day: "*"
+      month: "*"
+      weekday: "*"
+      job: "{{ tgt_dir }}/scripts/delete_EBS_logs.sh"
+    when: ebs_version == '122'

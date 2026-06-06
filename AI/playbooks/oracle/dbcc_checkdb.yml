@@ -1,0 +1,40 @@
+---
+# Chatbot integrity check: returns the cached RMAN BACKUP VALIDATE CHECK
+# LOGICAL result without re-running the heavy scan. The actual CheckDB.sh
+# runs from the scheduled cron in dba_automation.yaml.
+- name: Read cached Oracle CHECKDB status
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ oracle_user | default('oracle') }}"
+
+  vars:
+    remote_dir: '/tmp/dba'
+
+  tasks:
+    - name: Ensure remote dir
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ remote_dir }}"
+        - "{{ remote_dir }}/lib"
+
+    - name: Copy shared library
+      ansible.builtin.copy:
+        src: ../files/lib/oracle_common.sh
+        dest: "{{ remote_dir }}/lib/oracle_common.sh"
+        mode: '0755'
+
+    - name: Copy GetCheckDBStatus.sh
+      ansible.builtin.copy:
+        src: ../files/GetCheckDBStatus.sh
+        dest: "{{ remote_dir }}/GetCheckDBStatus.sh"
+        mode: '0755'
+
+    - name: Run GetCheckDBStatus.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/GetCheckDBStatus.sh"
+      register: result
+      changed_when: false
+      failed_when: false

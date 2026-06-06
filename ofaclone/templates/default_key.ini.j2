@@ -1,0 +1,87 @@
+// This is MWA devices profile
+// Format for each line is ACTION=KEY
+// The permissible ascii value are CONTROLA to CONTROLZ and F1 to F4, 
+// except the following key as it conflicts with navigation key
+// CONTROLH (backspace), CONTROLI (tab), CONTROLM (enter)
+//
+// ACTION should be less than or equal to 19 characters for
+// translation purpose. The actual text of the action is taken from
+// AK prompt under attribute code "INDUSTRIAL_" + ACTION, e.g. 
+// "INDUSTRIAL_MWA_HELP", etc.
+// Do not delete this commented  line    %s_
+// NOTE: CASE SENSITIVE
+// $Header: default_key.ini 120.0 2005/07/19 05:02:30 ajohnson noship $
+// Last Modified Date: 09/19/2013 Kristofer Cruz
+//
+// VM Version 	Mod By		Date		Description
+//==============================================================================
+// 1.0		Kris Cruz	09/19/2013	Remap CTL+J to MWA_FORWARD (F4)
+//						Remap CTL+O to MWA_BACK    (F3)
+//						Remap CTL+Y to MWA_MENU    (F2)
+// 1.1       Ganapathy Natarajan 17-Oct-2013 Remap the mapping for F1 key
+// 1.2		Trying CTRL X
+//
+// MWA Navigation Keys
+MWA_HELP=F1  
+MWA_MENU=F2
+MWA_BACK=F3
+MWA_FORWARD=F4
+
+// MWA Function Keys
+MWA_CLEAR_FIELD=CONTROLK    
+MWA_LOVSUBMIT=CONTROLL
+MWA_MAIN_MENU=CONTROLN
+MWA_MESSAGE_DETAIL=CONTROLB
+MWA_TOGGLE=CONTROLQ
+MWA_FIELD_DETAIL=CONTROLA
+MWA_BUTTON_ACCLRTOR=ESC
+MWA_PAGE_UP=CONTROLD
+MWA_PAGE_DOWN=CONTROLC
+//MWA_ABOUT_PAGE=CONTROLX
+MWA_FLEX_POPUP=CONTROLF
+MWA_FLUSH_INPUT=CONTROLE
+MWA_DROP_CONNECTION=CONTROLZ
+
+// INV Function Keys
+INV_GENERATE=CONTROLG
+
+// WMS Function Keys
+WMS_SKIP_TASK=CONTROLS
+WMS_INVOKE_DEVICE=CONTROLP
+
+// Unused Function Keys
+// begin pgmkhc v 1.0
+// CTRL J will trigger F4 functionality. 
+MWA_FORWARD=CONTROLJ
+// CTRL O will trigger F3 functionality
+MWA_BACK=CONTROLO
+// CTRL Y will trigger F2 functionality
+MWA_MENU=CONTROLY
+// end pgmkhc v1.0
+//USER_FUNCTION_4=CONTROLR
+MWA_HELP=CONTROLR    //added by ver 1.1
+
+
+
+
+USER_FUNCTION_5=CONTROLT
+USER_FUNCTION_6=CONTROLU
+USER_FUNCTION_7=CONTROLV
+USER_FUNCTION_8=CONTROLW
+
+// Devices Specific Info
+DATASTREAMINDICATOR=30
+DEFAULT_WIDTH=28
+DEFAULT_HEIGHT=16
+DEFAULT_TERM_TYPE=VT100
+CHARACTER_SET=UTF8
+PROMPT_RATIO=1:1
+POSITIVE_SOUND=7
+NEGATIVE_SOUND=7,7,7
+INTRA_SOUND_PAUSE=0
+BLOCK_MODE=NO
+
+// Printer Pass Through Chars
+PRINTER_PASS_THROUGH_CHARS_BEGIN=
+PRINTER_PASS_THROUGH_CHARS_END=
+

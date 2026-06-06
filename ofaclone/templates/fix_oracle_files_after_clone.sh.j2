@@ -1,0 +1,243 @@
+#!/bin/ksh
+##########################################################################
+# $Id: fix_oracle_files_after_clone.sh | Ver: 1.8.2 | Nov 09, 2021$
+# Script:  fix_oracle_files_after_clone.sh
+#
+# Notes:
+# This script will perform some of the necessary ORACLE steps
+# required to complete a clone.
+#
+# Script History:
+# Mar 12, 2009:  spgwsn - created new script.
+# Aug 16, 2016:  a35321 - Generalized for all environment with one script
+# Oct 28, 2016:  S94002 - Changed ${SYSTEMPASS} to "${SYSTEMPASS}"
+# Apr 27, 2018:  S94002 - Added code to update DIRECTORY paths to non-EPROD
+# Mar 14, 2019:  S94002 - Update DIRECTORY paths for db12102
+# Nov 20, 2019:  S94002 - Add KBACE login password reset
+# Sep 20, 2020:  S94002 - EBS 12.2.9 Support: Removed RAC_ACCNT and OHS_ACCNT
+# Oct 21, 2021:  TMoloney: Added Code to Support 19c CDB/PDB
+#                          DIRECTORY_NAMES updated to reflect eprod values
+# Nov 04. 2021: TMoloney: DIRECTORY Details removed. Oracle uses new method
+#                         with 19c to update them.
+#                         Added "alter session set container" commands as needed
+# Nov 07, 2021:  TMoloney: Added missing LOWER_INSTANCE definition
+#                          Changed UPPERINSTANCE to UPPER_INSTANCE
+# Nov 09, 2021:  TMoloney: DIRECTORY_NAMES added back in for two directory objects
+##########################################################################
+
+# ####################
+# Verify User name
+# ####################
+
+WHOM=`/usr/bin/whoami`
+if [ "$WHOM" != "oracle" ]
+then
+
+    echo "********************************************"
+    echo "You must be ORACLE to execute this script..."
+    echo "********************************************"
+    exit 0
+fi
+
+##############################################
+# Get the instance name and password info
+##############################################
+
+if [ $# -ne 3 ]
+then
+
+   echo "\n\n\n"
+   echo "*************************************************************************"
+   echo "USAGE ERROR for $0"
+   echo "You must pass an ORACLE SID , new SYS and SYSTEM Password... "
+   echo "eg, $0 cedba <new_sys_password> <new_system_password> "
+   echo "*************************************************************************"
+   echo "$0 exiting.\n\n\n"
+   exit 1
+
+fi
+
+INSTANCE=$1
+export INSTANCE
+
+UPPER_INSTANCE=`echo $INSTANCE | awk '{print toupper($0)}'`
+export UPPER_INSTANCE
+
+LOWER_INSTANCE=`echo $INSTANCE | awk '{print tolower($0)}'`
+export LOWER_INSTANCE
+
+## TPM: Added for 19c: 2021/10/21
+UPPER_DBNAME=$(echo $UPPER_INSTANCE|awk '{print substr($0,2)}')
+LOWER_DBNAME=$(echo $LOWER_INSTANCE|awk '{print substr($0,2)}')
+
+SYSPASS=$2
+export SYSPASS
+
+SYSTEMPASS=$3
+export SYSTEMPASS
+
+typeset -l NODE=`uname -n`
+export NODE
+
+######################################
+# Start Here
+######################################
+
+
+######################################
+# Validate DB is up and running
+######################################
+INSTANCE_PROC="ora_pmon_$INSTANCE"
+VERIFY=`ps -ef|grep $INSTANCE_PROC|grep -v grep`
+
+if [ "$VERIFY" != "" ]
+then
+   echo "OK..database is running" > /dev/null
+else
+   echo "Either this database ($INSTANCE) isn't running or it's a bad DB name..."
+   exit 2; 
+fi
+
+
+######################################
+# Set up environment
+######################################
+. /usr/vmmc/bin/oracle_scripts/oravmmc $INSTANCE
+
+
+###################################################################
+# First change SYS and SYSTEM passwords
+###################################################################
+echo ""
+echo "Now  Changing SYS and SYSTEM Passwords..."
+$ORACLE_HOME/bin/sqlplus -s "/ as sysdba" <<EOF
+alter user sys identified by "${SYSPASS}";
+alter user system identified by "${SYSTEMPASS}";
+exit
+EOF
+
+echo ""
+echo "`date` - Now Creating Password File..."
+cd $ORACLE_HOME/dbs
+PASSFILE=$ORACLE_HOME/dbs/orapw$INSTANCE
+
+if [ -f $PASSFILE ]
+then
+   echo ""
+   echo "Password file already exists under $ORACLE_HOME/dbs..."
+   echo "Removing it..."
+   echo ""
+   rm $PASSFILE
+fi
+
+orapwd file=$ORACLE_HOME/dbs/orapw$INSTANCE password="${SYSPASS}"
+
+if [ -f $PASSFILE ]
+then
+   echo ""
+   echo "$ORACLE_HOME/dbs/orapw$INSTANCE has been created..."
+   echo ""
+   echo ""
+else
+   echo ""
+   echo "$ORACLE_HOME/dbs/orapw$INSTANCE WAS NOT CREATED!"
+   echo ""
+   echo ""
+   echo "Please research why..."
+   exit 2;
+fi
+
+
+###################################################################
+# First change BOLINF, KBACE, password
+###################################################################
+echo ""
+echo "Now  Changing BOLINF, KBACE Passwords..."
+$ORACLE_HOME/bin/sqlplus -s "/ as sysdba" <<EOF2
+alter session set container="${LOWER_DBNAME}";
+alter user bolinf identified by simple4u;
+alter user kbace identified by sppa0521;
+GRANT CREATE ANY DIRECTORY TO "DEVELOPER";
+exit
+EOF2
+
+###################################################################
+# Perform miscellaneous tasks post refresh of DB 
+###################################################################
+echo ""
+echo "Now checking Work Flow Tables for Corruption..."
+$ORACLE_HOME/bin/sqlplus -s "/ as sysdba" <<EOF3
+alter session set container="${LOWER_DBNAME}";
+start $VMDIR/wf_local_user_roles_get.sql
+start $VMDIR/wf_local_user_roles_fix.sql
+exit
+EOF3
+
+echo ""
+echo "Now Creating DB link to EPROD..."
+$ORACLE_HOME/bin/sqlplus -s "/ as sysdba" <<EOF4
+alter session set container="${LOWER_DBNAME}";
+start $VMDIR/DB_COPY_SCRIPTS/create_db_links.sql
+exit
+EOF4
+
+echo ""
+echo "Now Compiling all objects to check for Invalids..."
+$ORACLE_HOME/bin/sqlplus -s "/ as sysdba" <<EOF5
+alter session set container="${LOWER_DBNAME}";
+start $ORACLE_HOME/rdbms/admin/utlrp
+select count(*) from dba_objects where status = 'INVALID';
+exit
+EOF5
+
+## S94002: Added To Reset DIRECTORY pathnames to cloned instance name
+##
+## TPM: Updated for 19c (set PDB and Directory Names now using EBS_UTL_FILE_DIR: 2021/10/21
+echo ""
+echo "Now Updating DIRECTORY Path Names to use ${UPPERINSTANCE} instead of EPROD..."
+$ORACLE_HOME/bin/sqlplus -s "/ as sysdba" <<EOF
+alter session set container="${LOWER_DBNAME}";
+show con_name
+set lines 132 pages 30
+col owner form a15
+col DIRECTORY_NAME form a30
+col DIRECTORY_PATH form a70
+Select * from ALL_DIRECTORIES
+where (upper(DIRECTORY_PATH) like '%EPROD%')
+or    (upper(DIRECTORY_PATH) like '%${UPPER_DBNAME}%')
+order by DIRECTORY_NAME;
+
+CREATE OR REPLACE directory SECURETRANSPORTOUT AS '/interface/infvmmci/${UPPER_DBNAME}/outgoing/SecureTransportOut';
+CREATE OR REPLACE directory ODPDIR AS '/interface/infvmmci/${UPPER_DBNAME}/outgoing';
+
+set lines 132 pages 30
+col owner form a15
+col DIRECTORY_NAME form a30
+col DIRECTORY_PATH form a70
+Select * from ALL_DIRECTORIES
+where (upper(DIRECTORY_PATH) like '%EPROD%')
+or    (upper(DIRECTORY_PATH) like '%${UPPER_DBNAME}%')
+order by DIRECTORY_NAME;
+
+exit
+EOF
+
+echo ""
+echo "Now Linking Start and Stop Scripts in the seeded scripts directory..."
+
+## TPM: Updated for 19c from INSTANCE to LOWER_DBNAME: 2021/10/21
+ln -s $VMDIR/oracle_start_db.sh $ORACLE_HOME/appsutil/scripts/${LOWER_DBNAME}_${NODE}
+ln -s $VMDIR/oracle_stop_db.sh $ORACLE_HOME/appsutil/scripts/${LOWER_DBNAME}_${NODE}
+
+
+########################
+# Open File Permissions
+########################
+echo ""
+echo "Now Opening File Permissions for OUTBOUND..."
+chmod -R 777 $ORACLE_HOME/appsutil/outbound
+
+##############
+# Exit here
+##############
+exit 0;

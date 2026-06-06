@@ -1,0 +1,106 @@
+##################################################################
+# Script:  fix_root_files_after_clone.sh
+# Dated:   July 10. 2009
+# Author:  Wendy S. Nygren, VMMC
+#
+# Notes:
+# This script will clear the /interface directories and open
+# file permissions for XBOL_TOP and COMMON_TOP.
+#
+# Script History:
+# 07.10.2009:  spgwsn - created new script.
+# Apr 20, 2018:  S94002 - Changed "RM -FR" to use "find ... ! -type d -exec rm '{}' \;"
+# Oct 21, 2021:  TMoloney: Added Code to Support 19c CDB/PDB
+##########################################################################
+
+
+# ####################
+# Verify User name
+# ####################
+
+WHOM=`/usr/bin/whoami`
+if [ "$WHOM" != "root" ]
+then
+
+    echo "********************************************"
+    echo "You must be ROOT to execute this script..."
+    echo "********************************************"
+    exit 0
+fi
+
+# #####################
+# Get the instance name
+# #####################
+
+if [ $# -ne 1 ]
+then
+
+   echo "\n\n\n"
+   echo "************************************************************"
+   echo "USAGE ERROR for $0"
+   echo "You must pass an ORACLE Database name "
+   echo "************************************************************"
+   echo "$0 exiting.\n\n\n"
+   exit 1
+
+fi
+
+# Oct 21, 2021:  TMoloney: Updated to ensure INSTANCE is UPPERCASE as needed for 19c
+typeset -u INSTANCE=`echo $1`
+export INSTANCE
+
+
+######################
+# Start Clearing Here
+######################
+
+echo ""
+
+if [ -d /interface/infvmmci/$INSTANCE/archive ]
+then
+   echo "`date` - Now Clearing /interface/infvmmci/$INSTANCE/archive..."
+   find /interface/infvmmci/$INSTANCE/archive ! -type d -exec rm '{}' \;
+fi
+
+if [ -d /interface/infvmmci/$INSTANCE/incoming ]
+then
+   echo "`date` - Now Clearing /interface/infvmmci/$INSTANCE/incoming..."
+   find /interface/infvmmci/$INSTANCE/incoming ! -type d -exec rm '{}' \;
+fi
+
+if [ -d /interface/infvmmci/$INSTANCE/outgoing ]
+then
+   echo "`date` - Now Clearing /interface/infvmmci/$INSTANCE/outgoing..."
+   find /interface/infvmmci/$INSTANCE/outgoing ! -type d -exec rm '{}' \;
+fi
+
+if [ -d /interface/infvmmci/$INSTANCE/src ]
+then
+   echo "`date` - Now Clearing /interface/infvmmci/$INSTANCE/src..."
+   find /interface/infvmmci/$INSTANCE/src ! -type d -exec rm '{}' \;
+fi
+
+if [ -d /interface/infvmmci/$INSTANCE/tmp ]
+then
+   echo "`date` - Now Clearing /interface/infvmmci/$INSTANCE/tmp..."
+   find /interface/infvmmci/$INSTANCE/tmp ! -type d -exec rm '{}' \;
+fi
+
+if [ -d /interface/infvmmci/$INSTANCE/bad ]
+then
+   echo "`date` - Now Clearing /interface/infvmmci/$INSTANCE/bad..."
+   find /interface/infvmmci/$INSTANCE/bad ! -type d -exec rm '{}' \;
+fi
+
+
+if [ -d /interface/infvmmci/$INSTANCE/mobile_warehouse ]
+then
+   echo "`date` - Now Clearing /interface/infvmmci/$INSTANCE/mobile_warehouse..."
+   find /interface/infvmmci/$INSTANCE/mobile_warehouse ! -type d -exec rm '{}' \;
+fi
+
+
+##############
+# Exit here
+##############
+exit 0;

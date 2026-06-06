@@ -1,0 +1,573 @@
+#!/bin/sh 
+program=`basename $0`
+HOST=`uname -n`
+WORK_DIR="{{ tgt_dir }}/scripts"
+LOG_DIR="{{ tgt_dir }}/scripts"
+LOGFILE=${LOG_DIR}/check30.log
+SID=$1
+MAILFILE=$LOG_DIR/MailFile$$.dat
+HEADERFILE=$LOG_DIR/mailheader$$.log
+EMAIL_ADDRESS={{ email_address }}
+OUTFILE=$LOG_DIR/check_health30_$$.dat
+
+# Ensure that a SID was provided.
+if test -z "$SID"
+then
+  # No SID was provided.  Terminate script.
+  echo " "
+  echo " ************************************************** "
+  echo " *****************  E R R O R  ******************** "
+  echo " ************************************************** "
+  echo "   Please provide the instance name (SID): "
+  echo "   Usage:   $program SID "
+  echo "   Example: $program oralab "
+  echo " ************************************************** "
+  echo " ************************************************** "
+  echo " "
+  exit 1
+fi
+
+NODE=`uname -n | awk -F'.' '{print tolower($1)}'`
+
+# Source the environment file
+if test -s $HOME/APPS${SID}_${NODE}.env
+then
+. $HOME/APPS${SID}_${NODE}.env
+else
+  # Environment file not found.  Terminate script.
+  echo " "
+  echo " ************************************************** "
+  echo " *****************  E R R O R  ******************** "
+  echo " ************************************************** "
+  echo "   The environment file could not be located "
+  echo "     FileName = $HOME/APPS${SID}_${NODE}.env "
+  echo "   Usage:   $program SID "
+  echo "   Example: $program oralab "
+  echo " ************************************************** "
+  echo " ************************************************** "
+  echo " "
+  exit 1
+fi
+
+# Use TWO_TASK or ORACLE_SID (which ever exists) to identify system.
+if test -z "$TWO_TASK"
+then
+  INST="$ORACLE_SID"
+else
+  INST="$TWO_TASK"
+fi
+
+ENVFILE=$HOME/APPS${SID}_${NODE}.env
+
+####################################################################################################################
+# Check Blockingessions Function call                                                                              #
+####################################################################################################################
+check_blocking_sessions()
+{
+. $ENVFILE > /dev/null
+sqlplus -s apps/${PSWD} <<EOF > /dev/null 
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+
+select count(*) from (select SID,INST_ID,BLOCKING_INSTANCE,BLOCKING_SESSION,BLOCKING_SESSION_STATUS,program,module  from gv\$session where BLOCKING_SESSION is not null and seconds_in_wait > 300);
+EOF
+SESSION_COUNT=`cat $OUTFILE | egrep "[0-9]{1,}"`
+
+if [ "$SESSION_COUNT" -gt 0 ]
+    then
+#Header FILE
+echo "To: ${EMAIL_ADDRESS}" > $HEADERFILE
+echo "MIME-Version: 1.0" >> $HEADERFILE
+echo "Content-Type: text/html; charset=us-ascii" >> $HEADERFILE
+echo "Subject: $TWO_TASK - Blocking Sessions" >> $HEADERFILE
+
+sqlplus -s apps/${PSWD} <<EOF > /dev/null 
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+SET MARKUP HTML ON SPOOL ON PREFORMAT OFF ENTMAP ON -
+HEAD "<TITLE>Blocking Sessions</TITLE> -
+<STYLE type='text/css'> -
+<!-- BODY {background: #FFFFFF} --> -
+</STYLE>" -
+BODY "TEXT='#01043A'" -
+TABLE "WIDTH='90%' BORDER='3' bgcolor='EFFB84'"
+
+spool $OUTFILE
+PROMPT
+select wt.SID,wt.INST_ID,wt.USERNAME,wt.SERIAL#,wt.program,wt.module,wt.seconds_in_wait,wt.machine,wt.CLIENT_IDENTIFIER
+,wt.BLOCKING_INSTANCE AS BLOCKING_INST,wt.BLOCKING_SESSION AS BLOCKING_SID
+,bk.USERNAME AS BLOCKING_USER,bk.SERIAL# AS BLOCKING_SERIAL#,bk.program blocking_program,bk.module blocking_module,bk.machine AS BLOCKING_MACHINE
+,bk.CLIENT_IDENTIFIER AS BLOCKING_CLIENT_ID
+from gv\$session wt 
+inner join gv\$session bk on bk.sid=wt.BLOCKING_SESSION and bk.INST_ID=wt.BLOCKING_INSTANCE
+where wt.BLOCKING_SESSION is not null and wt.seconds_in_wait > 300;
+spool OFF
+exit
+EOF
+
+cat $HEADERFILE $OUTFILE  > $MAILFILE
+
+
+
+#code to recheck error
+
+echo "Active sessiosn found  - rechecking "
+sqlplus -s APPS/${PSWD} <<EOF > /dev/null 
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+
+select count(*) from (select SID,INST_ID,BLOCKING_INSTANCE,BLOCKING_SESSION,BLOCKING_SESSION_STATUS,program,module  from gv\$session where BLOCKING_SESSION is not null and seconds_in_wait > 300);
+exit
+EOF
+VERIFY_SESSION_COUNT=`cat $OUTFILE | egrep "[0-9]{1,}"`
+
+if [ "$VERIFY_SESSION_COUNT" -gt 0 ]
+    then
+cat $MAILFILE | /usr/sbin/sendmail -t
+ echo "Blocking Sessions Found  , Email was sent to ${EMAIL_ADDRESS}"
+fi
+#end of verify blocking session
+else
+echo "No Blocking Sessions Found .." 
+fi
+#end of  if session_COUNT -gt 0
+
+if [ -f ${MAILFILE} ]
+  then
+   rm ${MAILFILE}
+fi
+
+if [ -f ${OUTFILE} ]
+  then
+   rm ${OUTFILE}
+fi
+
+
+}
+
+###################################################
+# Check Cost Manager                              #
+###################################################
+check_costmgr()
+{
+. $ENVFILE > /dev/null
+
+sqlplus -s apps/${PSWD}  <<EOF > /dev/null 
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+
+select count(*) from (
+SELECT 
+  x.PROCESS_TYPE  MGR_Name, 
+  decode((select '1' 
+    FROM apps.FND_CONCURRENT_REQUESTS cr,  
+    apps.FND_CONCURRENT_PROGRAMS_VL cp, 
+    apps.FND_APPLICATION A  
+   WHERE cp.concurrent_program_id = cr.concurrent_program_id 
+        AND  cp.CONCURRENT_PROGRAM_NAME = x.PROCESS_NAME 
+        AND cp.APPLICATION_ID =  a.application_id 
+        AND a.APPLICATION_SHORT_NAME =  x.PROCESS_APP_SHORT_NAME 
+        AND PHASE_CODE !=  'C'),'1','Active','Inactive') STATUS 
+FROM ( 
+  SELECT 
+  MIPC.PROCESS_CODE , 
+   MIPC.PROCESS_STATUS , 
+  MIPC.PROCESS_NAME , 
+   MIPC.PROCESS_APP_SHORT_NAME,  
+  A.MEANING PROCESS_TYPE  
+  FROM 
+  apps.MTL_INTERFACE_PROC_CONTROLS  MIPC, 
+  apps.MFG_LOOKUPS A 
+  WHERE 
+  A.LOOKUP_TYPE = 'PROCESS_TYPE'  AND 
+  A.LOOKUP_CODE = MIPC.PROCESS_CODE 
+) x 
+WHERE x.PROCESS_TYPE  = 'Cost Manager' ) t where t.status='Inactive';
+exit
+EOF
+
+PROBLEM_MGR_COUNT=`cat $OUTFILE | egrep "[0-9]{1,}"`
+
+if [ "$PROBLEM_MGR_COUNT" -gt 0 ]
+    then
+    echo "Cost Manger is DOWN . Sent Email to $EMAIL_ADDRESS "
+#    echo "COST MANAGER IS DOWN on $TWO_TASK"| mail -s "$TWO_TASK - COST MANAGER IS DOWN" $EMAIL_ADDRESS
+else
+    echo "Cost Manager is UP and Running ..."
+fi 
+
+
+if [ -f ${OUTFILE} ]
+  then
+   rm ${OUTFILE}
+fi
+
+}
+
+####################################################################################################################
+# Check Long Running Requests                                                                                      #
+####################################################################################################################
+check_longrunning_requests()
+{
+. $ENVFILE > /dev/null
+
+THRESOLD_RUN_MINS=30
+sqlplus -s apps/${PSWD} <<EOF > /dev/null
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+select count(*) from ( 
+Select distinct sess.inst_id,sess.sid,req.request_id, user_name,round(mins,2) RUNTIME_MINS,program,actual_start_date from (
+SELECT a.request_id,frt.responsibility_name, ctl.user_concurrent_program_name program
+,q.concurrent_queue_name, to_char(actual_start_date,'DD-MM-YY HH24:MI') actual_start_date, actual_completion_date, fu.user_name
+,(nvl(actual_completion_date,sysdate)-actual_start_date)*1440 mins
+,(SELECT avg(nvl(a2.actual_completion_date-a2.actual_start_date,0))*1440 avg_run_time
+FROM APPLSYS.fnd_Concurrent_requests a2,
+APPLSYS.fnd_concurrent_programs c2
+WHERE c2.concurrent_program_id = c.concurrent_program_id
+AND a2.concurrent_program_id = c2.concurrent_program_id
+AND a2.program_application_id = c2.application_id
+AND a2.phase_code || '' = 'C') avg_mins
+,round((actual_completion_date - requested_start_date),2) * 24 duration_in_hours
+FROM APPLSYS.fnd_Concurrent_requests a,APPLSYS.fnd_concurrent_processes b
+,applsys.fnd_concurrent_queues q
+,APPLSYS.fnd_concurrent_programs c
+,APPLSYS.fnd_concurrent_programs_tl ctl
+,apps.fnd_user fu
+,apps.FND_RESPONSIBILITY_TL frt
+WHERE a.controlling_manager = b.concurrent_process_id
+AND a.concurrent_program_id = c.concurrent_program_id
+AND a.program_application_id = c.application_id
+AND a.phase_code = 'R'
+AND a.status_code = 'R'
+AND b.queue_application_id = q.application_id
+AND b.concurrent_queue_id = q.concurrent_queue_id
+AND ctl.concurrent_program_id = c.concurrent_program_id
+AND a.requested_by = fu.user_id
+AND a.responsibility_id = frt.responsibility_id
+ORDER BY a.actual_start_date DESC
+) req 
+left outer join  (select distinct * from (SELECT a.request_id, d.sid, d.serial# ,d.osuser,d.process , c.SPID ,d.inst_id
+FROM apps.fnd_concurrent_requests a,
+apps.fnd_concurrent_processes b,
+gv\$process c,
+gv\$session d
+WHERE a.controlling_manager = b.concurrent_process_id
+AND c.pid = b.oracle_process_id
+AND b.session_id=d.audsid
+--AND a.request_id =&req_id
+AND a.phase_code = 'R'
+ ) sess) sess on sess.request_id=req.request_id ) where RUNTIME_MINS > ${THRESOLD_RUN_MINS} ;
+
+EOF
+
+REQ_COUNT=`cat $OUTFILE | egrep "[0-9]{1,}"`
+
+if [ "$REQ_COUNT" -gt 0 ]
+    then
+#Header FILE
+echo "To: ${EMAIL_ADDRESS}" > $HEADERFILE
+echo "MIME-Version: 1.0" >> $HEADERFILE
+echo "Content-Type: text/html; charset=us-ascii" >> $HEADERFILE
+echo "Subject: $TWO_TASK - Long Running Requests" >> $HEADERFILE
+
+sqlplus -s apps/${PSWD} <<EOF > /dev/null
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+SET MARKUP HTML ON SPOOL ON PREFORMAT OFF ENTMAP ON -
+HEAD "<TITLE>Long Running Requests</TITLE> -
+<STYLE type='text/css'> -
+<!-- BODY {background: #FFFFFF} --> -
+</STYLE>" -
+BODY "TEXT='#01043A'" -
+TABLE "WIDTH='90%' BORDER='3' bgcolor='EFFB84'"
+
+spool $OUTFILE
+PROMPT
+select * from ( 
+Select distinct sess.inst_id,sess.sid,req.request_id, user_name,round(mins,2) MINS,program AS "CONCURRENT_PROGRAM",actual_start_date from (
+SELECT a.request_id,frt.responsibility_name, ctl.user_concurrent_program_name program
+,q.concurrent_queue_name, to_char(actual_start_date,'DD-MM-YY HH24:MI') actual_start_date, actual_completion_date, fu.user_name
+,(nvl(actual_completion_date,sysdate)-actual_start_date)*1440 mins
+,(SELECT avg(nvl(a2.actual_completion_date-a2.actual_start_date,0))*1440 avg_run_time
+FROM APPLSYS.fnd_Concurrent_requests a2,
+APPLSYS.fnd_concurrent_programs c2
+WHERE c2.concurrent_program_id = c.concurrent_program_id
+AND a2.concurrent_program_id = c2.concurrent_program_id
+AND a2.program_application_id = c2.application_id
+AND a2.phase_code || '' = 'C') avg_mins
+,round((actual_completion_date - requested_start_date),2) * 24 duration_in_hours
+FROM APPLSYS.fnd_Concurrent_requests a,APPLSYS.fnd_concurrent_processes b
+,applsys.fnd_concurrent_queues q
+,APPLSYS.fnd_concurrent_programs c
+,APPLSYS.fnd_concurrent_programs_tl ctl
+,apps.fnd_user fu
+,apps.FND_RESPONSIBILITY_TL frt
+WHERE a.controlling_manager = b.concurrent_process_id
+AND a.concurrent_program_id = c.concurrent_program_id
+AND a.program_application_id = c.application_id
+AND a.phase_code = 'R'
+AND a.status_code = 'R'
+AND b.queue_application_id = q.application_id
+AND b.concurrent_queue_id = q.concurrent_queue_id
+AND ctl.concurrent_program_id = c.concurrent_program_id
+AND a.requested_by = fu.user_id
+AND a.responsibility_id = frt.responsibility_id
+ORDER BY a.actual_start_date DESC
+) req 
+left outer join  (select distinct * from (SELECT a.request_id, d.sid, d.serial# ,d.osuser,d.process , c.SPID ,d.inst_id
+FROM apps.fnd_concurrent_requests a,
+apps.fnd_concurrent_processes b,
+gv\$process c,
+gv\$session d
+WHERE a.controlling_manager = b.concurrent_process_id
+AND c.pid = b.oracle_process_id
+AND b.session_id=d.audsid
+AND a.phase_code = 'R'
+ ) sess) sess on sess.request_id=req.request_id ) where MINS > ${THRESOLD_RUN_MINS} ;
+spool OFF
+exit
+EOF
+
+cat $HEADERFILE $OUTFILE  > $MAILFILE
+
+#code to recheck error
+
+echo "Long running requests found  - rechecking "
+sqlplus -s APPS/${PSWD} <<EOF > /dev/null
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+
+select count(*) from ( 
+Select distinct sess.inst_id,sess.sid,req.request_id, user_name,round(mins,2) RUNTIME_MINS,program,actual_start_date from (
+SELECT a.request_id,frt.responsibility_name, ctl.user_concurrent_program_name program
+,q.concurrent_queue_name, to_char(actual_start_date,'DD-MM-YY HH24:MI') actual_start_date, actual_completion_date, fu.user_name
+,(nvl(actual_completion_date,sysdate)-actual_start_date)*1440 mins
+,(SELECT avg(nvl(a2.actual_completion_date-a2.actual_start_date,0))*1440 avg_run_time
+FROM APPLSYS.fnd_Concurrent_requests a2,
+APPLSYS.fnd_concurrent_programs c2
+WHERE c2.concurrent_program_id = c.concurrent_program_id
+AND a2.concurrent_program_id = c2.concurrent_program_id
+AND a2.program_application_id = c2.application_id
+AND a2.phase_code || '' = 'C') avg_mins
+,round((actual_completion_date - requested_start_date),2) * 24 duration_in_hours
+FROM APPLSYS.fnd_Concurrent_requests a,APPLSYS.fnd_concurrent_processes b
+,applsys.fnd_concurrent_queues q
+,APPLSYS.fnd_concurrent_programs c
+,APPLSYS.fnd_concurrent_programs_tl ctl
+,apps.fnd_user fu
+,apps.FND_RESPONSIBILITY_TL frt
+WHERE a.controlling_manager = b.concurrent_process_id
+AND a.concurrent_program_id = c.concurrent_program_id
+AND a.program_application_id = c.application_id
+AND a.phase_code = 'R'
+AND a.status_code = 'R'
+AND b.queue_application_id = q.application_id
+AND b.concurrent_queue_id = q.concurrent_queue_id
+AND ctl.concurrent_program_id = c.concurrent_program_id
+AND a.requested_by = fu.user_id
+AND a.responsibility_id = frt.responsibility_id
+ORDER BY a.actual_start_date DESC
+) req 
+left outer join  (select distinct * from (SELECT a.request_id, d.sid, d.serial# ,d.osuser,d.process , c.SPID ,d.inst_id
+FROM apps.fnd_concurrent_requests a,
+apps.fnd_concurrent_processes b,
+gv\$process c,
+gv\$session d
+WHERE a.controlling_manager = b.concurrent_process_id
+AND c.pid = b.oracle_process_id
+AND b.session_id=d.audsid
+AND a.phase_code = 'R'
+ ) sess) sess on sess.request_id=req.request_id ) where RUNTIME_MINS > ${THRESOLD_RUN_MINS};
+ 
+exit
+EOF
+VERIFY_REQ_COUNT=`cat $OUTFILE | egrep "[0-9]{1,}"`
+
+if [ "$VERIFY_REQ_COUNT" -gt 0 ]
+    then
+cat $MAILFILE | /usr/sbin/sendmail -t
+ echo "Long Running requests Found  , Email was sent to ${EMAIL_ADDRESS}"
+fi
+#end of Long running reqs
+else
+echo "No Long Running requests found .. "
+fi
+#end of  if session_COUNT -gt 0
+
+if [ -f ${MAILFILE} ]
+  then
+   rm ${MAILFILE}
+fi
+
+if [ -f ${OUTFILE} ]
+  then
+   rm ${OUTFILE}
+fi
+
+
+}
+
+####################################################################################################################
+# Check Long Running Requests                                                                                      #
+####################################################################################################################
+
+
+check_workflow()
+{
+. $ENVFILE > /dev/null
+
+sqlplus -s apps/${PSWD}  <<EOF > /dev/null
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+select count(*) from (select * from FND_SVC_COMPONENTS where component_type='WF_MAILER' and component_id=10006 and component_status<>'RUNNING');
+
+exit
+EOF
+
+PROBLEM_WRK_COUNT=`cat $OUTFILE | egrep "[0-9]{1,}"`
+
+if [ "$PROBLEM_WRK_COUNT" -gt 0 ]
+    then
+    sqlplus apps/${PSWD}   @$WORK_DIR/workflow_mailer_restart.sql > /dev/null
+    echo "Workflow Mailer is DOWN . Sent Email to $EMAIL_ADDRESS "
+#    echo "Workflow Mailer is DOWN on $TWO_TASK and restarted"| mail -s "$TWO_TASK - Workflow Mailer WAS DOWN" $EMAIL_ADDRESS
+else
+    echo "Workflow Mailer is UP and Running ..."
+fi
+
+
+if [ -f ${OUTFILE} ]
+  then
+   rm ${OUTFILE}
+fi
+
+}
+
+ebs_reboot()
+{
+CRITICAL_HR=24
+## test ##CRITICAL_HR=504
+
+# Detect OS
+OS=$(uname -s)
+
+case $OS in
+  "Linux")
+    # Linux: Use 'uptime -s' to get system start time
+    HOST_START_EPOCH=$(date -d "$(uptime -s)" +%s)
+    ;;
+  "Darwin")
+    # macOS: Use 'sysctl' to get system boot time
+    HOST_START_EPOCH=$(sysctl -n kern.boottime | awk '{print $4}' | tr -d ',')
+    ;;
+  "CYGWIN"*|"MINGW"*|"MSYS"*)
+    # Windows: Use 'systeminfo' to get system boot time
+    HOST_START_EPOCH=$(systeminfo | grep "System Boot Time" | sed 's/.*: //' | xargs -I {} date -d "{}" +%s)
+    ;;
+  "AIX")
+    # AIX: Use 'uptime' to get system start time
+    #HOST_START_EPOCH=$(uptime | awk '{print $3, $4, $5}' | xargs -I {} date -d "{}" +%s)
+    HOST_START_EPOCH=$(perl -e '($u)=`uptime`=~/up\s+(.*),\s+\d+\s+user/; print "Uptime: $u\n";')
+    ;;
+  "SunOS")
+    # SunOS: Use 'uptime' to get system start time
+    #HOST_START_EPOCH=$(uptime | awk '{print $3, $4, $5}' | xargs -I {} date -d "{}" +%s)
+    HOST_START_EPOCH=$(uptime | awk '{print $3, $4, $5}' | xargs -I {} perl -MPOSIX -e 'print time(), "\n"')
+    ;;
+  *)
+    echo "Unsupported OS: $OS"
+    exit 1
+    ;;
+esac
+
+CURRENT_EPOCH=$(date +%s)
+UPTIME_SECONDS=$(( CURRENT_EPOCH - HOST_START_EPOCH ))
+
+D=$((UPTIME_SECONDS / (24 * 60 * 60)))
+H=$(((UPTIME_SECONDS - (D * 24 * 60 * 60)) / (60 * 60)))
+M=$(((UPTIME_SECONDS - ((D * 24 * 60 * 60) + (H * 60 * 60))) / 60))
+S=$((UPTIME_SECONDS - ((D * 24 * 60 * 60) + (H * 60 * 60) + (M * 60))))
+
+if [ ${UPTIME_SECONDS} -lt $((CRITICAL_HR * 60 * 60)) ]; then
+  printf "2 EBS_reboot_${HOSTNAME%%.*} - CRIT : Rebooted within ${CRITICAL_HR} hours (uptime $D days $H hours $M minutes $S seconds)\n"
+  echo "EBS_reboot_${HOSTNAME%%.*} - CRIT : Rebooted within ${CRITICAL_HR} hours (uptime $D days $H hours $M minutes $S seconds)"| mailx -s "EBS_reboot_${HOSTNAME%%.*} - ${SID}" $EMAIL_ADDRESS 
+else
+  printf "0 EBS_reboot_${HOSTNAME%%.*} - OK : Rebooted outside ${CRITICAL_HR} hours (uptime $D days $H hours $M minutes $S seconds)\n"
+fi
+
+}
+
+
+####################################################################################################################
+# Function check_health_15min                                                                                      #
+####################################################################################################################
+check_health_30min()
+{
+
+check_longrunning_requests
+check_blocking_sessions
+check_costmgr
+check_workflow 
+ebs_reboot
+
+#cleanup log files
+
+if [ -f ${LOGFILE} ]
+  then
+   rm ${LOGFILE}
+fi
+
+if [ -f ${HEADERFILE} ]
+  then
+   rm ${HEADERFILE}
+fi
+
+}
+##################################### Call Script Function ########################################################
+
+check_health_30min
+

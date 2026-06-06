@@ -1,0 +1,483 @@
+{# =============================================================================
+   oracle_thresholds.json.j2 — single source of truth for Oracle DBA scripts,
+   CheckMK Linux local plugins, and the chatbot's Oracle tab. Rendered to
+   /opt/dba/thresholds.json by Oracle/dba_automation.yaml.
+
+   Mirrors templates/thresholds.json.j2 (SQL Server) section-for-section but
+   uses Oracle vocabulary:
+     - tablespace      replaces tempdb
+     - scheduler_jobs  replaces agent_jobs
+     - dataguard       replaces alwayson
+     - cis             "CIS Oracle Database 19c Benchmark v1.0.0"
+     - rac             new section for cluster/CRS thresholds
+     - database_status uses Oracle open modes (OPEN, MOUNTED, NOMOUNT, ...)
+
+   Every new key has a Jinja default() fallback so this still renders cleanly
+   against the existing setup.yaml without any new entries.
+============================================================================= #}
+{
+  "version":      2,
+  "flavor":       "oracle",
+  "generated_by": "Oracle/dba_automation.yaml",
+  "generated_at": "{{ ansible_date_time.iso8601 | default('') }}",
+
+  "backups": {
+    "full_max_age_hours":              {{ backups.thresholds.full_max_age_hours }},
+    "log_max_age_hours":                {{ backups.thresholds.log_max_age_hours }},
+    "archivelog_max_age_minutes":       {{ (oracle.backups.archivelog_max_age_minutes | default(60)) if oracle is defined else 60 }},
+    "rman_obsolete_warn_count":         {{ (oracle.backups.rman_obsolete_warn_count | default(20)) if oracle is defined else 20 }},
+    "incremental_max_age_hours":        {{ (oracle.backups.incremental_max_age_hours | default(30)) if oracle is defined else 30 }},
+    "controlfile_autobackup_required":  true
+  },
+
+  "disk": {
+    "drive_free_pct_warn":     {{ disk.drive_free_pct_warn }},
+    "drive_free_pct_crit":     {{ disk.drive_free_pct_crit }},
+    "datafile_free_pct_warn":  {{ disk.datafile_free_pct_warn }},
+    "datafile_free_pct_crit":  {{ disk.datafile_free_pct_crit }},
+    "fra_free_pct_warn":       {{ (oracle.disk.fra_free_pct_warn | default(20)) if oracle is defined else 20 }},
+    "fra_free_pct_crit":       {{ (oracle.disk.fra_free_pct_crit | default(10)) if oracle is defined else 10 }},
+    "asm_dg_free_pct_warn":    {{ (oracle.disk.asm_dg_free_pct_warn | default(20)) if oracle is defined else 20 }},
+    "asm_dg_free_pct_crit":    {{ (oracle.disk.asm_dg_free_pct_crit | default(10)) if oracle is defined else 10 }},
+    "relevant_mount_regex":    "(oracle|u0[0-9]|backup|fra|data|recovery|arch)"
+  },
+
+  {# ============================================================
+     Tablespace + UNDO + TEMP usage (matches MonitorTablespaces.sh
+     env vars WARN_PCT / CRIT_PCT, defaults 85 / 95).
+  ============================================================ #}
+  "tablespace": {
+    "used_pct_warn":           {{ (oracle.tablespace.used_pct_warn      | default(85)) if oracle is defined else 85 }},
+    "used_pct_crit":           {{ (oracle.tablespace.used_pct_crit      | default(95)) if oracle is defined else 95 }},
+    "temp_used_pct_warn":      {{ (oracle.tablespace.temp_used_pct_warn | default(80)) if oracle is defined else 80 }},
+    "temp_used_pct_crit":      {{ (oracle.tablespace.temp_used_pct_crit | default(92)) if oracle is defined else 92 }},
+    "undo_used_pct_warn":      {{ (oracle.tablespace.undo_used_pct_warn | default(80)) if oracle is defined else 80 }},
+    "undo_used_pct_crit":      {{ (oracle.tablespace.undo_used_pct_crit | default(92)) if oracle is defined else 92 }},
+    "autoextend_near_max_warn":{{ (oracle.tablespace.autoextend_near_max_warn | default(90)) if oracle is defined else 90 }},
+    "max_extents_warn":        {{ (oracle.tablespace.max_extents_warn   | default(80)) if oracle is defined else 80 }},
+    "fragmentation_warn_pct":  {{ (oracle.tablespace.fragmentation_warn_pct | default(60)) if oracle is defined else 60 }}
+  },
+
+  "scheduler_jobs": {
+    "lookback_hours":         {{ agent_jobs.lookback_hours }},
+    "long_running_minutes":   {{ agent_jobs.long_running_minutes | default(60) }},
+    "broken_warn_count":      {{ (oracle.scheduler_jobs.broken_warn_count | default(0)) if oracle is defined else 0 }},
+    "failed_warn_count_24h":  {{ (oracle.scheduler_jobs.failed_warn_count_24h | default(3)) if oracle is defined else 3 }}
+  },
+
+  "security_audit": {
+    "stale_login_days":      {{ security_audit.stale_login_days }},
+    "sysdba_warn_count":     {{ (oracle.security_audit.sysdba_warn_count | default(security_audit.sysadmin_warn_count)) if oracle is defined else security_audit.sysadmin_warn_count }},
+    "dba_role_warn_count":   {{ (oracle.security_audit.dba_role_warn_count | default(10)) if oracle is defined else 10 }},
+    "default_password_users_crit": 0,
+    "locked_accounts_warn":  {{ (oracle.security_audit.locked_accounts_warn | default(5)) if oracle is defined else 5 }},
+    "failed_login_warn_24h": {{ (oracle.security_audit.failed_login_warn_24h | default(50)) if oracle is defined else 50 }},
+    "failed_login_crit_24h": {{ (oracle.security_audit.failed_login_crit_24h | default(200)) if oracle is defined else 200 }}
+  },
+
+  "patch": {
+    "psu_max_age_days":     {{ (oracle.patch.psu_max_age_days | default(patch.build_max_age_days)) if oracle is defined else patch.build_max_age_days }},
+    "opatch_min_release":   "{{ (oracle.patch.opatch_min_release | default('12.2.0.1.40')) if oracle is defined else '12.2.0.1.40' }}",
+    "hotfix_warn_age_days": {{ patch.hotfix_warn_age_days }},
+    "hotfix_crit_age_days": {{ patch.hotfix_crit_age_days }},
+    "cpu_lag_quarters_warn": 1,
+    "cpu_lag_quarters_crit": 2
+  },
+
+  {# ============================================================
+     Data Guard (matches MonitorDataGuard.sh env vars
+     LAG_WARN_SEC / LAG_CRIT_SEC, defaults 30 / 120).
+  ============================================================ #}
+  "dataguard": {
+    "lag_warn_sec":            {{ (oracle.dataguard.lag_warn_sec | default(alwayson.lag_warn_sec)) if oracle is defined else alwayson.lag_warn_sec }},
+    "lag_crit_sec":            {{ (oracle.dataguard.lag_crit_sec | default(alwayson.lag_crit_sec)) if oracle is defined else alwayson.lag_crit_sec }},
+    "apply_lag_warn_sec":      {{ (oracle.dataguard.apply_lag_warn_sec | default(60)) if oracle is defined else 60 }},
+    "apply_lag_crit_sec":      {{ (oracle.dataguard.apply_lag_crit_sec | default(300)) if oracle is defined else 300 }},
+    "transport_lag_warn_sec":  {{ (oracle.dataguard.transport_lag_warn_sec | default(30)) if oracle is defined else 30 }},
+    "transport_lag_crit_sec":  {{ (oracle.dataguard.transport_lag_crit_sec | default(120)) if oracle is defined else 120 }},
+    "standby_redo_warn_count": {{ (oracle.dataguard.standby_redo_warn_count | default(3)) if oracle is defined else 3 }},
+    "protection_mode_required":"{{ (oracle.dataguard.protection_mode_required | default('MAXIMUM PERFORMANCE')) if oracle is defined else 'MAXIMUM PERFORMANCE' }}"
+  },
+
+  {# ============================================================
+     RAC / Grid Infrastructure thresholds.
+  ============================================================ #}
+  "rac": {
+    "interconnect_latency_warn_ms": {{ (oracle.rac.interconnect_latency_warn_ms | default(5))  if oracle is defined else 5 }},
+    "interconnect_latency_crit_ms": {{ (oracle.rac.interconnect_latency_crit_ms | default(15)) if oracle is defined else 15 }},
+    "instance_evictions_warn_24h":  {{ (oracle.rac.instance_evictions_warn_24h | default(1))  if oracle is defined else 1 }},
+    "gv_session_imbalance_pct":     {{ (oracle.rac.gv_session_imbalance_pct    | default(40)) if oracle is defined else 40 }},
+    "crs_resource_offline_crit":    true
+  },
+
+  {# ============================================================
+     CIS Oracle Database 19c Benchmark - scorecard inputs.
+     Consumed by chatbot to render compliance gauges + lists.
+  ============================================================ #}
+  "cis": {
+    "benchmark":      "CIS Oracle Database 19c Benchmark v1.0.0",
+    "report_path":    "/var/log/dba/oracle_cis19c_latest.json",
+    "score_thresholds": {
+      "green_min":  {{ (oracle.cis.score_thresholds.green_min  | default(95)) if oracle is defined else 95 }},
+      "yellow_min": {{ (oracle.cis.score_thresholds.yellow_min | default(80)) if oracle is defined else 80 }},
+      "red_max":    {{ (oracle.cis.score_thresholds.red_max    | default(79)) if oracle is defined else 79 }}
+    },
+    "critical_controls": [
+      {%- set crit = (oracle.cis.critical_controls | default(['1.1','2.2.1','2.2.4','2.2.16','3.1','3.5','4.1','5.1.1','5.1.2.1','6.2.1','6.2.10'])) if oracle is defined else ['1.1','2.2.1','2.2.4','2.2.16','3.1','3.5','4.1','5.1.1','5.1.2.1','6.2.1','6.2.10'] -%}
+      {%- for c in crit -%}"{{ c }}"{{ "," if not loop.last }}{%- endfor -%}
+    ],
+    "auto_remediate_safe": [
+      {%- set safe = (oracle.cis.auto_remediate_safe | default(['2.2.4','2.2.16','3.1','3.5','4.1','4.2','4.3','4.4','5.1.1'])) if oracle is defined else ['2.2.4','2.2.16','3.1','3.5','4.1','4.2','4.3','4.4','5.1.1'] -%}
+      {%- for c in safe -%}"{{ c }}"{{ "," if not loop.last }}{%- endfor -%}
+    ],
+    "manual_only": ["1.1","2.1.1","2.1.2","5.1.2.1","6.1.1","6.2.1","6.2.10"],
+    "ansible_fact_key":   "cis_compliance",
+    "score_field":        "compliance_score",
+    "exception_dbs_field":"exception_databases"
+  },
+
+  "audit": {
+    "severity_rules": {
+      "dba_role_default_user":   "critical",
+      "default_password":        "critical",
+      "remote_os_authent":       "critical",
+      "remote_os_roles":         "high",
+      "audit_trail_disabled":    "high",
+      "sec_case_sensitive_off":  "high",
+      "utl_file_dir_set":        "high",
+      "_trace_files_public":     "high",
+      "global_names_off":        "warn",
+      "resource_limit_off":      "warn",
+      "sql92_security_off":      "warn",
+      "weak_password_verify":    "high",
+      "listener_no_password":    "high",
+      "listener_extproc_open":   "high"
+    },
+    "sysdba_count_warn":     {{ (oracle.audit.sysdba_count_warn   | default(security_audit.sysadmin_warn_count)) if oracle is defined else security_audit.sysadmin_warn_count }},
+    "sysdba_count_crit":     {{ (oracle.audit.sysdba_count_crit   | default(10)) if oracle is defined else 10 }},
+    "stale_login_days":      {{ security_audit.stale_login_days }},
+    "failed_login_warn_24h": {{ (oracle.audit.failed_login_warn_24h | default(50)) if oracle is defined else 50 }},
+    "failed_login_crit_24h": {{ (oracle.audit.failed_login_crit_24h | default(200)) if oracle is defined else 200 }},
+    "categories": [
+      "Listener / Network",
+      "Authentication",
+      "Privilege & Role",
+      "Auditing / Logging",
+      "Initialization Parameter",
+      "Patch / Vulnerability"
+    ],
+    "display_columns": ["instance","control","severity","observed","recommendation","captured_at"]
+  },
+
+  {# ============================================================
+     Database status - Oracle open modes + role colour map.
+  ============================================================ #}
+  "database_status": {
+    "status_colors": {
+      "OPEN":                        "#28a745",
+      "OPEN MIGRATE":                "#ffc107",
+      "READ ONLY":                   "#17a2b8",
+      "READ ONLY WITH APPLY":        "#17a2b8",
+      "MOUNTED":                     "#ffc107",
+      "NOMOUNT":                     "#ffc107",
+      "RESTRICTED":                  "#ffc107",
+      "SHUTDOWN":                    "#dc3545",
+      "UNAVAILABLE":                 "#dc3545",
+      "OFFLINE":                     "#dc3545"
+    },
+    "role_colors": {
+      "PRIMARY":           "#28a745",
+      "PHYSICAL STANDBY":  "#17a2b8",
+      "LOGICAL STANDBY":   "#17a2b8",
+      "SNAPSHOT STANDBY":  "#6c757d",
+      "FAR SYNC":          "#6c757d"
+    },
+    "watch_states":          ["MOUNTED","NOMOUNT","RESTRICTED","SHUTDOWN","UNAVAILABLE","OFFLINE"],
+    "size_warn_gb":          {{ (oracle.database_status.size_warn_gb | default(500))  if oracle is defined else 500 }},
+    "size_crit_gb":          {{ (oracle.database_status.size_crit_gb | default(1000)) if oracle is defined else 1000 }},
+    "flashback_warn_when_off": true,
+    "archive_log_required":    true,
+    "backup_age_warn_hours":   {{ backups.thresholds.full_max_age_hours }},
+    "backup_age_crit_hours":   {{ ((backups.thresholds.full_max_age_hours | int) * 2) }},
+    "display_columns": [
+      "host","db_name","container","open_mode","role","db_size_gb","flashback_on",
+      "last_full_backup","last_archivelog","dataguard_role","cis_compliant"
+    ]
+  },
+
+  {# ============================================================
+     InfluxDB - Oracle metrics shipped by CheckMK / nagflux.
+     The chatbot substitutes {host} / {window} / {bucket} at
+     query time so a single template serves all dashboards.
+  ============================================================ #}
+  "influxdb": {
+    "host":     "{{ chatbot.influxdb.host     | default('localhost') }}",
+    "port":     {{ chatbot.influxdb.port      | default(8086) }},
+    "database": "{{ chatbot.influxdb.database | default('checkmk') }}",
+    "user":     "{{ chatbot.influxdb.user     | default('checkmk') }}",
+    "ssl":      {{ (chatbot.influxdb.ssl      | default(false)) | string | lower }},
+    "default_window":  "{{ (oracle.influxdb.default_window | default('1h')) if oracle is defined else '1h' }}",
+    "default_bucket":  "{{ (oracle.influxdb.default_bucket | default('5m')) if oracle is defined else '5m' }}",
+    "history_window":  "{{ (oracle.influxdb.history_window | default('7d')) if oracle is defined else '7d' }}",
+    "queries": {
+      "cpu_load":                "SELECT mean(\"value\") FROM \"metrics\" WHERE \"service\"='CPU_load' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(null)",
+      "memory_used_pct":         "SELECT mean(\"value\") FROM \"metrics\" WHERE \"service\"='Memory' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(null)",
+      "filesystem_free_pct":     "SELECT min(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Filesystem/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(null)",
+      "tablespace_used_pct":     "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Oracle_Tablespace/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(previous)",
+      "temp_used_pct":           "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Oracle_Temp/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(previous)",
+      "undo_used_pct":           "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Oracle_Undo/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(previous)",
+      "fra_used_pct":            "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Oracle_FRA/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(previous)",
+      "asm_dg_free_pct":         "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Oracle_ASM/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(previous)",
+      "rman_backup_age_hours":   "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Oracle_RMAN_LastBackup/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(previous)",
+      "archivelog_age_minutes":  "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"='Oracle_Archivelog_Age' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(previous)",
+      "dataguard_apply_lag_sec": "SELECT max(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Oracle_DG_Apply_Lag/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(null)",
+      "dataguard_transport_lag_sec": "SELECT max(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Oracle_DG_Transport_Lag/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(null)",
+      "blocking_sessions":       "SELECT max(\"value\") FROM \"metrics\" WHERE \"service\"='Oracle_Blocking' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(0)",
+      "scheduler_job_failures":  "SELECT sum(\"value\") FROM \"metrics\" WHERE \"service\"='Oracle_Scheduler_Failures' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(0)",
+      "wait_events_top":         "SELECT top(\"value\", \"event\", 5) FROM \"metrics\" WHERE \"service\"='Oracle_WaitEvent' AND \"host\"='{host}' AND time > now() - {window}",
+      "sga_pga_used_mb":         "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Oracle_(SGA|PGA)/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(previous)",
+      "cis_score_history":       "SELECT last(\"value\") FROM \"cis_compliance\" WHERE \"host\"='{host}' AND \"flavor\"='oracle' AND time > now() - {window} GROUP BY time({bucket}) fill(previous)"
+    }
+  },
+
+  {# ============================================================
+     Dashboard - chart + diagram definitions for the chatbot UI.
+     Same shape as the SQL Server template so AI/handlers can
+     iterate without flavor-specific branching.
+  ============================================================ #}
+  "dashboard": {
+    "refresh_seconds": {{ (oracle.dashboard.refresh_seconds | default(60)) if oracle is defined else 60 }},
+    "charts": [
+      {
+        "id":     "cis_scorecard",
+        "title":  "CIS Oracle 19c Compliance Score",
+        "type":   "gauge",
+        "source": "ansible_local.db_inventory.oracle.*.cis_compliance.compliance_score",
+        "min":    0, "max": 100, "unit": "%",
+        "thresholds": [
+          { "value": 80,  "color": "#dc3545" },
+          { "value": 95,  "color": "#ffc107" },
+          { "value": 100, "color": "#28a745" }
+        ]
+      },
+      {
+        "id":     "cis_exceptions_by_control",
+        "title":  "CIS Exceptions by Control",
+        "type":   "bar",
+        "source": "ansible_local.db_inventory.oracle.*.cis_compliance.controls[?status=='Fail']",
+        "x":      "cis_id",
+        "y":      "count",
+        "color":  "#dc3545"
+      },
+      {
+        "id":     "tablespace_usage_top",
+        "title":  "Top Tablespaces by Used %",
+        "type":   "bar",
+        "source": "ansible_local.db_inventory.oracle.*.tablespaces[*]",
+        "x":      "tablespace_name",
+        "y":      "used_pct",
+        "limit":  15,
+        "thresholds": [
+          { "value": 85, "color": "#ffc107" },
+          { "value": 95, "color": "#dc3545" }
+        ]
+      },
+      {
+        "id":     "temp_undo_donut",
+        "title":  "TEMP + UNDO Usage by DB",
+        "type":   "donut",
+        "source": "ansible_local.db_inventory.oracle.*.special_tablespaces",
+        "group":  "type"
+      },
+      {
+        "id":     "fra_usage_bar",
+        "title":  "FRA Usage % per DB",
+        "type":   "bar",
+        "source": "ansible_local.db_inventory.oracle.*.fra",
+        "x":      "db",
+        "y":      "used_pct",
+        "thresholds": [
+          { "value": 80, "color": "#ffc107" },
+          { "value": 90, "color": "#dc3545" }
+        ]
+      },
+      {
+        "id":     "asm_dg_free",
+        "title":  "ASM Diskgroup Free %",
+        "type":   "bar",
+        "source": "ansible_local.db_inventory.oracle.*.asm_diskgroups",
+        "x":      "name",
+        "y":      "free_pct",
+        "thresholds": [
+          { "value": 20, "color": "#ffc107", "below": true },
+          { "value": 10, "color": "#dc3545", "below": true }
+        ]
+      },
+      {
+        "id":     "rman_backup_age_heatmap",
+        "title":  "RMAN Backup Age (hours since last FULL)",
+        "type":   "heatmap",
+        "source": "ansible_local.db_inventory.oracle.*.backups[*]",
+        "x":      "db",
+        "y":      "host",
+        "value":  "since_full_hours",
+        "thresholds": [
+          { "value": {{ backups.thresholds.full_max_age_hours }},          "color": "#ffc107" },
+          { "value": {{ (backups.thresholds.full_max_age_hours | int)*2 }},"color": "#dc3545" }
+        ]
+      },
+      {
+        "id":     "archivelog_age_line",
+        "title":  "Archivelog Age (minutes since last switch)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "archivelog_age_minutes",
+        "window": "24h",
+        "bucket": "10m",
+        "thresholds": [
+          { "value": 60,  "color": "#ffc107" },
+          { "value": 240, "color": "#dc3545" }
+        ]
+      },
+      {
+        "id":     "dataguard_apply_lag",
+        "title":  "Data Guard Apply Lag (24h)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "dataguard_apply_lag_sec",
+        "window": "24h",
+        "bucket": "5m",
+        "thresholds": [
+          { "value": 60,  "color": "#ffc107" },
+          { "value": 300, "color": "#dc3545" }
+        ]
+      },
+      {
+        "id":     "dataguard_transport_lag",
+        "title":  "Data Guard Transport Lag (24h)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "dataguard_transport_lag_sec",
+        "window": "24h",
+        "bucket": "5m",
+        "thresholds": [
+          { "value": {{ (oracle.dataguard.transport_lag_warn_sec | default(30)) if oracle is defined else 30 }}, "color": "#ffc107" },
+          { "value": {{ (oracle.dataguard.transport_lag_crit_sec | default(120)) if oracle is defined else 120 }}, "color": "#dc3545" }
+        ]
+      },
+      {
+        "id":     "cpu_load_trend",
+        "title":  "CPU Load (7d)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "cpu_load",
+        "window": "7d",
+        "bucket": "30m"
+      },
+      {
+        "id":     "memory_trend",
+        "title":  "Memory Used % (7d)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "memory_used_pct",
+        "window": "7d",
+        "bucket": "30m"
+      },
+      {
+        "id":     "sga_pga_trend",
+        "title":  "SGA + PGA Used (24h)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "sga_pga_used_mb",
+        "window": "24h",
+        "bucket": "10m"
+      },
+      {
+        "id":     "wait_events_top",
+        "title":  "Top 5 Wait Events",
+        "type":   "bar",
+        "datasource": "influxdb",
+        "query":  "wait_events_top",
+        "window": "1h"
+      },
+      {
+        "id":     "scheduler_failures_spark",
+        "title":  "Scheduler Job Failures (24h)",
+        "type":   "sparkline",
+        "datasource": "influxdb",
+        "query":  "scheduler_job_failures",
+        "window": "24h",
+        "bucket": "30m"
+      },
+      {
+        "id":     "blocking_sessions_spark",
+        "title":  "Blocking Sessions (24h)",
+        "type":   "sparkline",
+        "datasource": "influxdb",
+        "query":  "blocking_sessions",
+        "window": "24h",
+        "bucket": "10m"
+      },
+      {
+        "id":     "cis_score_history",
+        "title":  "CIS Compliance Trend (30d)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "cis_score_history",
+        "window": "30d",
+        "bucket": "1d",
+        "min":    0, "max": 100
+      },
+      {
+        "id":     "patch_age_scorecard",
+        "title":  "Patch Status (OPatch + PSU)",
+        "type":   "scorecard",
+        "source": "ansible_local.db_inventory.oracle.*.patch_level",
+        "fields": ["psu_release","cpu_quarter","opatch_release","last_apply_days"],
+        "thresholds": [
+          { "field": "last_apply_days", "value": {{ patch.hotfix_warn_age_days }}, "color": "#ffc107" },
+          { "field": "last_apply_days", "value": {{ patch.hotfix_crit_age_days }}, "color": "#dc3545" }
+        ]
+      }
+    ],
+
+    "diagrams": [
+      {
+        "id":   "data_flow",
+        "title":"Oracle Monitoring & Automation Data Flow",
+        "type": "mermaid",
+        "definition": "graph LR\n  subgraph Host[Oracle Linux Host]\n    DB[(Oracle 19c)]\n    Inv[db_inventory.sh]\n    Checks[CheckOracleStatus.sh + Monitor*.sh]\n    CM[CheckMK Agent]\n  end\n  DB -->|sqlplus / RMAN| Inv\n  DB -->|sqlplus| Checks\n  Inv -->|JSON facts.d| Ansible[Ansible Facts]\n  Checks -->|local plugin JSON| CM\n  CM -->|nagflux| Influx[(InfluxDB)]\n  Ansible -->|API| Bot[Chatbot Flask]\n  Influx -->|HTTP| Bot\n  Bot --> User((DBA / Exec))"
+      },
+      {
+        "id":   "dataguard_topology",
+        "title":"Data Guard Topology",
+        "type": "mermaid",
+        "definition": "graph TB\n  App[Application Tier]\n  Primary[(Primary DB)]\n  Standby[(Physical Standby)]\n  FarSync[(Far Sync)]\n  DRStandby[(DR Standby)]\n  App --> Primary\n  Primary ==SYNC redo==> Standby\n  Primary -.SYNC.-> FarSync\n  FarSync ==ASYNC==> DRStandby\n  Standby -. fast-start failover .- Primary"
+      },
+      {
+        "id":   "rac_topology",
+        "title":"RAC + Grid Topology",
+        "type": "mermaid",
+        "definition": "graph TB\n  Scan((SCAN Listener))\n  L1[Local LSNR Node1]\n  L2[Local LSNR Node2]\n  Inst1[(Instance 1)]\n  Inst2[(Instance 2)]\n  ASM[(+DATA / +RECO ASM)]\n  Scan --> L1\n  Scan --> L2\n  L1 --> Inst1\n  L2 --> Inst2\n  Inst1 -. interconnect .- Inst2\n  Inst1 --> ASM\n  Inst2 --> ASM"
+      },
+      {
+        "id":   "rman_strategy",
+        "title":"RMAN Backup Strategy (rolling 24h)",
+        "type": "mermaid",
+        "definition": "gantt\n    title Daily RMAN Schedule\n    dateFormat HH:mm\n    axisFormat %H:%M\n    section Level 0 (Full)\n    Sunday weekly :a1, 22:00, 240m\n    section Level 1 (Incremental)\n    Mon-Sat nightly :22:00, 90m\n    section Archivelog\n    Every 15 minutes :crit, 00:00, 24h\n    section RMAN crosscheck\n    Daily housekeeping :04:00, 30m"
+      },
+      {
+        "id":   "cis_workflow",
+        "title":"CIS Oracle 19c Audit & Remediation",
+        "type": "mermaid",
+        "definition": "flowchart TD\n  A[Run CIS Oracle 19c checks] --> B{Findings}\n  B -->|All Pass| Z[Green - report to dashboard]\n  B -->|Fail| C[Capture BEFORE state]\n  C --> D[Append revert to rollback.sql]\n  D --> E{Approve?}\n  E -->|Audit only| F[Stop here]\n  E -->|Dry run| G[Log fix + revert]\n  E -->|Apply| H[Run ALTER SYSTEM / sqlplus fix]\n  H --> I[Log AFTER state]\n  I --> J[Push score to InfluxDB]\n  J --> Z\n  G --> K[Review rollback.sql with CAB]\n  K --> E"
+      },
+      {
+        "id":   "alert_pipeline",
+        "title":"Alert -> Ticket Pipeline",
+        "type": "mermaid",
+        "definition": "sequenceDiagram\n  participant DB as Oracle\n  participant CMK as CheckMK\n  participant Bot as Chatbot\n  participant SNow as ServiceNow\n  DB->>CMK: local plugin output\n  CMK->>CMK: evaluate thresholds.json\n  CMK->>Bot: webhook (state change)\n  CMK->>SNow: ticktator.py notify\n  SNow-->>CMK: ticket id\n  Bot-->>DBA: chat notification"
+      }
+    ]
+  }
+}

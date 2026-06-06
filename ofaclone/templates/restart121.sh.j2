@@ -1,0 +1,85 @@
+#!/bin/sh
+
+if [ -f ~/.profile ]; then
+. ~/.profile
+elif [ -f ~/.bash_profile ]; then
+. ~/.bash_profile
+fi
+
+HOST_NAME=`hostname`
+GREEN="\033[0;32m"
+RED="\033[0;31m"
+NC="\033[0m" # No Color
+
+if [ $# != 2 ]
+then
+echo "${RED}restart.sh <start/stop/restart> <APPS PASSWORD> ${NC}"
+exit 1;
+fi
+
+#Parameters
+WDIR={{ tgt_dir }}
+#ENVFILE=APPS{{ tgt_env }}_{{ tgt_app_node }}.env
+ENVFILE={{ app_tgt_mount }}/apps/apps_st/appl/APPS{{ tgt_env }}_{{ tgt_app_node }}.env
+LOGFILE=$WDIR/restart.log
+MODE=$1
+APPSPASS=$2
+function respon() {
+echo "****************************************************************"
+echo""
+echo " Please check $LOGFILE and enter Y to move on "
+echo""
+echo "****************************************************************"
+read RESP
+if [ `echo $RESP` = "N" -o `echo $RESP` = "n" ]
+then
+echo "Exiting...."
+exit 1;
+else
+echo "Proceeding..."
+fi
+}
+
+
+#Check logfile
+if [ -f `echo $ENVFILE` ]
+then
+   echo ""
+. `echo $ENVFILE`
+else
+   echo "${RED}/home/applmgr/`echo $ENVFILE` doesn't exists on `echo $HOSTNAME`${NC}"
+    exit 1;
+fi
+
+
+
+#start apps
+if [ $MODE = start -o $MODE = START ]
+then
+echo "starting...."
+sleep 5
+echo ""
+echo ""
+$ADMIN_SCRIPTS_HOME/adstrtal.sh apps/$APPSPASS | tee -a $LOGFILE
+elif [ $MODE = stop -o $MODE = STOP ]
+then
+echo "stoping...."
+sleep 5
+echo ""
+echo ""
+$ADMIN_SCRIPTS_HOME/adstpall.sh apps/$APPSPASS | tee -a $LOGFILE
+elif [ $MODE = restart -o $MODE = RESTART ]
+then
+echo "restarting..."
+sleep 5
+echo ""
+echo ""
+$ADMIN_SCRIPTS_HOME/adstpall.sh apps/$APPSPASS | tee -a $LOGFILE
+sleep 60
+$ADMIN_SCRIPTS_HOME/adstrtal.sh apps/$APPSPASS | tee -a $LOGFILE
+else
+echo "check your options"
+echo "${RED}restart.sh <start/stop/restart> <APPS PASSWORD> ${NC}"
+exit 1;
+fi
+

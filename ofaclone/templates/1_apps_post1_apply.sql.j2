@@ -1,0 +1,53 @@
+DECLARE
+stat boolean;
+BEGIN
+dbms_output.disable;
+dbms_output.enable(100000);
+stat := FND_PROFILE.SAVE('SITENAME', 'VMMC - {{ tgt_env|upper }} (Copy of EPROD from {{ date }})', 'SITE');
+stat := FND_PROFILE.SAVE('UTL_FILE', '/interface/infvmmci/{{ tgt_env|upper }}/outgoing', 'SITE');
+stat := FND_PROFILE.SAVE('INBOUND_DATA_FILE', '/interface/infvmmci/{{ tgt_env|upper }}/incoming', 'SITE');
+stat := FND_PROFILE.SAVE('BNE_REDIRECT_PORTAL', 'http://{{ tgt_app_node }}.internal.vmmc.org:8015/pls/PVMMCI/OracleNavigate.Responsibility', 'SITE');
+stat := FND_PROFILE.SAVE('BNE_SERVER_LOG_PATH', ' {{ app_tgt_mount }}/fs_ne/EBSapps/appl/bne/log', 'SITE');
+stat := FND_PROFILE.SAVE('BNE_UIX_PHYSICAL_DIRECTORY', '{{ app_tgt_mount }}/fs1/FMW_Home/Oracle_EBS-app1/applications/oacore/html/cabo/', 'SITE');
+stat := FND_PROFILE.SAVE('BNE_UPLOAD_IMPORT_DIRECTORY', ' {{ app_tgt_mount }}/fs_ne/EBSapps/appl/bne/upload', 'SITE');
+stat := FND_PROFILE.SAVE('BNE_UPLOAD_STAGING_DIRECTORY', '{{ app_tgt_mount }}/fs_ne/EBSapps/appl/bne/upload', 'SITE');
+stat := FND_PROFILE.SAVE('BNE_UPLOAD_TEXT_DIRECTORY', '{{ app_tgt_mount }}/fs_ne/EBSapps/appl/bne/upload', 'SITE');
+stat := FND_PROFILE.SAVE('ECE_IN_FILE_PATH', '/interface/infvmmci/{{ tgt_env|upper }}/incoming', 'SITE');
+stat := FND_PROFILE.SAVE('ECE_IN_FILE_PATH', '/interface/infvmmci/{{ tgt_env|upper }}/YVMH/incoming', 'RESP', '51852', '175');
+stat := FND_PROFILE.SAVE('ECE_OUT_FILE_PATH', '/interface/infvmmci/{{ tgt_env|upper }}/outgoing', 'SITE');
+stat := FND_PROFILE.SAVE('ECE_OUT_FILE_PATH', '/interface/infvmmci/{{ tgt_env|upper }}/YVMH/outgoing', 'RESP', '51852', '175');
+stat := FND_PROFILE.SAVE('ICX_DISCOVERER_PARAMETERS', 'exitURL=http://{{ tgt_app_node }}.internal.vmmc.org:8015/OA_HTML/OA.jsp?OAFunc=OAHOMEPAGE', 'SITE');
+stat := FND_PROFILE.SAVE('JTF_UM_APPROVAL_URL', 'http://{{ tgt_app_node }}.internal.vmmc.org:8015', 'SITE');
+stat := FND_PROFILE.SAVE('FND_DIAGNOSTICS', 'Yes', 'SITE');
+stat := FND_PROFILE.SAVE('FND_PERZ_DOC_ROOT_PATH', '/interface/infvmmci/{{ tgt_env|upper }}/incoming', 'SITE');
+stat := FND_PROFILE.SAVE('BIS_DEBUG_LOG_DIRECTORY', '/interface/infvmmci/{{ tgt_env|upper }}/tmp', 'SITE');
+stat := FND_PROFILE.SAVE('XNC_DEBUG_LOG_DIRECTORY', '{{ app_tgt_mount }}/fs1/EBSapps/comn/admin/log/', 'SITE');
+stat := FND_PROFILE.SAVE('BIS_DEBUG_LOG_DIRECTORY', '/interface/infvmmci/{{ tgt_env|upper }}/tmp', 'SITE');
+stat := FND_PROFILE.SAVE('HZ_API_DEBUG_FILE_PATH', '/interface/infvmmci/{{ tgt_env|upper }}/outgoing', 'SITE');
+stat := FND_PROFILE.SAVE('PA_DEBUG_LOG_DIRECTORY', '/interface/infvmmci/{{ tgt_env|upper }}/outgoing', 'SITE');
+stat := FND_PROFILE.SAVE('TAX_DEBUG_FILE_LOCATION', '/interface/infvmmci/{{ tgt_env|upper }}/outgoing', 'SITE');
+stat := FND_PROFILE.SAVE('JTF_DEBUG_LOG_DIRECTORY', '/interface/infvmmci/{{ tgt_env|upper }}/outgoing', 'SITE');
+stat := FND_PROFILE.SAVE('GL_DEBUG_LOG_DIRECTORY', '/interface/infvmmci/{{ tgt_env|upper }}/outgoing', 'SITE');
+stat := FND_PROFILE.SAVE('GL_JAHE_DB_HOST', '{{ tgt_env|upper }}db.internal.vmmc.org', 'SITE');
+stat := FND_PROFILE.SAVE('GL_JAHE_DB_PORT', '1598', 'SITE');
+stat := FND_PROFILE.SAVE('ECX_UTL_LOG_DIR', '/interface/infvmmci/{{ tgt_env|upper }}/tmp', 'SITE');
+stat := FND_PROFILE.SAVE('ECX_UTL_XSLT_DIR', '/interface/infvmmci/{{ tgt_env|upper }}/tmp', 'SITE');
+stat := FND_PROFILE.SAVE('ABM_SERVER_HOST', '{{ tgt_app_node }}.internal.vmmc.org', 'SITE');
+stat := FND_PROFILE.SAVE('IBY_XDO_DELIVERY_CFG_FILE', '{{ app_tgt_mount }}/fs_ne/EBSapps/appl/xdo/resource/xdodelivery.cfg', 'SITE');
+stat := FND_PROFILE.SAVE('IBY_XML_TEMP', '{{ app_tgt_mount }}/fs1/inst/apps/{{ tgt_env|upper }}_{{ tgt_app_node }}/appltmp', 'SITE');
+stat := FND_PROFILE.SAVE('IBY_ECAPP_URL', 'http://{{ tgt_app_node }}.internal.vmmc.org:80{{ port_pool }}/OA_HTML/ibyecapp', 'SITE');
+stat := FND_PROFILE.SAVE('ICX_PAY_SERVER', 'http://{{ tgt_app_node }}.internal.vmmc.org:8015/OA_HTML/ibyecapp', 'SITE');
+stat := FND_PROFILE.SAVE('POR_CACERT_FILE_NAME','{{ app_tgt_mount }}/fs1/EBSapps/10.1.2/sysman/config/b64InternetCertificate.txt', 'SITE');
+stat := FND_PROFILE.SAVE('EDW_LOGFILE_DIR','/interface/infvmmci/{{ tgt_env|upper }}/outgoing', 'SITE');
+stat := FND_PROFILE.SAVE('FND_COLOR_SCHEME', 'teal', 'SITE');
+stat := FND_PROFILE.SAVE('CONC_KEEP_BLANK_FILES', 'Yes', 'SITE');
+stat := FND_PROFILE.SAVE('WF_MAIL_WEB_AGENT', 'http://{{ tgt_app_node }}.internal.vmmc.org:80{{ port_pool }}', 'SITE');
+IF stat THEN
+	dbms_output.put_line( 'Stat = TRUE - profile updated' );
+ELSE
+	dbms_output.put_line( 'Stat = FALSE - profile NOT updated' );
+END IF;
+commit;
+END;
+/
+exit;

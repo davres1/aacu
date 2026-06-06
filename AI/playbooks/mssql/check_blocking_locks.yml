@@ -1,0 +1,22 @@
+---
+- name: Detect blocking locks on a SQL Server host
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  vars:
+    remote_script: "C:\\Windows\\Temp\\DetectBlockingLocks.ps1"
+
+  tasks:
+    - name: Copy DetectBlockingLocks.ps1 to remote
+      ansible.windows.win_copy:
+        src: "{{ scripts_dir }}/DetectBlockingLocks.ps1"
+        dest: "{{ remote_script }}"
+
+    - name: Run DetectBlockingLocks.ps1
+      ansible.windows.win_shell: "& '{{ remote_script }}'"
+      register: blocking_result
+      changed_when: false
+      failed_when: false
+
+    - name: Surface output
+      ansible.builtin.debug:
+        msg: "{{ blocking_result.stdout_lines | default([]) }}"

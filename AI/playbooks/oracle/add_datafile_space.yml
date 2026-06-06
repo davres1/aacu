@@ -1,0 +1,73 @@
+---
+# Grow an Oracle datafile by add_mb megabytes.
+#   1. Read current size (bytes) from dba_data_files for the named path
+#   2. ALTER DATABASE DATAFILE '...' RESIZE (current + add_mb)M
+#
+# The path must be exactly as it appears in dba_data_files.file_name (full
+# OFA path or +DG/.../datafile/foo.dbf for ASM). Connection uses the SYSTEM
+# account so the playbook needs SYSDBA-equivalent privileges on the target.
+- name: Grow an Oracle datafile by N MB
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ oracle_user | default('oracle') }}"
+
+  vars:
+    tns_alias:      "{{ tns_alias }}"
+    datafile_path:  "{{ datafile_path }}"
+    add_mb:         "{{ add_mb | int }}"
+    databases_ini:  "{{ databases_ini | default('/etc/oracle/databases.ini') }}"
+
+  tasks:
+    - name: Read system password from databases.ini
+      ansible.builtin.set_fact:
+        ora_pw: >-
+          {{ lookup('ini', 'syspass section=' + tns_alias + ' file=' + databases_ini) }}
+      no_log: true
+
+    - name: Read current datafile size in MB
+      ansible.builtin.shell: |
+        set -e
+        cat <<'SQL' | sqlplus -S -L "system/{{ ora_pw }}@{{ tns_alias }}"
+        SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF HEADING OFF ECHO OFF
+        SET LINESIZE 100 TRIMSPOOL ON
+        WHENEVER SQLERROR EXIT 2
+        SELECT TO_CHAR(ROUND(bytes/1024/1024))
+          FROM dba_data_files
+         WHERE file_name = '{{ datafile_path }}';
+        EXIT;
+        SQL
+      args:
+        executable: /bin/bash
+      register: current_size
+      changed_when: false
+      no_log: true
+
+    - name: Fail if the datafile was not found
+      ansible.builtin.fail:
+        msg: "Datafile not found in dba_data_files: {{ datafile_path }}"
+      when: (current_size.stdout | trim) == "" or not (current_size.stdout | trim | regex_search('^[0-9]+$'))
+
+    - name: Compute new size
+      ansible.builtin.set_fact:
+        new_size_mb: "{{ (current_size.stdout | trim | int) + (add_mb | int) }}"
+
+    - name: Grow datafile
+      ansible.builtin.shell: |
+        set -e
+        cat <<'SQL' | sqlplus -S -L "system/{{ ora_pw }}@{{ tns_alias }}"
+        SET PAGESIZE 0 FEEDBACK ON VERIFY OFF HEADING OFF ECHO OFF
+        WHENEVER SQLERROR EXIT 1
+        ALTER DATABASE DATAFILE '{{ datafile_path }}' RESIZE {{ new_size_mb }}M;
+        SELECT 'Resized {{ datafile_path }} to {{ new_size_mb }} MB' FROM dual;
+        EXIT;
+        SQL
+      args:
+        executable: /bin/bash
+      register: grow_result
+      no_log: true
+      changed_when: "'Resized' in (grow_result.stdout | default(''))"
+
+    - name: Surface result
+      ansible.builtin.debug:
+        var: grow_result.stdout

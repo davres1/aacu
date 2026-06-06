@@ -1,0 +1,1053 @@
+#!/bin/sh 
+. $HOME/.bash_profile
+program=`basename $0`
+HOST=`uname -n`
+WORK_DIR='{{ tgt_dir }}/scripts'
+LOG_DIR='{{ tgt_dir }}/scripts'
+LOGFILE=${LOG_DIR}/Health_check30.log
+SID=$1
+MAILFILE=$LOG_DIR/MailFile$$.dat
+HEADERFILE=$LOG_DIR/mailheader$$.log
+EMAIL_ADDRESS={{ email_address }}
+OUTFILE=$LOG_DIR/check_health30_$$.dat
+export ECC_BASE=/u01/ECC
+
+# Ensure that a SID was provided.
+if test -z "$SID"
+then
+  # No SID was provided.  Terminate script.
+  echo " "
+  echo " ************************************************** "
+  echo " *****************  E R R O R  ******************** "
+  echo " ************************************************** "
+  echo "   Please provide the instance name (SID): "
+  echo "   Usage:   $program SID "
+  echo "   Example: $program oralab "
+  echo " ************************************************** "
+  echo " ************************************************** "
+  echo " "
+  exit 1
+fi
+
+NODE=`uname -n | awk -F'.' '{print tolower($1)}'`
+
+# Source the environment file
+if test -s {{ app_tgt_mount }}/EBSapps.env
+then
+. {{ app_tgt_mount }}/EBSapps.env run
+else
+  # Environment file not found.  Terminate script.
+  echo " "
+  echo " ************************************************** "
+  echo " *****************  E R R O R  ******************** "
+  echo " ************************************************** "
+  echo "   The environment file could not be located "
+  echo "     FileName = $HOME/APPS${SID}_${NODE}.env "
+  echo "   Usage:   $program SID "
+  echo "   Example: $program oralab "
+  echo " ************************************************** "
+  echo " ************************************************** "
+  echo " "
+  exit 1
+fi
+
+# Use TWO_TASK or ORACLE_SID (which ever exists) to identify system.
+if test -z "$TWO_TASK"
+then
+  INST="$ORACLE_SID"
+else
+  INST="$TWO_TASK"
+fi
+
+ENVFILE="{{ app_tgt_mount }}/EBSapps.env run"
+
+####################################################################################################################
+# Check Blockingessions Function call                                                                              #
+####################################################################################################################
+check_blocking_sessions()
+{
+. $ENVFILE > /dev/null
+sqlplus -s apps/${PSWD} <<EOF > /dev/null 
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+
+select count(*) from (select SID,INST_ID,BLOCKING_INSTANCE,BLOCKING_SESSION,BLOCKING_SESSION_STATUS,program,module  from gv\$session where BLOCKING_SESSION is not null and seconds_in_wait > 300);
+EOF
+SESSION_COUNT=`cat $OUTFILE | egrep "[0-9]{1,}"`
+
+if [ "$SESSION_COUNT" -gt 0 ]
+    then
+#Header FILE
+echo "To: ${EMAIL_ADDRESS}" > $HEADERFILE
+echo "MIME-Version: 1.0" >> $HEADERFILE
+echo "Content-Type: text/html; charset=us-ascii" >> $HEADERFILE
+echo "Subject: $TWO_TASK - Blocking Sessions" >> $HEADERFILE
+
+sqlplus -s apps/${PSWD} <<EOF > /dev/null 
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+SET MARKUP HTML ON SPOOL ON PREFORMAT OFF ENTMAP ON -
+HEAD "<TITLE>Blocking Sessions</TITLE> -
+<STYLE type='text/css'> -
+<!-- BODY {background: #FFFFFF} --> -
+</STYLE>" -
+BODY "TEXT='#01043A'" -
+TABLE "WIDTH='90%' BORDER='3' bgcolor='EFFB84'"
+
+spool $OUTFILE
+PROMPT
+select wt.SID,wt.INST_ID,wt.USERNAME,wt.SERIAL#,wt.program,wt.module,wt.seconds_in_wait,wt.machine,wt.CLIENT_IDENTIFIER
+,wt.BLOCKING_INSTANCE AS BLOCKING_INST,wt.BLOCKING_SESSION AS BLOCKING_SID
+,bk.USERNAME AS BLOCKING_USER,bk.SERIAL# AS BLOCKING_SERIAL#,bk.program blocking_program,bk.module blocking_module,bk.machine AS BLOCKING_MACHINE
+,bk.CLIENT_IDENTIFIER AS BLOCKING_CLIENT_ID
+from gv\$session wt 
+inner join gv\$session bk on bk.sid=wt.BLOCKING_SESSION and bk.INST_ID=wt.BLOCKING_INSTANCE
+where wt.BLOCKING_SESSION is not null and wt.seconds_in_wait > 300;
+spool OFF
+exit
+EOF
+
+cat $HEADERFILE $OUTFILE  > $MAILFILE
+
+
+
+#code to recheck error
+
+echo "Active sessiosn found  - rechecking "
+sqlplus -s APPS/${PSWD} <<EOF > /dev/null 
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+
+select count(*) from (select SID,INST_ID,BLOCKING_INSTANCE,BLOCKING_SESSION,BLOCKING_SESSION_STATUS,program,module  from gv\$session where BLOCKING_SESSION is not null and seconds_in_wait > 300);
+exit
+EOF
+VERIFY_SESSION_COUNT=`cat $OUTFILE | egrep "[0-9]{1,}"`
+
+if [ "$VERIFY_SESSION_COUNT" -gt 0 ]
+    then
+cat $MAILFILE | /usr/sbin/sendmail -t
+ echo "Blocking Sessions Found  , Email was sent to ${EMAIL_ADDRESS}"
+fi
+#end of verify blocking session
+else
+echo "No Blocking Sessions Found .." 
+fi
+#end of  if session_COUNT -gt 0
+
+if [ -f ${MAILFILE} ]
+  then
+   rm ${MAILFILE}
+fi
+
+if [ -f ${OUTFILE} ]
+  then
+   rm ${OUTFILE}
+fi
+
+
+}
+
+###################################################
+# Check Cost Manager                              #
+###################################################
+check_costmgr()
+{
+. $ENVFILE > /dev/null
+
+sqlplus -s apps/${PSWD}  <<EOF > /dev/null 
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+
+select count(*) from (
+SELECT 
+  x.PROCESS_TYPE  MGR_Name, 
+  decode((select '1' 
+    FROM apps.FND_CONCURRENT_REQUESTS cr,  
+    apps.FND_CONCURRENT_PROGRAMS_VL cp, 
+    apps.FND_APPLICATION A  
+   WHERE cp.concurrent_program_id = cr.concurrent_program_id 
+        AND  cp.CONCURRENT_PROGRAM_NAME = x.PROCESS_NAME 
+        AND cp.APPLICATION_ID =  a.application_id 
+        AND a.APPLICATION_SHORT_NAME =  x.PROCESS_APP_SHORT_NAME 
+        AND PHASE_CODE !=  'C'),'1','Active','Inactive') STATUS 
+FROM ( 
+  SELECT 
+  MIPC.PROCESS_CODE , 
+   MIPC.PROCESS_STATUS , 
+  MIPC.PROCESS_NAME , 
+   MIPC.PROCESS_APP_SHORT_NAME,  
+  A.MEANING PROCESS_TYPE  
+  FROM 
+  apps.MTL_INTERFACE_PROC_CONTROLS  MIPC, 
+  apps.MFG_LOOKUPS A 
+  WHERE 
+  A.LOOKUP_TYPE = 'PROCESS_TYPE'  AND 
+  A.LOOKUP_CODE = MIPC.PROCESS_CODE 
+) x 
+WHERE x.PROCESS_TYPE  = 'Cost Manager' ) t where t.status='Inactive';
+exit
+EOF
+
+PROBLEM_MGR_COUNT=`cat $OUTFILE | egrep "[0-9]{1,}"`
+
+if [ "$PROBLEM_MGR_COUNT" -gt 0 ]
+    then
+    echo "Cost Manger is DOWN . Sent Email to $EMAIL_ADDRESS "
+    echo "COST MANAGER IS DOWN on $TWO_TASK"| mail -s "$TWO_TASK - COST MANAGER IS DOWN" $EMAIL_ADDRESS
+else
+    echo "Cost Manager is UP and Running ..."
+fi 
+
+
+if [ -f ${OUTFILE} ]
+  then
+   rm ${OUTFILE}
+fi
+
+}
+
+####################################################################################################################
+# Check Long Running Requests                                                                                      #
+####################################################################################################################
+check_longrunning_requests()
+{
+. $ENVFILE > /dev/null
+
+THRESOLD_RUN_MINS=30
+sqlplus -s apps/${PSWD} <<EOF > /dev/null
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+select count(*) from ( 
+Select distinct sess.inst_id,sess.sid,req.request_id, user_name,round(mins,2) RUNTIME_MINS,program,actual_start_date from (
+SELECT a.request_id,frt.responsibility_name, ctl.user_concurrent_program_name program
+, to_char(actual_start_date,'DD-MM-YY HH24:MI') actual_start_date, actual_completion_date, fu.user_name
+,(nvl(actual_completion_date,sysdate)-actual_start_date)*1440 mins
+,(SELECT avg(nvl(a2.actual_completion_date-a2.actual_start_date,0))*1440 avg_run_time
+FROM APPLSYS.fnd_Concurrent_requests a2,
+APPLSYS.fnd_concurrent_programs c2
+WHERE c2.concurrent_program_id = c.concurrent_program_id
+AND a2.concurrent_program_id = c2.concurrent_program_id
+AND a2.program_application_id = c2.application_id
+AND a2.phase_code || '' = 'C') avg_mins
+,round((actual_completion_date - requested_start_date),2) * 24 duration_in_hours
+FROM APPLSYS.fnd_Concurrent_requests a,APPLSYS.fnd_concurrent_processes b
+,applsys.fnd_concurrent_queues q
+,APPLSYS.fnd_concurrent_programs c
+,APPLSYS.fnd_concurrent_programs_tl ctl
+,apps.fnd_user fu
+,apps.FND_RESPONSIBILITY_TL frt
+WHERE a.controlling_manager = b.concurrent_process_id
+AND a.concurrent_program_id = c.concurrent_program_id
+AND a.program_application_id = c.application_id
+AND a.phase_code = 'R'
+AND a.status_code = 'R'
+AND b.queue_application_id = q.application_id
+AND b.concurrent_queue_id = q.concurrent_queue_id
+AND ctl.concurrent_program_id = c.concurrent_program_id
+AND a.requested_by = fu.user_id
+AND a.responsibility_id = frt.responsibility_id
+ORDER BY a.actual_start_date DESC
+) req 
+left outer join  (select distinct * from (SELECT a.request_id, d.sid, d.serial# ,d.osuser,d.process , c.SPID ,d.inst_id
+FROM apps.fnd_concurrent_requests a,
+apps.fnd_concurrent_processes b,
+gv\$process c,
+gv\$session d
+WHERE a.controlling_manager = b.concurrent_process_id
+AND c.pid = b.oracle_process_id
+AND b.session_id=d.audsid
+--AND a.request_id =&req_id
+AND a.phase_code = 'R'
+ ) sess) sess on sess.request_id=req.request_id ) where RUNTIME_MINS > ${THRESOLD_RUN_MINS} ;
+
+EOF
+
+REQ_COUNT=`cat $OUTFILE | egrep "[0-9]{1,}"`
+
+if [ "$REQ_COUNT" -gt 0 ]
+    then
+#Header FILE
+echo "To: ${EMAIL_ADDRESS}" > $HEADERFILE
+echo "MIME-Version: 1.0" >> $HEADERFILE
+echo "Content-Type: text/html; charset=us-ascii" >> $HEADERFILE
+echo "Subject: $TWO_TASK - Long Running Requests" >> $HEADERFILE
+
+sqlplus -s apps/${PSWD} <<EOF > /dev/null
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+SET MARKUP HTML ON SPOOL ON PREFORMAT OFF ENTMAP ON -
+HEAD "<TITLE>Long Running Requests</TITLE> -
+<STYLE type='text/css'> -
+<!-- BODY {background: #FFFFFF} --> -
+</STYLE>" -
+BODY "TEXT='#01043A'" -
+TABLE "WIDTH='90%' BORDER='3' bgcolor='EFFB84'"
+
+spool $OUTFILE
+PROMPT
+select * from ( 
+Select distinct sess.inst_id,sess.sid,req.request_id, user_name,round(mins,2) MINS,program AS "CONCURRENT_PROGRAM",actual_start_date from (
+SELECT a.request_id,frt.responsibility_name, ctl.user_concurrent_program_name program
+,q.concurrent_queue_name, to_char(actual_start_date,'DD-MM-YY HH24:MI') actual_start_date, actual_completion_date, fu.user_name
+,(nvl(actual_completion_date,sysdate)-actual_start_date)*1440 mins
+,(SELECT avg(nvl(a2.actual_completion_date-a2.actual_start_date,0))*1440 avg_run_time
+FROM APPLSYS.fnd_Concurrent_requests a2,
+APPLSYS.fnd_concurrent_programs c2
+WHERE c2.concurrent_program_id = c.concurrent_program_id
+AND a2.concurrent_program_id = c2.concurrent_program_id
+AND a2.program_application_id = c2.application_id
+AND a2.phase_code || '' = 'C') avg_mins
+,round((actual_completion_date - requested_start_date),2) * 24 duration_in_hours
+FROM APPLSYS.fnd_Concurrent_requests a,APPLSYS.fnd_concurrent_processes b
+,applsys.fnd_concurrent_queues q
+,APPLSYS.fnd_concurrent_programs c
+,APPLSYS.fnd_concurrent_programs_tl ctl
+,apps.fnd_user fu
+,apps.FND_RESPONSIBILITY_TL frt
+WHERE a.controlling_manager = b.concurrent_process_id
+AND a.concurrent_program_id = c.concurrent_program_id
+AND a.program_application_id = c.application_id
+AND a.phase_code = 'R'
+AND a.status_code = 'R'
+AND b.queue_application_id = q.application_id
+AND b.concurrent_queue_id = q.concurrent_queue_id
+AND ctl.concurrent_program_id = c.concurrent_program_id
+AND a.requested_by = fu.user_id
+AND a.responsibility_id = frt.responsibility_id
+ORDER BY a.actual_start_date DESC
+) req 
+left outer join  (select distinct * from (SELECT a.request_id, d.sid, d.serial# ,d.osuser,d.process , c.SPID ,d.inst_id
+FROM apps.fnd_concurrent_requests a,
+apps.fnd_concurrent_processes b,
+gv\$process c,
+gv\$session d
+WHERE a.controlling_manager = b.concurrent_process_id
+AND c.pid = b.oracle_process_id
+AND b.session_id=d.audsid
+AND a.phase_code = 'R'
+ ) sess) sess on sess.request_id=req.request_id ) where MINS > ${THRESOLD_RUN_MINS} ;
+spool OFF
+exit
+EOF
+
+cat $HEADERFILE $OUTFILE  > $MAILFILE
+
+#code to recheck error
+
+echo "Long running requests found  - rechecking "
+sqlplus -s APPS/${PSWD} <<EOF > /dev/null
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+
+select count(*) from ( 
+Select distinct sess.inst_id,sess.sid,req.request_id, user_name,round(mins,2) RUNTIME_MINS,program,actual_start_date from (
+SELECT a.request_id,frt.responsibility_name, ctl.user_concurrent_program_name program
+,q.concurrent_queue_name, to_char(actual_start_date,'DD-MM-YY HH24:MI') actual_start_date, actual_completion_date, fu.user_name
+,(nvl(actual_completion_date,sysdate)-actual_start_date)*1440 mins
+,(SELECT avg(nvl(a2.actual_completion_date-a2.actual_start_date,0))*1440 avg_run_time
+FROM APPLSYS.fnd_Concurrent_requests a2,
+APPLSYS.fnd_concurrent_programs c2
+WHERE c2.concurrent_program_id = c.concurrent_program_id
+AND a2.concurrent_program_id = c2.concurrent_program_id
+AND a2.program_application_id = c2.application_id
+AND a2.phase_code || '' = 'C') avg_mins
+,round((actual_completion_date - requested_start_date),2) * 24 duration_in_hours
+FROM APPLSYS.fnd_Concurrent_requests a,APPLSYS.fnd_concurrent_processes b
+,applsys.fnd_concurrent_queues q
+,APPLSYS.fnd_concurrent_programs c
+,APPLSYS.fnd_concurrent_programs_tl ctl
+,apps.fnd_user fu
+,apps.FND_RESPONSIBILITY_TL frt
+WHERE a.controlling_manager = b.concurrent_process_id
+AND a.concurrent_program_id = c.concurrent_program_id
+AND a.program_application_id = c.application_id
+AND a.phase_code = 'R'
+AND a.status_code = 'R'
+AND b.queue_application_id = q.application_id
+AND b.concurrent_queue_id = q.concurrent_queue_id
+AND ctl.concurrent_program_id = c.concurrent_program_id
+AND a.requested_by = fu.user_id
+AND a.responsibility_id = frt.responsibility_id
+ORDER BY a.actual_start_date DESC
+) req 
+left outer join  (select distinct * from (SELECT a.request_id, d.sid, d.serial# ,d.osuser,d.process , c.SPID ,d.inst_id
+FROM apps.fnd_concurrent_requests a,
+apps.fnd_concurrent_processes b,
+gv\$process c,
+gv\$session d
+WHERE a.controlling_manager = b.concurrent_process_id
+AND c.pid = b.oracle_process_id
+AND b.session_id=d.audsid
+AND a.phase_code = 'R'
+ ) sess) sess on sess.request_id=req.request_id ) where RUNTIME_MINS > ${THRESOLD_RUN_MINS};
+ 
+exit
+EOF
+VERIFY_REQ_COUNT=`cat $OUTFILE | egrep "[0-9]{1,}"`
+
+if [ "$VERIFY_REQ_COUNT" -gt 0 ]
+    then
+cat $MAILFILE | /usr/sbin/sendmail -t
+ echo "Long Running requests Found  , Email was sent to ${EMAIL_ADDRESS}"
+fi
+#end of Long running reqs
+else
+echo "No Long Running requests found .. "
+fi
+#end of  if session_COUNT -gt 0
+
+if [ -f ${MAILFILE} ]
+  then
+#   rm ${MAILFILE}
+  echo ""
+fi
+
+if [ -f ${OUTFILE} ]
+  then
+   rm ${OUTFILE}
+fi
+
+
+}
+
+####################################################################################################################
+# Check Long Running Requests                                                                                      #
+####################################################################################################################
+
+
+check_workflow()
+{
+. $ENVFILE > /dev/null
+
+sqlplus -s apps/${PSWD}  <<EOF > /dev/null
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+select count(*) from (select * from FND_SVC_COMPONENTS where component_type='WF_MAILER' and component_id=10006 and component_status<>'RUNNING');
+
+exit
+EOF
+
+PROBLEM_WRK_COUNT=`cat $OUTFILE | egrep "[0-9]{1,}"`
+
+if [ "$PROBLEM_WRK_COUNT" -gt 0 ]
+    then
+	mkdir -p {{ tgt_dir }}/scripts/.runtime
+	i=0
+	while [ `ls -1 workflowcheck*|wc -l` -lt 3 ]
+	do
+		((i+=1))
+		sqlplus apps/${PSWD}   @$WORK_DIR/workflow_mailer_restart.sql > /dev/null
+		touch {{ tgt_dir }}/scripts/.runtime/workflowcheck$i
+		sleep 30
+	done
+	rm -rf {{ tgt_dir }}/scripts/.runtime/workflowcheck*	
+    echo "Workflow Mailer is DOWN . Sent Email to $EMAIL_ADDRESS "
+    echo "Workflow Mailer is DOWN on $TWO_TASK.Please Contact DBA Support"| mail -s "$TWO_TASK - Workflow Mailer WAS DOWN" $EMAIL_ADDRESS
+else
+    echo "Workflow Mailer is UP and Running ..."
+fi
+
+if [ -f ${OUTFILE} ]
+  then
+   rm ${OUTFILE}
+fi
+
+}
+
+check_invalid()
+{
+. $ENVFILE > /dev/null
+echo "Compile Invalid Objects"
+sqlplus -s apps/${PSWD} @$AD_TOP/sql/adcompsc.sql apps ${PSWD} % > /dev/null
+
+}
+
+check_oacore()
+{
+echo "Checking oacore Memory cpu usage and Stuck threads"
+for i in $(ps -ef | grep java | grep oacore_server | awk '{print $2}'); do
+    cpuusg=$(ps -p $i -o %cpu | tail -1 | cut -d. -f1)
+    echo $cpuusg
+    if [ $cpuusg -gt 270 ] #|| [ $cpuusg -eq 5 ]
+    then
+    echo "killing"
+	kill -9 $i
+    fi
+done
+#if [[ `tail -100 $FMW_HOME/user_projects/domains/EBS_domain/servers/oacore_server1/logs/oacore_server1.out |egrep -m 1 "STUCK|java.lang.NullPointerException"|wc -l` -gt 0 ]]
+if [[ `tail -100 $FMW_HOME/user_projects/domains/EBS_domain/servers/oacore_server1/logs/oacore_server1.out |egrep -m 1 "STUCK"|wc -l` -gt 0 ]]
+then
+ps -ef|grep oacore_server1|grep -v grep|awk '{print $2}'|xargs kill -9
+echo "Thread on  oacore_server1 has been stuck and Restarted" | mail -s "$TWO_TASK - Thread on  oacore_server1 has been stuck and Restarted" $EMAIL_ADDRESS
+else
+	echo "No Stuck Thread found"
+fi
+}
+
+####################################################################################################################
+# Function check_runawy_process
+####################################################################################################################
+check_runaway_process()
+{
+PID_RUN=/tmp/runaway_process.tmp
+THRESHOLD=1500
+if [ -f $PID_RUN ]
+then
+   rm $PID_RUN
+fi
+
+OUTPUT=/tmp/runaway_process.out
+cat /dev/null > ${OUTPUT}
+
+#####################################
+# Populate PID_RUN with all processes
+# Exccept database (ora_) and "syncd"
+#####################################
+
+/usr/bin/ps -ef | grep -v "PID"| grep -v "ora_" | grep -v "syncd" | grep -v "defunct" | grep -v "grep" | awk '{ print $2 }' > ${PID_RUN}
+
+#####################################
+# Main part of the script starts here
+#####################################
+
+for PID in `cat  ${PID_RUN}`
+do
+   
+    PTIME=`ps -p ${PID} | awk '{ print $3 }' | grep -v TIME | cut -f1 -d':'`
+    # Normalize PTIME: remove leading zeros to avoid octal/base errors (e.g. "09")
+    PTIME="$(echo "${PTIME}" | sed 's/^0*//')"
+    if [ -z "${PTIME}" ]; then
+       PTIME=0
+    fi
+
+   ###############################################
+   # Check the process time against the threshold
+   ###############################################
+
+   if [[ -n ${PTIME} ]] && [[ ${PTIME} -gt ${THRESHOLD} ]]
+   then
+      if [ -s ${OUTPUT} ] 
+      then 
+         ps -f -p ${PID} | grep -v UID >> ${OUTPUT}
+         echo "" >> ${OUTPUT}
+      else
+         ps -f -p ${PID} > ${OUTPUT}
+         echo "" >> ${OUTPUT}
+      fi
+
+      #######################################################
+      # If frmweb process then it is a real runaway
+      # and will be killed after it reaches 1500 CPU minutes
+      #######################################################
+      PCMD=`ps -p ${PID} | awk '{ print $4 }' | grep -v CMD`
+
+      if [ "$PCMD" = "frmweb" ] && [ ${PTIME} -gt ${THRESHOLD} ]
+      then
+         echo "" >> ${OUTPUT}
+	 echo "ATTENTION:  This (frmweb) process is a runaway...killing now!" >>  ${OUTPUT}
+         echo "" >> ${OUTPUT}
+         echo "" >> ${OUTPUT}
+         kill -9 $PID
+      fi
+   fi
+
+done
+}
+
+####################################################################################################################
+# Function check_err_workflow
+####################################################################################################################
+check_err_workflow()
+{
+OUTFILE=/tmp/err_workflow.out
+. $ENVFILE > /dev/null
+sqlplus -s apps/${PSWD} <<EOF 
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+
+SELECT
+   workflowitemeo.item_type,
+   workflowitemeo.item_key,
+   workflowitemeo.begin_date,
+   workflowitemeo.end_date,
+   workflowitemtypeeo.display_name,
+   wf_fwkmon.getitemstatus(workflowitemeo.item_type,
+                                         workflowitemeo.item_key,
+                                         workflowitemeo.end_date,
+                                         workflowitemeo.root_activity,
+                                         workflowitemeo.root_activity_version
+                                         ) AS workflow_status,
+   ias.error_name error_name,
+   ias.error_message error_message,
+   ias.error_stack error_stack
+FROM
+   wf_items workflowitemeo,
+   wf_item_types_vl workflowitemtypeeo,
+   wf_activities_vl activityeo,
+   wf_item_activity_statuses ias
+WHERE
+   ias.activity_status = 'ERROR'
+   AND ias.item_type = workflowitemeo.item_type
+   AND ias.item_key = workflowitemeo.item_key
+   AND workflowitemeo.item_type = workflowitemtypeeo.name
+   AND activityeo.item_type = workflowitemeo.item_type
+   AND activityeo.name = workflowitemeo.root_activity
+   AND activityeo.version = workflowitemeo.root_activity_version
+   AND workflowitemeo.begin_date > SYSDATE - 3
+   AND workflowitemeo.item_type <> 'WFERROR';
+exit;
+EOF
+ERR_COUNT=`cat $OUTFILE | wc -l`
+
+if [ "$ERR_COUNT" -gt 0 ]
+then
+#Header FILE
+echo "To: ${EMAIL_ADDRESS}" > $HEADERFILE
+echo "MIME-Version: 1.0" >> $HEADERFILE
+echo "Content-Type: text/html; charset=us-ascii" >> $HEADERFILE
+echo "Subject: $TWO_TASK - Errored Workflow" >> $HEADERFILE
+
+sqlplus -s apps/${PSWD} <<EOF > /dev/null
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+SET MARKUP HTML ON SPOOL ON PREFORMAT OFF ENTMAP ON -
+HEAD "<TITLE>Errored Workflow</TITLE> -
+<STYLE type='text/css'> -
+<!-- BODY {background: #FFFFFF} --> -
+</STYLE>" -
+BODY "TEXT='#01043A'" -
+TABLE "WIDTH='90%' BORDER='3' bgcolor='EFFB84'"
+
+spool $OUTFILE
+PROMPT
+SELECT
+   workflowitemeo.item_type,
+   workflowitemeo.item_key,
+   workflowitemeo.begin_date,
+   workflowitemeo.end_date,
+   workflowitemtypeeo.display_name,
+   wf_fwkmon.getitemstatus(workflowitemeo.item_type,
+                                         workflowitemeo.item_key,
+                                         workflowitemeo.end_date,
+                                         workflowitemeo.root_activity,
+                                         workflowitemeo.root_activity_version
+                                         ) AS workflow_status,
+   ias.error_name error_name,
+   ias.error_message error_message,
+   ias.error_stack error_stack
+FROM
+   wf_items workflowitemeo,
+   wf_item_types_vl workflowitemtypeeo,
+   wf_activities_vl activityeo,
+   wf_item_activity_statuses ias
+WHERE
+   ias.activity_status = 'ERROR'
+   AND ias.item_type = workflowitemeo.item_type
+   AND ias.item_key = workflowitemeo.item_key
+   AND workflowitemeo.item_type = workflowitemtypeeo.name
+   AND activityeo.item_type = workflowitemeo.item_type
+   AND activityeo.name = workflowitemeo.root_activity
+   AND activityeo.version = workflowitemeo.root_activity_version
+   AND workflowitemeo.begin_date > SYSDATE - 3
+   AND workflowitemeo.item_type <> 'WFERROR';
+
+spool OFF
+exit;
+EOF
+
+cat $HEADERFILE $OUTFILE  > $MAILFILE
+cat $MAILFILE | /usr/sbin/sendmail -t
+
+
+echo "Errored Workflow Found  , Email was sent to ${EMAIL_ADDRESS}"
+else
+echo "No Errored Workflow Found .."
+fi
+
+if [ -f ${MAILFILE} ]
+  then
+   echo ""
+   rm ${MAILFILE}
+fi
+
+if [ -f ${OUTFILE} ]
+  then
+   rm ${OUTFILE}
+fi
+
+
+}
+
+#Checking  wf_notifications if there are more than 10 pending messages
+check_pending_workflow()
+{
+OUTFILE=/tmp/check_pending_workflow.out
+. $ENVFILE > /dev/null
+sqlplus -s apps/${PSWD} <<EOF
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+
+select count(1) from wf_notifications where status='OPEN' and mail_status='MAIL' group by message_type;
+EOF
+ERR_COUNT=`cat $OUTFILE | wc -l`
+
+if [ "$ERR_COUNT" -gt 10 ]
+then
+#Header FILE
+echo "To: ${EMAIL_ADDRESS}" > $HEADERFILE
+echo "MIME-Version: 1.0" >> $HEADERFILE
+echo "Content-Type: text/html; charset=us-ascii" >> $HEADERFILE
+echo "Subject: $TWO_TASK - Pending Emails" >> $HEADERFILE
+
+sqlplus -s apps/${PSWD} <<EOF > /dev/null
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+SET MARKUP HTML ON SPOOL ON PREFORMAT OFF ENTMAP ON -
+HEAD "<TITLE>Errored Workflow</TITLE> -
+<STYLE type='text/css'> -
+<!-- BODY {background: #FFFFFF} --> -
+</STYLE>" -
+BODY "TEXT='#01043A'" -
+TABLE "WIDTH='90%' BORDER='3' bgcolor='EFFB84'"
+
+spool $OUTFILE
+PROMPT
+select message_name,recipient_role,status,mail_status from  wf_notifications where status='OPEN'   and mail_status='MAIL'
+spool OFF
+exit;
+EOF
+
+cat $HEADERFILE $OUTFILE  > $MAILFILE
+cat $MAILFILE | /usr/sbin/sendmail -t
+
+
+echo "Emails are not getting delivered  , Email was sent to ${EMAIL_ADDRESS}"
+else
+echo "Emails are getting delivered .."
+fi
+
+if [ -f ${MAILFILE} ]
+  then
+   echo ""
+   rm ${MAILFILE}
+fi
+
+if [ -f ${OUTFILE} ]
+  then
+   rm ${OUTFILE}
+fi
+
+
+}
+
+####################################################################################
+# Checking  wf_notifications if there are more than 100 pending inbound messages ###
+####################################################################################
+check_inbound_workflow()
+{
+. $ENVFILE > /dev/null
+OUTFILE=/tmp/check_inbound_workflow.out
+sqlplus -s apps/${PSWD} <<EOF
+set pages 1000
+set heading on
+set feedback off
+set term off
+set echo off
+set verify off
+
+spool $OUTFILE
+select count(1) from (SELECT distinct
+ USER_NAME,paf2.PERSON_ID APPROVER_PERSONID,PAF2.FULL_NAME
+APPROVER_FULLNAME,RECIPIENT_ROLE USER_NAME,wn.begin_date,
+WN.STATUS,wn.subject,WN.MESSAGE_NAME
+from per_all_assignments_f paaf,
+per_all_people_f paf1,
+per_jobs pjb,
+per_positions ppo,
+per_all_people_f paf2,
+FND_USER FU,
+WF_NOTIFICATIONS WN
+where paaf.person_id=paf1.person_id
+and paaf.supervisor_id=paf2.person_id
+and paaf.job_id=pjb.job_id(+)
+and paaf.position_id=ppo.position_id(+)
+and (sysdate between paaf.effective_start_date and
+paaf.effective_end_date)
+and (sysdate between paf1.effective_start_date and
+paf1.effective_end_date)
+and (sysdate between paf2.effective_start_date and
+paf2.effective_end_date)
+AND FU.employee_id=paf2.PERSON_ID
+AND WN.RECIPIENT_ROLE=FU.USER_NAME
+and WN.STATUS='OPEN'
+and wn.begin_date > (sysdate -3)
+order by wn.begin_date desc);
+spool off;
+EOF
+ERR_COUNT=`cat $OUTFILE | tail -1`
+
+if [[ `echo $ERR_COUNT` -gt 175 ]]
+then
+#Header FILE
+echo "To: ${EMAIL_ADDRESS}" > $HEADERFILE
+echo "MIME-Version: 1.0" >> $HEADERFILE
+echo "Content-Type: text/html; charset=us-ascii" >> $HEADERFILE
+echo "Subject: $TWO_TASK - Pending Inbound Emails not processed" >> $HEADERFILE
+
+sqlplus -s apps/${PSWD} <<EOF > /dev/null
+set pages 1000
+set heading off
+set feedback off
+set term off
+set echo off
+set verify off
+SET MARKUP HTML ON SPOOL ON PREFORMAT OFF ENTMAP ON -
+HEAD "<TITLE>Errored Workflow</TITLE> -
+<STYLE type='text/css'> -
+<!-- BODY {background: #FFFFFF} --> -
+</STYLE>" -
+BODY "TEXT='#01043A'" -
+TABLE "WIDTH='90%' BORDER='3' bgcolor='EFFB84'"
+
+spool $OUTFILE
+PROMPT
+SELECT distinct
+USER_NAME,paf2.PERSON_ID APPROVER_PERSONID,PAF2.FULL_NAME
+APPROVER_FULLNAME,RECIPIENT_ROLE USER_NAME,wn.begin_date,
+WN.STATUS,wn.subject,WN.MESSAGE_NAME
+from per_all_assignments_f paaf,
+per_all_people_f paf1,
+per_jobs pjb,
+per_positions ppo,
+per_all_people_f paf2,
+FND_USER FU,
+WF_NOTIFICATIONS WN
+where paaf.person_id=paf1.person_id
+and paaf.supervisor_id=paf2.person_id
+and paaf.job_id=pjb.job_id(+)
+and paaf.position_id=ppo.position_id(+)
+and (sysdate between paaf.effective_start_date and
+paaf.effective_end_date)
+and (sysdate between paf1.effective_start_date and
+paf1.effective_end_date)
+and (sysdate between paf2.effective_start_date and
+paf2.effective_end_date)
+AND FU.employee_id=paf2.PERSON_ID
+AND WN.RECIPIENT_ROLE=FU.USER_NAME
+and WN.STATUS='OPEN'
+and wn.begin_date > (sysdate -3)
+order by wn.begin_date desc;
+spool OFF;
+exit;
+EOF
+
+cat $HEADERFILE $OUTFILE  > $MAILFILE
+cat $MAILFILE | /usr/sbin/sendmail -t
+
+echo "Inbound Emails are not getting Processed  , Email was sent to ${EMAIL_ADDRESS}"
+else
+echo "Inbound Emails are getting Processed .."
+fi
+
+if [ -f ${MAILFILE} ]
+  then
+   echo ""
+   rm ${MAILFILE}
+fi
+
+if [ -f ${OUTFILE} ]
+  then
+   rm ${OUTFILE}
+   echo ""
+fi
+
+
+}
+
+
+####################################################################################################################
+# Function ebs_reboot                                                                                              #
+####################################################################################################################
+
+
+ebs_reboot()
+{
+CRITICAL_HR=24
+## test ##CRITICAL_HR=504
+
+# Detect OS
+OS=$(uname -s)
+
+case $OS in
+  "Linux")
+    # Linux: Use 'uptime -s' to get system start time
+    HOST_START_EPOCH=$(date -d "$(uptime -s)" +%s)
+    ;;
+  "Darwin")
+    # macOS: Use 'sysctl' to get system boot time
+    HOST_START_EPOCH=$(sysctl -n kern.boottime | awk '{print $4}' | tr -d ',')
+    ;;
+  "CYGWIN"*|"MINGW"*|"MSYS"*)
+    # Windows: Use 'systeminfo' to get system boot time
+    HOST_START_EPOCH=$(systeminfo | grep "System Boot Time" | sed 's/.*: //' | xargs -I {} date -d "{}" +%s)
+    ;;
+  "AIX")
+    # AIX: Use 'uptime' to get system start time
+    #HOST_START_EPOCH=$(uptime | awk '{print $3, $4, $5}' | xargs -I {} date -d "{}" +%s)
+    HOST_START_EPOCH=$(perl -e '($u)=`uptime`=~/up\s+(.*),\s+\d+\s+user/; print "Uptime: $u\n";')
+    ;;
+  "SunOS")
+    # SunOS: Use 'uptime' to get system start time
+    #HOST_START_EPOCH=$(uptime | awk '{print $3, $4, $5}' | xargs -I {} date -d "{}" +%s)
+    HOST_START_EPOCH=$(uptime | awk '{print $3, $4, $5}' | xargs -I {} perl -MPOSIX -e 'print time(), "\n"')
+    ;;
+  *)
+    echo "Unsupported OS: $OS"
+    exit 1
+    ;;
+esac
+
+CURRENT_EPOCH=$(date +%s)
+UPTIME_SECONDS=$(( CURRENT_EPOCH - HOST_START_EPOCH ))
+
+D=$((UPTIME_SECONDS / (24 * 60 * 60)))
+H=$(((UPTIME_SECONDS - (D * 24 * 60 * 60)) / (60 * 60)))
+M=$(((UPTIME_SECONDS - ((D * 24 * 60 * 60) + (H * 60 * 60))) / 60))
+S=$((UPTIME_SECONDS - ((D * 24 * 60 * 60) + (H * 60 * 60) + (M * 60))))
+
+if [ ${UPTIME_SECONDS} -lt $((CRITICAL_HR * 60 * 60)) ]; then
+  printf "2 EBS_reboot_${HOSTNAME%%.*} - CRIT : Rebooted within ${CRITICAL_HR} hours (uptime $D days $H hours $M minutes $S seconds)\n"
+  echo "EBS_reboot_${HOSTNAME%%.*} - CRIT : Rebooted within ${CRITICAL_HR} hours (uptime $D days $H hours $M minutes $S seconds)"| mailx -s "EBS_reboot_${HOSTNAME%%.*} - ${SID}" $EMAIL_ADDRESS 
+else
+  printf "0 EBS_reboot_${HOSTNAME%%.*} - OK : Rebooted outside ${CRITICAL_HR} hours (uptime $D days $H hours $M minutes $S seconds)\n"
+fi
+
+}
+
+
+
+
+####################################################################################################################
+# Function ecc_check                                                                                               #
+####################################################################################################################
+
+
+ecc_check()
+{
+if [ `ps -ef|grep weblogic.Name=eccManaged|grep -v grep|wc -l` -gt 0 ]
+then echo "ECC is up"; 
+else 
+echo "ECC is down. starting"; 
+
+. $ECC_BASE/Oracle/quickInstall/env/ecc.env
+$ECC_BASE/Oracle/quickInstall/bin/startAllEcc.sh <<EOF
+1
+weblogic123
+4
+EOF
+echo "ECC is DOWN on $TWO_TASK. Started"| mail -s "$TWO_TASK - ECC WAS DOWN" $EMAIL_ADDRESS
+fi
+}
+
+####################################################################################################################
+# Function check_health_15min                                                                                      #
+####################################################################################################################
+check_health_30min()
+{
+date
+check_longrunning_requests
+check_blocking_sessions
+#check_costmgr
+#check_workflow 
+check_invalid
+check_oacore
+check_runaway_process
+#check_err_workflow
+#check_pending_workflow
+#check_inbound_workflow
+#ecc_check
+ebs_reboot
+#End of Script
+
+#cleanup log files
+
+if [ -f ${LOGFILE} ]
+  then
+   rm ${LOGFILE}
+fi
+
+if [ -f ${HEADERFILE} ]
+  then
+   rm ${HEADERFILE}
+fi
+
+}
+##################################### Call Script Function ########################################################
+
+check_health_30min
+
+

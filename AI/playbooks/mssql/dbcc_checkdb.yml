@@ -1,0 +1,21 @@
+---
+# Chatbot integrity check: returns the most recent CHECKDB result without
+# re-running the heavy DBCC scan. The actual DBCC CHECKDB is the scheduled
+# task SQLDBA_CheckDB defined in dba_automation.yaml.
+- name: Read cached CHECKDB status
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  vars:
+    remote_dir: 'C:\Windows\Temp'
+
+  tasks:
+    - name: Copy GetCheckDBStatus.ps1
+      ansible.windows.win_copy:
+        src: "{{ scripts_dir }}/GetCheckDBStatus.ps1"
+        dest: "{{ remote_dir }}\\GetCheckDBStatus.ps1"
+
+    - name: Run DBCCCheckDB.ps1
+      ansible.windows.win_shell: "& '{{ remote_dir }}\\GetCheckDBStatus.ps1'"
+      register: result
+      changed_when: false
+      failed_when: false

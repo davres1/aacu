@@ -1,0 +1,434 @@
+drop synonym VMMC_SCHEDULED_CP_LIST;
+/
+ 
+create synonym VMMC_SCHEDULED_CP_LIST for bolinf.VMMC_SCHEDULED_CP_LIST;
+/
+
+-------------------------------------------------------------------------------------------------------------
+-- Program Name    : Insert Definitions of Scheduled Concurrent Program
+-- Last Updated    : 17th-September-2021
+-- Current Version : Testing, v1.1
+-------------------------------------------------------------------------------------------------------------
+--
+-- select * from VMMC_SCHEDULED_CP_LIST
+--
+--
+/*** -- Example
+--REQUEST, Age, 30, , , , , , , , , Y, Y
+--',argument1 => '||''''||'ALL'||''''||', argument2 => '||''''||''''||', argument3 => '||''''||''''||', argument4 => '||''''||'NOBACKUP'||''''||', argument5 => '||''''||''''||', argument6 => '||''''||'LASTRUN'||''''||', argument7 => '||''''||'GATHER'||''''||', argument8 => '||''''||''''||', argument9 => '||''''||'Y'||''''
+
+',argument1 => '||''''||'REQUEST'||''''||
+',argument2 => '||''''||'Age'||''''||
+',argument3 => '||''''||'30'||''''||
+',argument4 => '||''''||''''||
+
+
+ALL, Age, 7, , , , , , , , , Y, Y                    -- Done
+REQUEST, Age, 1, , , , , XBOL, VMMC_RUN_EMAIL_SCHEDULER_PK, , , Y, Y
+REQUEST, Age, 1, , , , , FND, FNDWFBG, , , Y, Y
+REQUEST, Age, 1, , , , , FND, FNDOAMCOL, , , Y, Y
+***/
+-------------------------------------------------------------------------------------------------------------
+------------------------------------------ Delete Definitions -----------------------------------------------
+-------------------------------------------------------------------------------------------------------------
+--
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'VMMC_RUN_EMAIL_SCHEDULER_PK';
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'VMMC_AUTO_MAINTENANCE_PK';
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'FNDGSCST';
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'VMMC_EMP_ACTIVE_V_PK'; 
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'VMMC_GENERATE_HIERARCHY'; 
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'XBOL_GATH_SCHEMA'; 
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'GETINFO'; 
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'GETSYSADMRPT'; 
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'FNDCPPUR';
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'FNDWFPR';
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'FNDSCPRG';
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'PEREMPDIRREFRESH';
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'FNDWFAASTATCC';
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'FNDWFMLRSTATCC';
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'FNDWFWITSTATCC';
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'FNDWFBES_CONTROL_QUEUE_CLEANUP';
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'FNDWFBG';
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'POCFH';
+delete from VMMC_SCHEDULED_CP_LIST where CONC_PROGRAM_SHORT_NAME = 'FNDSCMPI';
+commit;
+-------------------------------------------------------------------------------------------------------------
+-------------------------------------- End of Delete Definitions --------------------------------------------
+-------------------------------------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------------------------------------
+----------------------------------------- Insert Definitions ------------------------------------------------
+-------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------
+-- VMMC Run E-Mail Schedular
+-- Runs every 10 minutes
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('VMMC_RUN_EMAIL_SCHEDULER_PK','',5,'MINUTES',sysdate,'','<REPEAT_TYPE END><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- VMMC Automated Maintenance Process
+-- Runs every 10 minutes
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('VMMC_AUTO_MAINTENANCE_PK',',argument1     => '||''''||'''',5,'MINUTES',sysdate,'','<REPEAT_TYPE END><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Compile Security
+-- Runs daily at 04:00 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDSCMPI',',argument1 => '||''''||'Yes'||'''',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'04:00:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE END><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Gather Schema Statistics
+-- Runs daily at 03:45 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDGSCST',',argument1 => '||''''||'ICX'||''''||', argument2 => '||''''||''''||', argument3 => '||''''||''''||', argument4 => '||''''||'NOBACKUP'||''''||', argument5 => '||''''||''''||', argument6 => '||''''||'LASTRUN'||''''||', argument7 => '||''''||'GATHER'||''''||', argument8 => '||''''||''''||', argument9 => '||''''||'Y'||'''',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'03:45:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Gather Schema Statistics
+-- Runs daily at 03:30 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDGSCST',',argument1 => '||''''||'PO'||''''||', argument2 => '||''''||''''||', argument3 => '||''''||''''||', argument4 => '||''''||'NOBACKUP'||''''||', argument5 => '||''''||''''||', argument6 => '||''''||'LASTRUN'||''''||', argument7 => '||''''||'GATHER'||''''||', argument8 => '||''''||''''||', argument9 => '||''''||'Y'||'''',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'03:30:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Gather Schema Statistics
+-- Runs daily at 03:00 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDGSCST',',argument1 => '||''''||'INV'||''''||', argument2 => '||''''||''''||', argument3 => '||''''||''''||', argument4 => '||''''||'NOBACKUP'||''''||', argument5 => '||''''||''''||', argument6 => '||''''||'LASTRUN'||''''||', argument7 => '||''''||'GATHER'||''''||', argument8 => '||''''||''''||', argument9 => '||''''||'Y'||'''',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'03:00:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Gather Schema Statistics
+-- Automatically selected as next saturday
+-- Runs on Saturday at 20:00 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+--values ('FNDGSCST',',argument1 => '||''''||'ALL'||''''||', argument2 => '||''''||''''||', argument3 => '||''''||''''||', argument4 => '||''''||'NOBACKUP'||''''||', argument5 => '||''''||''''||', argument6 => '||''''||'LASTRUN'||''''||', argument7 => '||''''||'GATHER'||''''||', argument8 => '||''''||''''||', argument9 => '||''''||'Y'||'''',7,'DAYS',to_date(to_char(trunc(sysdate)+3,'DD-MON-RRRR')||' '||'20:00:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START>','pgmamc@vmmc.org',sysdate);
+values ('FNDGSCST',',argument1 => '||''''||'ALL'||''''||', argument2 => '||''''||''''||', argument3 => '||''''||''''||', argument4 => '||''''||'NOBACKUP'||''''||', argument5 => '||''''||''''||', argument6 => '||''''||'LASTRUN'||''''||', argument7 => '||''''||'GATHER'||''''||', argument8 => '||''''||''''||', argument9 => '||''''||'Y'||'''',7,'DAYS',to_date(to_char(trunc(NEXT_DAY(sysdate,'SATURDAY')),'DD-MON-RRRR')||' '||'20:00:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Gather Statistics for Non-Apps Schema
+-- Automatically selected as next saturday
+-- Runs on Saturday at 19:30 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('XBOL_GATH_SCHEMA','',7,'DAYS',to_date(to_char(trunc(NEXT_DAY(sysdate,'SATURDAY')),'DD-MON-RRRR')||' '||'19:30:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Get Environment Information
+-- Runs daily at 20:30 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('GETINFO','',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'20:30:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Get SysAdmin Report 
+-- Runs daily at 20:00 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('GETSYSADMRPT','',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'20:00:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Purge Concurrent Request and/or Manager Data
+-- Runs daily at 06:00 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDCPPUR',',argument1 => '||''''||'REQUEST'||''''||',argument2 => '||''''||'Age'||''''||',argument3 => '||''''||'7'||''''||',argument4 => '||''''||''''||',argument5 => '||''''||''''||',argument6 => '||''''||''''||',argument7 => '||''''||''''||',argument8 => '||''''||''''||',argument9 => '||''''||''''||',argument10 => '||''''||''''||',argument11 => '||''''||''''||',argument12 => '||''''||'Y'||''''||',argument13 => '||''''||'Y'||'''',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'06:00:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Purge Concurrent Request and/or Manager Data
+-- Runs daily at 05:30 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDCPPUR',',argument1 => '||''''||'REQUEST'||''''||',argument2 => '||''''||'Age'||''''||',argument3 => '||''''||'1'||''''||',argument4 => '||''''||''''||',argument5 => '||''''||''''||',argument6 => '||''''||''''||',argument7 => '||''''||''''||',argument8 => '||''''||'XBOL'||''''||',argument9 => '||''''||'VMMC_RUN_EMAIL_SCHEDULER_PK'||''''||',argument10 => '||''''||''''||',argument11 => '||''''||''''||',argument12 => '||''''||'Y'||''''||',argument13 => '||''''||'Y'||'''',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'05:30:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Purge Concurrent Request and/or Manager Data
+-- Runs daily at 05:30 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDCPPUR',',argument1 => '||''''||'REQUEST'||''''||',argument2 => '||''''||'Age'||''''||',argument3 => '||''''||'1'||''''||',argument4 => '||''''||''''||',argument5 => '||''''||''''||',argument6 => '||''''||''''||',argument7 => '||''''||''''||',argument8 => '||''''||'FND'||''''||',argument9 => '||''''||'FNDWFBG'||''''||',argument10 => '||''''||''''||',argument11 => '||''''||''''||',argument12 => '||''''||'Y'||''''||',argument13 => '||''''||'Y'||'''',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'05:30:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Purge Concurrent Request and/or Manager Data
+-- Runs daily at 05:30 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDCPPUR',',argument1 => '||''''||'REQUEST'||''''||',argument2 => '||''''||'Age'||''''||',argument3 => '||''''||'1'||''''||',argument4 => '||''''||''''||',argument5 => '||''''||''''||',argument6 => '||''''||''''||',argument7 => '||''''||''''||',argument8 => '||''''||'FND'||''''||',argument9 => '||''''||'FNDOAMCOL'||''''||',argument10 => '||''''||''''||',argument11 => '||''''||''''||',argument12 => '||''''||'Y'||''''||',argument13 => '||''''||'Y'||'''',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'05:30:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Purge Obsolete Workflow Runtime Data
+-- Runs daily at 03:00 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDWFPR',',argument1 => '||''''||''''||',argument2 => '||''''||''''||',argument3 => '||''''||'8'||''''||',argument4 => '||''''||'TEMP'||''''||',argument5 => '||''''||'N'||''''||',argument6 => '||''''||'500'||''''||',argument7 => '||''''||'N'||'''',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'03:00:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Purge Obsolete Workflow Runtime Data
+-- Runs daily at 02:00 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDWFPR',',argument1 => '||''''||''''||',argument2 => '||''''||''''||',argument3 => '||''''||'8'||''''||',argument4 => '||''''||'PERM'||''''||',argument5 => '||''''||'N'||''''||',argument6 => '||''''||'500'||''''||',argument7 => '||''''||'N'||'''',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'02:00:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Purge Signon Audit data
+-- Runs daily at 21:00 Hrs, Increment_Date
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDSCPRG',',argument1 => '||''''||to_char(sysdate+1,'YYYY/MM/DD')||' 00:00:00'||'''',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'21:00:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067><INCREMENT_DATE Y>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Refresh Employee Directory
+-- Runs daily at 05:00 Hrs, Increment_Date
+-----------------------------------------------------------
+-- COMPLETE, 2021/09/17 00:00:00, PER, N, N
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('PEREMPDIRREFRESH',',argument1 => '||''''||'COMPLETE'||''''||',argument2 => '||''''||to_char(sysdate+1,'YYYY/MM/DD')||' 00:00:00'||''''||',argument3 => '||''''||'PER'||''''||',argument4 => '||''''||'N'||''''||',argument5 => '||''''||'N'||'''',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'05:00:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067><INCREMENT_DATE Y>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Workflow Agent Activity Statistics Concurrent Program
+-- Runs daily at 20:15 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDWFAASTATCC','',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'20:15:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Workflow Mailer Statistics Concurrent Program
+-- Runs daily at 20:25 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDWFMLRSTATCC','',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'20:25:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Workflow Work Items Statistics Concurrent Program
+-- Runs daily at 20:20 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDWFWITSTATCC','',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'20:20:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Workflow Control Queue Cleanup
+-- Runs daily at 11:00 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDWFBES_CONTROL_QUEUE_CLEANUP','',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'11:00:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- Workflow Background Process
+-- Runs every hour
+-- NOTE : Change the Hour 
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('FNDWFBG',',argument1 => '||''''||''''||',argument2 => '||''''||''''||',argument3 => '||''''||''''||',argument4 => '||''''||'Y'||''''||',argument5 => '||''''||'N'||''''||',argument6 => '||''''||'N'||'''',1,'HOURS',to_date(to_char(trunc(sysdate),'DD-MON-RRRR')||' '||'11:00:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+--------------------------------------------------------------------------------
+-- HR Programs
+--------------------------------------------------------------------------------
+-----------------------------------------------------------
+-- VMMC Employee Active View Dataload
+-- Runs daily at 00:15 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('VMMC_EMP_ACTIVE_V_PK','',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'00:15:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+-----------------------------------------------------------
+-- VMMC Employee Hierarchy Data Load
+-- Runs daily at 00:05 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('VMMC_GENERATE_HIERARCHY','',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'00:05:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+--------------------------------------------------------------------------------
+-- Purchasing--use Purchasing Super User Resp
+--------------------------------------------------------------------------------
+-----------------------------------------------------------
+-- Fill Employee Hierarchy
+-- Runs daily at 21:00 Hrs
+-----------------------------------------------------------
+insert into VMMC_SCHEDULED_CP_LIST (conc_program_short_name,parameter_string,repeat_interval,repeat_unit,start_time,end_date,options,send_email_to,creation_date)
+values ('POCFH','',1,'DAYS',to_date(to_char(trunc(sysdate)+1,'DD-MON-RRRR')||' '||'21:00:00','DD-MON-RRRR HH24:MI:SS'),'','<REPEAT_TYPE START><USER_ID 27067>','pgmamc@vmmc.org',sysdate);
+commit;
+
+------------- End of Insert Definitions ----------------
+
+--------------------------------------------------------
+---------------- Update Definitions --------------------
+--------------------------------------------------------
+update VMMC_SCHEDULED_CP_LIST x
+   set (x.CONC_PROGRAM_ID,x.CONC_PROGRAM_NAME)
+     = (select fcp.concurrent_program_id,fcpt.user_concurrent_program_name 
+          from fnd_concurrent_programs fcp,fnd_concurrent_programs_tl fcpt
+         where fcpt.concurrent_program_id = fcp.concurrent_program_id
+           and fcp.concurrent_program_name = x.CONC_PROGRAM_SHORT_NAME);
+commit;
+/
+
+
+declare
+   ----------------------------------------------------
+   -- Local Variables
+   ----------------------------------------------------
+   l_trace_info          varchar2(4000);
+   l_email_subject       varchar2(1000);
+   l_email_message       varchar2(4000);
+   l_cnt                 number;
+   l_errm                varchar2(4000);
+   l_process_status      varchar2(10);
+   --l_prog_short_name,l_parameters,l_repeat_interval,l_repeat_unit,l_start_time,l_end_date,l_options,
+   l_email_addr          varchar2(4000);       
+        
+   cursor c_prc_sched_cp is 
+   
+      select rowid row_id,
+             conc_program_name,
+             conc_program_short_name,
+             conc_program_id,
+             parameter_string,
+             repeat_interval,
+             repeat_unit,
+             start_time,
+             end_date,
+             options,
+             send_email_to
+        from VMMC_SCHEDULED_CP_LIST;
+
+begin
+   if upper(vmmc_commons_pk.get_curr_instance) = 'EPROD'
+   then
+      l_email_subject := 'R12.2.9 Alert Message : Attempt to Run Auto Schedule Concurrent Programs in '||vmmc_commons_pk.get_curr_instance;
+      l_email_message := 'NOTE : The Auto Schedule Concurrent Program MUST NOT Run in '||vmmc_commons_pk.get_curr_instance||', exiting program...'||chr(10)||chr(10)||
+                         'Please contact ERP System Admin, if you need to do so...';
+      vmmc_commons_pk.send_email('',                                       -- p_program_name
+                                 'vmerp@virginiamason.org',                -- p_from_address
+                                 'Anjan.Chakraborty@Virginiamason.org,Ashwani.Miglani@Virginiamason.org,Sumit.Davre@CommonSpirit.org',                        -- p_to_address
+                                 NULL,                                     -- p_cc_address
+                                 l_email_subject, -- p_subject
+                                 l_email_message -- p_message
+                                );
+      return;
+   else
+      l_email_subject := 'R12.2.9 Alert Message : Now Running Auto Schedule Concurrent Programs in '||vmmc_commons_pk.get_curr_instance;
+      l_email_message := 'NOTE : The Auto Schedule Concurrent Program will now start in '||vmmc_commons_pk.get_curr_instance||chr(10)||chr(10)||
+                         'Please contact ERP System Admin, if you have any concern regarding this...';
+      vmmc_commons_pk.send_email('',                                       -- p_program_name
+                                 'vmerp@virginiamason.org',                -- p_from_address
+                                 'Anjan.Chakraborty@Virginiamason.org,Ashwani.Miglani@Virginiamason.org,Sumit.Davre@CommonSpirit.org',                        -- p_to_address
+                                 NULL,                                     -- p_cc_address
+                                 l_email_subject, -- p_subject
+                                 l_email_message -- p_message
+                                );
+   end if;
+   update VMMC_SCHEDULED_CP_LIST
+      set error_message      = NULL,
+          lastrun_trace_info = NULL,
+          process_status     = NULL;
+   commit;       
+   -----------------------------------------------------------------------------
+   -- Cancel Scheduled Concurrent Program
+   -----------------------------------------------------------------------------
+   for c_prc_sched_cp_rec in c_prc_sched_cp
+   loop
+      begin
+         l_errm := NULL;
+         select count(*)
+           into l_cnt
+           from fnd_concurrent_requests x
+          WHERE x.status_code IN ('Q','I') 
+            and x.requested_start_date > sysdate  
+            and x.hold_flag = 'N' 
+            and x.concurrent_program_id = c_prc_sched_cp_rec.conc_program_id;
+         if l_cnt > 0
+         then  
+            UPDATE fnd_concurrent_requests x
+               SET x.phase_code = 'C', 
+                   x.status_code = 'X' 
+             WHERE x.status_code IN ('Q','I') 
+               and x.requested_start_date > sysdate  
+               and x.hold_flag = 'N' 
+               and x.concurrent_program_id = c_prc_sched_cp_rec.conc_program_id;
+            commit;
+            l_trace_info     := 'Cancelled Scheduled Concurrent Program';
+            l_errm           := 'Success Cancelled...';
+            l_process_status := 'S1';
+         else
+            l_trace_info     := 'Scheduled Concurrent Program not Found';
+            l_errm           := 'Scheduled Concurrent Program not Found';
+            l_process_status := 'S0';
+         end if;    
+      exception
+      when others
+      then
+         l_trace_info     := 'ERROR Cancelling Scheduled Concurrent Program : '||SQLERRM;
+         l_errm           := SQLERRM; 
+         l_process_status := 'E1';
+      end;
+      update VMMC_SCHEDULED_CP_LIST
+         set error_message      = l_errm,
+             lastrun_trace_info = l_trace_info,
+             process_status     = l_process_status,
+             last_run_date      = sysdate
+       where rowid = c_prc_sched_cp_rec.row_id;
+      commit;      
+   end loop;
+   -----------------------------------------------------------------------------
+   -- Scheduled Concurrent Program
+   -----------------------------------------------------------------------------
+   for c_prc_sched_cp_rec in c_prc_sched_cp
+   loop
+      begin
+         --l_prog_short_name,l_parameters,l_repeat_interval,l_repeat_unit,l_start_time,l_end_date,l_options,l_email_addr 
+         --vmmc_commons_pk.VMMC_SCHED_CONC_PROGRAM(l_prog_short_name,l_parameters,l_repeat_interval,l_repeat_unit,l_start_time,l_end_date,l_options,l_email_addr);
+         l_email_addr := c_prc_sched_cp_rec.send_email_to;
+         vmmc_commons_pk.VMMC_SCHED_CONC_PROGRAM(c_prc_sched_cp_rec.conc_program_short_name,c_prc_sched_cp_rec.parameter_string,c_prc_sched_cp_rec.repeat_interval,c_prc_sched_cp_rec.repeat_unit,c_prc_sched_cp_rec.start_time,c_prc_sched_cp_rec.end_date,c_prc_sched_cp_rec.options,l_email_addr);
+         l_trace_info     := 'Scheduled Concurrent Program Successfully...';
+         l_errm           := 'Return Message : '||l_email_addr;
+         l_process_status := 'S2';
+      exception
+      when others
+      then
+         l_trace_info     := 'ERROR Scheduling Concurrent Program : '||SQLERRM;
+         l_errm           := SQLERRM; 
+         l_process_status := 'E2';
+      end;
+      update VMMC_SCHEDULED_CP_LIST
+         set error_message      = error_message||chr(10)||l_errm,
+             lastrun_trace_info = lastrun_trace_info||chr(10)||l_trace_info,
+             process_status     = decode(process_status,NULL,l_process_status,process_status||', '||l_process_status),
+             last_run_date      = sysdate
+       where rowid = c_prc_sched_cp_rec.row_id;
+      commit;      
+   end loop;
+end;
+/
+
+
+------------- End of Update Definitions ----------------

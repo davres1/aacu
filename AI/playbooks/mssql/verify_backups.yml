@@ -1,0 +1,18 @@
+---
+- name: Backup verification + age report
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  vars:
+    remote_dir: 'C:\Windows\Temp'
+
+  tasks:
+    - name: Copy VerifyBackups.ps1
+      ansible.windows.win_copy:
+        src: "{{ scripts_dir }}/VerifyBackups.ps1"
+        dest: "{{ remote_dir }}\\VerifyBackups.ps1"
+
+    - name: Run VerifyBackups.ps1
+      ansible.windows.win_shell: "& '{{ remote_dir }}\\VerifyBackups.ps1'"
+      register: result
+      changed_when: false
+      failed_when: false

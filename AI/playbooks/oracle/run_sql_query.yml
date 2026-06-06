@@ -1,0 +1,41 @@
+---
+# Read-only Oracle SELECT — sanitized client-side, executed via sqlplus on
+# the target as the {{ oracle_user }} OS user using credentials from
+# databases.ini.
+- name: Run a read-only SQL query on an Oracle TNS alias
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ oracle_user | default('oracle') }}"
+
+  vars:
+    tns_alias:      "{{ tns_alias }}"
+    sql_query:      "{{ sql_query }}"
+    max_rows:       "{{ max_rows  | default(200) }}"
+    delimiter:      "{{ delimiter | default('|') }}"
+    databases_ini:  "{{ databases_ini | default('/etc/oracle/databases.ini') }}"
+
+  tasks:
+    - name: Read system password from databases.ini
+      ansible.builtin.set_fact:
+        ora_pw: >-
+          {{ lookup('ini', 'syspass section=' + tns_alias + ' file=' + databases_ini) }}
+
+    - name: Run read-only SQL query
+      ansible.builtin.shell: |
+        set -e
+        cat <<'SQL' | sqlplus -S -L "system/{{ ora_pw }}@{{ tns_alias }}"
+        SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF ECHO OFF HEADING ON
+        SET COLSEP "{{ delimiter }}"
+        SET LINESIZE 32767 TRIMSPOOL ON UNDERLINE OFF
+        WHENEVER SQLERROR EXIT 1
+        {{ sql_query }};
+        EXIT;
+        SQL
+      args:
+        executable: /bin/bash
+      environment:
+        ORACLE_HOME: "{{ ansible_env.ORACLE_HOME | default(omit) }}"
+      register: query_result
+      changed_when: false
+      no_log: true

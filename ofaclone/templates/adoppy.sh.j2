@@ -1,0 +1,51 @@
+#!/bin/bash
+source ~/.bash_profile
+
+if [ -f ~/.profile ]; then
+. ~/.profile
+elif [ -f ~/.bash_profile ]; then
+#. ~/.bash_profile
+echo ""
+fi
+
+
+. {{ app_tgt_mount }}/EBSapps.env RUN
+
+PATCHLIST={{ patch_number }}
+cd {{ tgt_dir }}
+for PATCH in `echo $PATCHLIST|sed -n 1'p' | tr ',' '\n'`
+do
+pout=$(sqlplus -s apps/$PSWD << EOF
+spool /tmp/$PATCH.lst
+set echo off;
+set feedback off;
+set heading off;
+select ad_patch.is_patch_applied('R12',-1,$PATCH) from dual;
+spool off;
+exit;
+EOF
+)
+    #mv $PATCH Junk_$PATCH
+    if [ -d $PATCH ]
+    then
+    echo "Patch already unzipped"
+    else
+    echo "Unzipping $PATCH ....."
+    rm -rf $PATCH
+    unzip p$PATCH*.zip -d {{ tgt_dir }}
+     if [ `echo $? == 9 ` ]
+     then
+       jar -xvf $STAGE/p$PATCH*.zip
+     fi
+    fi
+done
+
+
+. {{ app_tgt_mount }}/EBSapps.env RUN
+cd {{ tgt_dir }}
+
+python {{ tgt_dir }}/adop.py {{ tgt_apps_pwd }} {{ tgt_system_pwd }} {{ tgt_wblg_pswd }} {{ tgt_db }} {{ phase }} {{ patch_number }} {{ other_option }} {{ tgt_dir }}
+#{ echo {{ tgt_apps_pwd }}; echo {{ tgt_system_pwd }}; echo {{ tgt_wblg_pswd }}; } | adop phase=apply patches={{ patch_number }} patchtop={{ tgt_dir }} workers=16 hotpatch=yes  restart=yes
+#else
+#{ echo {{ tgt_apps_pwd }}; echo {{ tgt_system_pwd }}; echo {{ tgt_wblg_pswd }}; } | adop phase=prepare,apply,finalize,cutover,cleanup patches={{ patch_number }} patchtop={{ tgt_dir }} workers=16  restart=yes
+

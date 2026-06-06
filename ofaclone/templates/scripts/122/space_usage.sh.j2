@@ -1,0 +1,38 @@
+#!/bin/bash
+#$Header: vol_space_linux.sh, Linux: send email notifications for high OS volume space usage, version 2017.07.31$
+
+l_nfs_base=/tmp
+l_ts=$(date +%F" "%T)
+l_host=$(hostname | cut -d'.' -f1)
+
+l_alert=90
+l_mailto={{ email_address }}
+l_subject="${l_host}: High Disk Space Usage Alert"
+
+cat /dev/null > ${l_nfs_base}/vol_space_${l_host}.log
+
+for t_vol in `df -lP -B G 2> /dev/null | egrep -v "^Filesystem|/boot|/dev/shm" | awk '{print $NF}' | sort -df`
+do
+  l_vol_space=$(df -lP -B G $t_vol 2> /dev/null | egrep -v "^Filesystem")
+
+  if [[ `echo ${l_vol_space} | wc -l` -ne 1 ]]; then
+    echo "$(date +%F" "%T) failed to check space for volume ${t_vol}" | mail -s "${l_subject}" "${l_mailto}"
+  else
+    t_fs=`echo ${l_vol_space} | awk '{print $1}'`
+    t_size=`echo ${l_vol_space} | awk '{print $2}'`
+    t_used=`echo ${l_vol_space} | awk '{print $3}'`
+    t_free=`echo ${l_vol_space} | awk '{print $4}'`
+    t_pcnt=`echo ${l_vol_space} | awk '{print $5}' | tr -d '%'`
+    t_mount=`echo ${l_vol_space} | awk '{print $6}'`
+
+    if [[ ${t_pcnt} -gt ${l_alert} ]]; then
+      echo "$(date +%F" "%T) current usage for ${t_vol} is ${t_pcnt}%" | mail -s "${l_subject}" "${l_mailto}"
+    fi
+
+    # log space usage
+    echo "${l_ts}|${l_host}|${t_fs}|${t_size}|${t_used}|${t_free}|${t_pcnt}|${t_mount}" > ${l_nfs_base}/vol_space_${l_host}.log
+  fi
+done
+
+exit 0
+

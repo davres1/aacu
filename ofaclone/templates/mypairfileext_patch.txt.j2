@@ -1,0 +1,83 @@
+
+[Base]
+
+s_base={{ app_tgt_mount }}
+s_current_base={{ app_tgt_mount }}/{{ patch_base }}
+s_other_base={{ app_tgt_mount }}/{{ current_base }}
+s_ne_base={{ app_tgt_mount }}/fs_ne
+
+
+[General]
+
+s_applptmp=/interface/infvmmci/{{ tgt_env|upper }}/outgoing
+s_appsgroup=dba
+s_appsuser=applmgr
+s_dbuser=oracle
+s_dbgroup=dba
+s_dbdomain=internal.vmmc.org
+s_at={{ app_tgt_mount }}/{{ patch_base }}/EBSapps/appl
+s_com={{ app_tgt_mount }}/{{ patch_base }}/EBSapps/comn
+s_tools_oh={{ app_tgt_mount }}/{{ patch_base }}/EBSapps/10.1.2
+s_weboh_oh={{ app_tgt_mount }}/{{ patch_base }}/FMW_Home/webtier
+s_fmw_home={{ app_tgt_mount }}/{{ patch_base }}/FMW_Home
+s_dbGlnam={{ tgt_env }}
+s_dbSid={{ tgt_env }}
+s_dbhost={{ tgt_db_node }}
+s_clonestage={{ app_tgt_mount }}/{{ patch_base }}/EBSapps/comn/clone
+s_dbport=1570
+s_options_symlinks=Options -FollowSymLinks
+s_proxyhost=
+s_proxybypassdomain=internal.vmmc.org
+s_proxyport=80
+s_nonproxyhosts=
+s_javamailer_imapdomainname=gmail.com
+s_javamailer_imaphost=imap
+s_javamailer_reply_to={{ tgt_env }}_erpwftest@commonspirit.org
+s_javamailer_outbound_user=erpwfTest
+s_smtphost=mailhub
+s_smtpdomainname=vmmc.org
+s_file_edition_type=patch
+s_port_pool=50
+s_admhost={{ tgt_app_node }}
+s_atName=AT_etestapp
+s_shared_file_system=true
+
+
+[Web Entry Point Configuration]
+
+s_webentryurlprotocol=http
+s_webentryhost=etestextapp
+s_webentrydomain=virginiamason.org
+s_active_webport=8049
+s_endUserMonitoringURL=http://etestextapp.internal.vmmc.org:443/oracle_smp_chronos/oracle_smp_chronos_sdk.gif
+s_external_url=http://etestextapp.internal.vmmc.org:443
+s_login_page=http://etestextapp.internal.vmmc.org:443/OA_HTML/AppsLogin
+
+
+
+
+[Instance Specific]
+
+
+
+[Services Enabled on the Primary Application Tier Node]
+
+#s_web_applications_status=enabled
+#s_web_entry_status=enabled
+#s_apcstatus=enabled
+#s_root_status=enabled
+#s_batch_status=enabled
+#s_other_service_group_status=enabled
+#s_adminserverstatus=enabled
+#s_web_admin_status=enabled
+
+[Services To be Enabled on the Secondary Application Tier Node]
+
+s_web_applications_status=enabled
+s_web_entry_status=enabled
+s_apcstatus=enabled
+s_root_status=enabled
+s_batch_status=disabled
+s_other_service_group_status=enabled
+s_adminserverstatus=disabled
+s_web_admin_status=disabled

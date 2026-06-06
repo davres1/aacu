@@ -1,0 +1,19 @@
+---
+- name: SQL Agent job report
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  vars:
+    remote_dir: 'C:\Windows\Temp'
+    lookback_hours: "{{ lookback_hours | default(24) }}"
+
+  tasks:
+    - name: Copy MonitorAgentJobs.ps1
+      ansible.windows.win_copy:
+        src: "{{ scripts_dir }}/MonitorAgentJobs.ps1"
+        dest: "{{ remote_dir }}\\MonitorAgentJobs.ps1"
+
+    - name: Run MonitorAgentJobs.ps1
+      ansible.windows.win_shell: "& '{{ remote_dir }}\\MonitorAgentJobs.ps1' -LookbackHours {{ lookback_hours }}"
+      register: result
+      changed_when: false
+      failed_when: false

@@ -1,0 +1,249 @@
+---
+# =============================================================================
+# ebsdbclone.yml - Oracle EBS database tier refresh
+#
+# Supported version matrix:
+#   db_version    : 19 (default - Oracle Database 19c, multitenant/PDB)
+#                   11 (legacy 11gR2 / non-CDB) - still supported for older clones
+#                   12 (legacy 12c)             - still supported for older clones
+#   ebs_version   : 121 / 122 (does NOT change DB clone steps; only matters
+#                              for whether autoconfig runs against the DB tier
+#                              afterwards - see "when: db_version != '19'" gate)
+#   tgt_racon     : 'Y' for RAC target (multi-node), 'N' for single-instance
+#
+# Node distribution:
+#   The target host group {{domain}}-{{tgt_env}}-OFA-DB may contain 2+ nodes
+#   when tgt_racon=='Y'. Tasks fall into two buckets:
+#     - "all nodes"   : push scripts, create dirs, prune oraInventory.xml
+#                        (each node needs its own local copy + cleanup)
+#     - "primary only": stopDB / RMAN duplicate / startDB / dbpost / autoconfig
+#                        (executed once via run_once + delegated to first host
+#                         in the group; srvctl inside the scripts then drives
+#                         the cluster cluster-wide for RAC clones)
+#
+# Steps (all "primary-only" steps run via run_once + delegate_to first host):
+#   1. Stop target database              (primary only - srvctl handles RAC)
+#   2. adcfgclone.pl dbTechStack         (19c only) - regenerates DB tier
+#   3. Start CDB listener                (primary only)
+#   4. RMAN duplicate (CDB-level)        (primary only - drops + duplicates)
+#   5. 19c rebuild PDB                   (19c only)
+#   6. 19c UTL_FILE_DIR setup            (19c only)
+#   7. Patch dbutilfiledir in context XML
+#   8. autoconfig                        (non-19c only)
+#   9. adcfgclone.pl dbconfig            (19c only) - rebuilds context
+#  10. dbpost.sh                         (always)
+#  11. fix_oracle_files_after_clone.sh   (always)
+#  12. fix_root_files_after_clone.sh     (always)
+# =============================================================================
+
+#     - pause: minutes=1
+
+#Start database cloning
+# - name: ensure wget is installed
+#   yum:
+#     name: wget
+#     state: present
+#     update_cache: true
+#   become: true
+
+- name: Oracle Database Refresh
+  hosts: "{{domain}}-{{tgt_env}}-OFA-DB"
+  gather_facts: yes
+
+  vars:
+    date: "{{ lookup('pipe', 'date +%Y-%m-%d') }}"
+    project_dir: '/u01/ansible/ofaclone'
+    # First host in the play is the "primary" / RMAN-duplicate driver. For a
+    # single-instance target the group has one host so primary == that host;
+    # for RAC the group has 2+ hosts and only the first one runs DB ops.
+    db_primary_host: "{{ ansible_play_hosts | first }}"
+
+  vars_files:
+    - vars/{{domain}}/{{ src_env }}sourcedbinfo.yaml
+    - vars/{{domain}}/{{ tgt_env }}/targetdbinfo.yaml
+
+  tasks:
+
+    # ---------------------------------------------------------------------
+    # All-node preparation: every host in the group needs the directories
+    # and local copies of the scripts (so an operator can re-run by hand on
+    # whichever node they SSH into).
+    # ---------------------------------------------------------------------
+    - name: "[{{ inventory_hostname }}] Create {{ tgt_dir }} directory"
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: oracle
+        group: oinstall
+        mode: "0755"
+      loop:
+        - "{{ tgt_dir }}/sql"
+        - "{{ project_dir }}/files/{{domain}}/{{ tgt_env }}/sql/"
+        - "{{ tgt_oracle_home }}/oraInventory/"
+
+    - set_fact:
+        suffix: "ansible{{ 1000 | random }}"
+      run_once: yes
+      become: yes
+      become_user: oracle
+
+    - name: "[{{ inventory_hostname }}] Remove old home from oraInventory.xml"
+      shell: "ELEMENT=`echo {{ tgt_oracle_home }}| rev | cut -d '/' -f '1' |rev`;perl -p -i.bak -e /`echo $ELEMENT`/d /u01/app/oraInventory/ContentsXML/inventory.xml"
+      become: yes
+      become_user: oracle
+
+    - name: "[{{ inventory_hostname }}] Push all clone scripts (every node)"
+      template:
+        src: "templates/{{ item.src }}"
+        dest: "{{ tgt_dir }}/{{ item.dst }}"
+        mode: "0777"
+      become: yes
+      become_user: oracle
+      loop:
+        - { src: stopDB.sh.j2,                       dst: stopDB.sh }
+        - { src: RMAN_clone_db.sh.j2,                dst: RMAN_clone_db.sh }
+        - { src: startDB.sh.j2,                      dst: startDB.sh }
+        - { src: 2_autoconfig.sh.j2,                 dst: 2_autoconfig.sh }
+        - { src: dbpost.sh.j2,                       dst: dbpost.sh }
+        - { src: 19c_rebuild_pdb.sh.j2,              dst: 19c_rebuild_pdb.sh }
+        - { src: 19c_utlfile_setup.sh.j2,            dst: 19c_utlfile_setup.sh }
+        - { src: fix_oracle_files_after_clone.sh.j2, dst: fix_oracle_files_after_clone.sh }
+        - { src: fix_root_files_after_clone.sh.j2,   dst: fix_root_files_after_clone.sh }
+
+    - name: "[{{ inventory_hostname }}] Push 19c utl_file_dir text into $ORACLE_HOME/dbs"
+      template:
+        src: templates/19c_utlfiledir.txt.j2
+        dest: "{{ tgt_oracle_home }}/dbs/{{ tgt_db }}_utlfiledir.txt"
+        mode: "0777"
+      become: yes
+      become_user: oracle
+
+    # ---------------------------------------------------------------------
+    # Primary-only execution: every shell/SQL/replace task below runs ONCE
+    # against the first host in the group. For RAC, srvctl inside the
+    # scripts manages all other instances cluster-wide. For single-instance
+    # the group has one node so behaviour is identical to the prior playbook.
+    # ---------------------------------------------------------------------
+    - name: "[primary={{ db_primary_host }}] Stop database"
+      shell: "{{ tgt_dir }}/stopDB.sh"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: oracle
+      ignore_errors: yes
+      run_once: true
+      delegate_to: "{{ db_primary_host }}"
+
+    - name: "[primary={{ db_primary_host }}] Run adcfgclone.pl dbTechStack (19c)"
+      shell: |
+        . $HOME/.profile
+        cp -r {{ tgt_oracle_home }}/jdk/ {{ tgt_oracle_home }}/appsutil/clone/jre/
+        cd {{ tgt_oracle_home }}/appsutil/clone/bin
+        export SKIP_ROOTPRE=TRUE
+        export PATH=/opt/IBM/xlC/13.1.0/bin/linkxlC:$PATH
+        { echo {{ src_apps_pswd }}; } | perl adcfgclone.pl dbTechStack \
+          {{ tgt_oracle_home }}/appsutil/{{ tgt_env }}_{{ tgt_db_node }}.xml
+      become: yes
+      become_user: oracle
+      when: db_version == '19'
+      ignore_errors: yes
+      run_once: true
+      delegate_to: "{{ db_primary_host }}"
+
+    - name: "[primary={{ db_primary_host }}] Start Database Listener"
+      shell: ". $HOME/.profile;lsnrctl start {{ tgt_cdb | lower }}"
+      become: yes
+      become_user: oracle
+      run_once: true
+      delegate_to: "{{ db_primary_host }}"
+
+    - name: "[primary={{ db_primary_host }}] RMAN duplicate (tgt_racon={{ tgt_racon | default('N') }})"
+      shell: "{{ tgt_dir }}/RMAN_clone_db.sh {{ tgt_cdb | lower }}"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: oracle
+      run_once: true
+      delegate_to: "{{ db_primary_host }}"
+
+    - name: "[primary={{ db_primary_host }}] Rebuild PDB (19c)"
+      shell: "{{ tgt_dir }}/19c_rebuild_pdb.sh"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: oracle
+      when: db_version == '19'
+      run_once: true
+      delegate_to: "{{ db_primary_host }}"
+
+    - name: "[primary={{ db_primary_host }}] Configure UTL_FILE_DIR (19c)"
+      shell: "{{ tgt_dir }}/19c_utlfile_setup.sh"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: oracle
+      when: db_version == '19'
+      run_once: true
+      delegate_to: "{{ db_primary_host }}"
+
+    - name: "[primary={{ db_primary_host }}] Patch dbutilfiledir in target context XML"
+      replace:
+        path: "{{ tgt_oracle_home }}/appsutil/{{ tgt_env }}_{{ tgt_db_node }}.xml"
+        regexp: '<dbutilfiledir oa_var="s_db_util_filedir" osd="unix">.*'
+        replace: '<dbutilfiledir oa_var="s_db_util_filedir" osd="unix">/interface/infvmmci/{{ tgt_db|upper }}/outgoing,/tmp,/u01/app/oracle/product/19/temp/{{ tgt_db }},/interface/infvmmci/{{ tgt_db|upper }}/incoming,/interface/infvmmci/{{ tgt_db|upper }}/mobile_warehouse,/interface/infvmmci/{{ tgt_db|upper }}/archive,/interface/infvmmci/{{ tgt_db }}/archive</dbutilfiledir>'
+        backup: yes
+      become: yes
+      become_user: oracle
+      run_once: true
+      delegate_to: "{{ db_primary_host }}"
+
+    - name: "[primary={{ db_primary_host }}] Run autoconfig (skipped for 19c)"
+      shell: "{{ tgt_dir }}/2_autoconfig.sh"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: oracle
+      when: db_version != '19'
+      run_once: true
+      delegate_to: "{{ db_primary_host }}"
+
+    - name: "[primary={{ db_primary_host }}] Run adcfgclone.pl dbconfig (19c)"
+      shell: |
+        cd {{ tgt_oracle_home }}/appsutil/clone/bin
+        { echo {{ src_apps_pswd }}; } | perl adcfgclone.pl dbconfig \
+          {{ tgt_oracle_home }}/appsutil/{{ tgt_env }}_{{ tgt_db_node }}.xml
+      become: yes
+      become_user: oracle
+      when: db_version == '19'
+      register: fail_me
+      failed_when: "fail_me.rc != 0 and fail_me.rc != 9"
+      run_once: true
+      delegate_to: "{{ db_primary_host }}"
+
+    - name: "[primary={{ db_primary_host }}] Run DB post-clone steps (dbpost.sh)"
+      shell: "{{ tgt_dir }}/dbpost.sh"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: oracle
+      run_once: true
+      delegate_to: "{{ db_primary_host }}"
+
+    - name: "[primary={{ db_primary_host }}] Fix oracle-owned files after clone"
+      shell: "{{ tgt_dir }}/fix_oracle_files_after_clone.sh {{ tgt_cdb | lower }} {{ tgt_sysdba_pwd }} {{ tgt_system_pwd }}"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: oracle
+      run_once: true
+      delegate_to: "{{ db_primary_host }}"
+
+    - name: "[primary={{ db_primary_host }}] Fix root-owned files after clone"
+      shell: "{{ tgt_dir }}/fix_root_files_after_clone.sh {{ tgt_db | upper }}"
+      args:
+        chdir: "{{ tgt_dir }}"
+      become: yes
+      become_user: oracle
+      run_once: true
+      delegate_to: "{{ db_primary_host }}"
+

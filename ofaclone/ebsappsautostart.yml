@@ -1,0 +1,40 @@
+---
+- name: Start EBS application on "{{ tgt_env }}"
+  hosts: "{{domain}}-{{tgt_env}}-OFA-APP"
+  remote_user: applmgr
+  gather_facts: yes
+
+  vars:
+    date: "{{ lookup('pipe', 'date +%Y-%m-%d') }}"
+
+  vars_files:
+  - vars/{{ domain }}/{{ tgt_env }}/targetdbinfo.yaml
+
+  tasks:
+  - name: Create {{ tgt_dir }} directory
+    file: path={{ tgt_dir }} state=directory
+  # Set Suffix
+  - set_fact:
+      suffix: "ansible{{ 1000 | random }}"
+    run_once: yes
+
+  # Set-up
+  # Coping script to server
+  - name: Copy ebs  script to target database server
+    template: src=templates/restart{{ ebs_version }}.sh.j2 dest={{ tgt_dir }}/restart.sh mode=0777
+
+  #Enabling Autostart
+  - name: Copy Oracle EBS autostart on target
+    template: src=templates/appsora{{ ebs_version }}.j2 dest=/etc/init.d/appsora mode=0750
+    become: yes
+    become_user: root
+
+  - name: Enable appsora service on Application server
+    shell: "systemctl enable appsora;/sbin/chkconfig appsora on"
+    become: yes
+    become_user: root
+
+  - name: reload systemctl
+    command: systemctl daemon-reload
+    become: yes
+    become_user: root

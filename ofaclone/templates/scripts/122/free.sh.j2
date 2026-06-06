@@ -1,0 +1,138 @@
+#! /bin/sh
+#**************************************************************
+#  File			:  free.sh
+#  Modified date	:  23-oct-2013
+#  Purpose:
+#           Send an email when tablespace usage exceeds a the given threshold.
+#           A default threshold value of 0 will generate the report for ALL tablespaces.
+#           Changed the format to HTML
+#  Parameters:
+#    Input:
+#           1 - Instance Name (SID)
+#          <2 - OPTIONAL: Threshold (default = 0) >
+#**************************************************************
+
+echo "START $0 `date`"
+
+program=`basename $0`
+PID=$$
+HOST=`uname -n`
+
+# Obtain first segment of node name which identifies the server.
+# Convert it to lower case.
+NODE=`uname -n | awk -F'.' '{print tolower($1)}'`
+#NODE=`uname -n | awk -F'.' '{print $1}' | tr [:upper:] [:lower:]`
+
+WORKING_DIR={{ tgt_dir }}/scripts
+
+SID=$1
+
+
+
+
+# Ensure that a SID was provided.
+if test -z "$SID"
+then
+  # No SID was provided.  Terminate script.
+  echo " "
+  echo " ************************************************** "
+  echo " *****************  E R R O R  ******************** "
+  echo " ************************************************** "
+  echo "   Please provide the instance name (SID): "
+  echo "   Usage:   $program SID <threshold_pct (optional)>"
+  echo "   Example: $program oraprd 90 "
+  echo " ************************************************** "
+  echo " ************************************************** "
+  echo " "
+  exit 1
+fi
+
+THRESHOLD=$2
+
+# If no threshold was provided, default it to zero which will
+# list ALL tablespace usage.
+if [ -z $THRESHOLD ]; then
+    THRESHOLD=0;
+fi
+
+# Source the environment file
+# Source the environment file
+if test -s {{ app_tgt_mount }}/EBSapps.env
+then
+. {{ app_tgt_mount }}/EBSapps.env RUN
+else
+  # Environment file not found.  Terminate script.
+  echo " "
+  echo " ************************************************** "
+  echo " *****************  E R R O R  ******************** "
+  echo " ************************************************** "
+  echo "   The environment file could not be located "
+  echo "     FileName = $HOME/APPS${SID}_${NODE}.env "
+  echo "   Usage:   $program SID <threshold_pct (optional)>"
+  echo "   Example: $program oraprd 90 "
+  echo " ************************************************** "
+  echo " ************************************************** "
+  echo " "
+  exit 1
+fi
+
+
+# Use TWO_TASK or ORACLE_SID (which ever exists) to identify system.
+if test -z "$TWO_TASK"
+then
+  INST="$ORACLE_SID"
+else
+# INST=`echo $TWO_TASK|cut -d "_" -f 1`
+INST=`echo $TWO_TASK|cut -d "_" -f 1`
+echo "INST - $INST"
+fi
+
+echo "Threshold = $THRESHOLD "
+echo "PID = $PID "
+echo "WORKING_DIR = $WORKING_DIR "
+
+# Invoke script to check for Tablespaces exceeding the threshold.
+sqlplus apps/$PSWD @{{ tgt_dir }}/scripts/project_free.sql $THRESHOLD $PID $WORKING_DIR 2>/dev/null
+
+NO_ROWS=`grep -c 'no rows selected' ${WORKING_DIR}/free.lst_${PID}`
+
+if [ $NO_ROWS -lt 1 ];
+then
+  LOG_FILE=${WORKING_DIR}/free.lst_${PID}
+  awk -F "|" -v SID="${SID}" -v HOST="${HOST}" 'BEGIN {
+                print "From: oracledba@penske.com" 
+                print "To: {{ email_address }}"
+                print "MIME-Version: 1.0"
+                print "Content-Type: text/html"
+                print "Subject: " toupper(SID) " R12 Free tablespace, Threshold = " '$THRESHOLD'
+                print "<html><body><table border=1 cellspacing=0 cellpadding=3>"
+                print "<tr>"
+                print "<td>Status</td>";
+                print "<td>Name</td>";
+                print "<td>Used </td>";
+                print "<td>Type</td>";
+                print "<td>Ext Mgmt</td>";
+                print "<td>Size(M)</td>";
+                print "<td>Used(M)</td>";
+                print "</tr>"
+               } {
+                print "<tr>"
+                print "<td>"$1"</td>";
+                print "<td>"$2"</td>";
+                print "<td>"$7"</td>";
+                print "<td>"$3"</td>";
+                print "<td>"$4"</td>";
+                print "<td>"$5"</td>";
+                print "<td>"$6"</td>";
+                print "</tr>"
+               } END {
+                print "</table></body></html>"
+               } ' $LOG_FILE | sendmail -t 
+ 
+fi
+
+# clean-up
+rm -f ${WORKING_DIR}/free.lst_${PID}
+
+#echo "END $0 `date`"
+

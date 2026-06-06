@@ -1,0 +1,423 @@
+---
+# Bootstrap + DBA automation playbook for all SQL Server hosts.
+#
+#   ansible-playbook -i /etc/ansible/hosts MSSQL/dba_automation.yaml --ask-vault-pass
+#   ansible-playbook -i /etc/ansible/hosts MSSQL/dba_automation.yaml --tags bootstrap
+#   ansible-playbook -i /etc/ansible/hosts MSSQL/dba_automation.yaml --tags localplugins
+#   ansible-playbook -i /etc/ansible/hosts MSSQL/dba_automation.yaml --tags backups
+#
+# Single configuration file: setup.yaml at the repo root (loaded below via
+# vars_files). Edit setup.yaml to change any threshold / path / schedule.
+
+- hosts: "sql_servers:&{{ onboard_group | default('sql_servers') }}"
+  become_method: runas
+  strategy: free
+  gather_facts: true              # we use ansible_date_time when rendering thresholds.json
+
+  vars_files:
+    - ../setup.yaml
+
+  vars:
+    # Short aliases so the task list stays readable.
+    scripts_dir:   "{{ paths.scripts_dir }}"
+    log_dir:       "{{ paths.log_dir }}"
+    temp_dir:      "{{ paths.temp_dir }}"
+    facts_dir:     "{{ paths.facts_dir }}"
+    config_dir:    "{{ paths.config_dir }}"
+    checkmk_agent: "{{ paths.checkmk_agent }}"
+    checkmk_local: "{{ paths.checkmk_local }}"
+    backup_root:   "{{ paths.backup_root }}"
+
+    full_backup_time:      "{{ backups.schedule.full_time }}"
+    diff_backup_interval:  "{{ backups.schedule.diff_interval }}"
+    log_backup_interval:   "{{ backups.schedule.log_interval }}"
+    checkdb_day_of_week:   "{{ integrity.schedule.day_of_week }}"
+    checkdb_time:          "{{ integrity.schedule.time }}"
+    checkmk_password:      "{{ checkmk.password }}"
+
+  tasks:
+    # ===================================================================
+    # 0. Directories + prerequisites
+    # ===================================================================
+    - name: Ensure script / log / facts / CheckMK directories exist
+      ansible.windows.win_file:
+        path: "{{ item }}"
+        state: directory
+      loop:
+        - "{{ scripts_dir }}"
+        - "{{ log_dir }}"
+        - "{{ facts_dir }}"
+        - "{{ temp_dir }}"
+        - "{{ config_dir }}"
+        - "{{ checkmk_local }}"
+        - "{{ checkmk_local }}\\300"
+        - "{{ checkmk_local }}\\600"
+        - "{{ checkmk_local }}\\3600"
+        - "{{ checkmk_local }}\\86400"
+      tags: [always]
+
+    - name: Install dbatools PowerShell module
+      ansible.windows.win_shell: |
+        if (-not (Get-Module -ListAvailable -Name dbatools)) {
+            Install-Module -Name dbatools -Force -AllowClobber -Scope AllUsers -ErrorAction Stop
+        }
+        Write-Output "dbatools ready"
+      register: dbatools_install
+      changed_when: false
+      tags: [bootstrap, install, always]
+
+    - name: Ensure 'SQL Server Health Check' event source exists
+      ansible.windows.win_shell: |
+        if (-not [System.Diagnostics.EventLog]::SourceExists('SQL Server Health Check')) {
+            New-EventLog -LogName Application -Source 'SQL Server Health Check'
+        }
+      changed_when: false
+      tags: [bootstrap, install, always]
+
+    # ===================================================================
+    # 1. Render thresholds.json — single source of truth for local plugins
+    # ===================================================================
+    - name: Render thresholds.json from setup.yaml
+      ansible.windows.win_template:
+        src: ../templates/mssql_thresholds.json.j2
+        dest: "{{ config_dir }}\\thresholds.json"
+      tags: [always, config, localplugins]
+
+    # ===================================================================
+    # 2. Custom facts: db_inventory.ps1
+    #
+    # Ansible's Windows facts.d loader runs every .ps1 in
+    # C:\ProgramData\ansible\facts.d\ on each fact-gathering pass and merges
+    # the JSON stdout under ansible_local.<basename>. We:
+    #   (a) ensure the facts.d directory exists with sane ACLs
+    #   (b) push the fresh db_inventory.ps1
+    #   (c) sanity-execute it once so the JSON output is logged
+    #   (d) re-run setup with filter=ansible_local so subsequent tasks /
+    #       generate_databases_ini.py see ansible_local.db_inventory.
+    # ===================================================================
+    - name: Ensure Ansible facts.d directory exists
+      ansible.windows.win_file:
+        path: "{{ facts_dir }}"
+        state: directory
+      tags: [bootstrap, install, facts, always]
+
+    - name: Push db_inventory.ps1 as the Ansible custom fact collector
+      ansible.windows.win_copy:
+        src: files/db_inventory.ps1
+        dest: "{{ facts_dir }}\\db_inventory.ps1"
+      tags: [bootstrap, install, facts, always]
+
+    - name: Sanity-run db_inventory.ps1 once and capture its JSON
+      ansible.windows.win_shell: "powershell.exe -NoProfile -ExecutionPolicy Bypass -File {{ facts_dir }}\\db_inventory.ps1"
+      register: db_inventory_probe
+      changed_when: false
+      failed_when: false
+      tags: [bootstrap, install, facts]
+
+    - name: Re-gather ansible_local.* so the new fact is visible immediately
+      ansible.builtin.setup:
+        filter: ansible_local
+      tags: [facts]
+
+    # ===================================================================
+    # 3. CheckMK monitoring SQL login
+    # ===================================================================
+    - name: Copy createcheckmk.ps1
+      ansible.windows.win_copy:
+        src: files/createcheckmk.ps1
+        dest: "{{ temp_dir }}\\createcheckmk.ps1"
+      tags: [bootstrap, install]
+
+    - name: Create the 'checkmk' SQL Server login
+      ansible.windows.win_shell: |
+        $pw = ConvertTo-SecureString -String '{{ checkmk_password }}' -AsPlainText -Force
+        & '{{ temp_dir }}\createcheckmk.ps1' -CheckmkUserName '{{ checkmk.user }}' -CheckmkPassword $pw
+      args:
+        chdir: "{{ temp_dir }}"
+      register: checkmk_login_create
+      changed_when: "'created successfully' in (checkmk_login_create.stdout | default(''))"
+      no_log: true
+      when: checkmk_password is defined and checkmk_password != 'CHANGE_ME' and (checkmk_password | length) > 0
+      tags: [bootstrap, install]
+
+    # ===================================================================
+    # 4. Active-remediation + heavy maintenance scripts
+    # ===================================================================
+    - name: Copy remediation + maintenance scripts
+      ansible.windows.win_copy:
+        src: "files/{{ item }}"
+        dest: "{{ scripts_dir }}\\{{ item }}"
+      loop:
+        - CheckmssqlStatus.ps1
+        - DetectBlockingLocks.ps1
+        - DetectDeadlocks.ps1
+        - IndexMaintenance.ps1
+        - MonitorAccountSecurity.ps1
+        - BackupDatabases.ps1
+        - DBCCCheckDB.ps1
+        - GetCheckDBStatus.ps1
+        # Rich-JSON variants, invoked on demand by the chatbot
+        - VerifyBackups.ps1
+        - MonitorDiskSpace.ps1
+        - MonitorAgentJobs.ps1
+        - MonitorTempDB.ps1
+        - SecurityAudit.ps1
+        - PatchLevelCheck.ps1
+        - MonitorAlwaysOn.ps1
+      tags: [scripts, always]
+
+    - name: Schedule MSSQL service/agent status (hourly auto-restart)
+      community.windows.win_scheduled_task:
+        name: "SQLDBA_CheckmssqlStatus"
+        description: "Checks SQL/Agent/CheckMK services and restarts if down"
+        actions:
+          - path: powershell.exe
+            arguments: "-NoProfile -ExecutionPolicy Bypass -File {{ scripts_dir }}\\CheckmssqlStatus.ps1"
+        triggers:
+          - type: daily
+            start_boundary: "2025-01-01T00:00:00"
+            repetition:
+              interval: PT1H
+              duration: P1D
+        username: SYSTEM
+        run_level: highest
+        state: present
+        enabled: yes
+      tags: [maintenance, remediation]
+
+    - name: Schedule blocking-lock detection + auto-kill (every 30 min)
+      community.windows.win_scheduled_task:
+        name: "SQLDBA_DetectBlocking"
+        description: "Detects blocking chains; auto-kills sessions blocking too long"
+        actions:
+          - path: powershell.exe
+            arguments: "-NoProfile -ExecutionPolicy Bypass -File {{ scripts_dir }}\\DetectBlockingLocks.ps1"
+        triggers:
+          - type: daily
+            start_boundary: "2025-01-01T00:00:00"
+            repetition:
+              interval: PT30M
+              duration: P1D
+        username: SYSTEM
+        run_level: highest
+        state: present
+        enabled: yes
+      tags: [maintenance, remediation]
+
+    - name: Schedule deadlock detection + capture (every 30 min)
+      community.windows.win_scheduled_task:
+        name: "SQLDBA_DetectDeadlocks"
+        description: "Captures deadlock graphs; kills repeat-offender sessions"
+        actions:
+          - path: powershell.exe
+            arguments: "-NoProfile -ExecutionPolicy Bypass -File {{ scripts_dir }}\\DetectDeadlocks.ps1"
+        triggers:
+          - type: daily
+            start_boundary: "2025-01-01T00:05:00"
+            repetition:
+              interval: PT30M
+              duration: P1D
+        username: SYSTEM
+        run_level: highest
+        state: present
+        enabled: yes
+      tags: [maintenance, remediation]
+
+    - name: Schedule index maintenance (quarterly, Fri night)
+      community.windows.win_scheduled_task:
+        name: "SQLDBA_IndexMaintenance"
+        description: "Index rebuild/reorg + statistics refresh"
+        actions:
+          - path: powershell.exe
+            arguments: "-NoProfile -ExecutionPolicy Bypass -File {{ scripts_dir }}\\IndexMaintenance.ps1"
+        triggers:
+          - type: monthly
+            schedule: Last
+            day_of_week: Friday
+            months: ['January','April','July','October']
+            start_boundary: "2025-01-31T22:00:00"
+        username: SYSTEM
+        run_level: highest
+        state: present
+        enabled: yes
+      tags: [maintenance]
+
+    - name: Schedule account-security monitor (every 30 min)
+      community.windows.win_scheduled_task:
+        name: "SQLDBA_AccountSecurity"
+        description: "Locks SQL/Windows accounts after repeated failed logins"
+        actions:
+          - path: powershell.exe
+            arguments: "-NoProfile -ExecutionPolicy Bypass -File {{ scripts_dir }}\\MonitorAccountSecurity.ps1"
+        triggers:
+          - type: daily
+            start_boundary: "2025-01-01T00:15:00"
+            repetition:
+              interval: PT30M
+              duration: P1D
+        username: SYSTEM
+        run_level: highest
+        state: present
+        enabled: yes
+      tags: [security, remediation]
+
+    - name: Schedule FULL backups (daily)
+      community.windows.win_scheduled_task:
+        name: "SQLDBA_BackupFull"
+        description: "Daily FULL backups of every user database"
+        actions:
+          - path: powershell.exe
+            arguments: "-NoProfile -ExecutionPolicy Bypass -File {{ scripts_dir }}\\BackupDatabases.ps1 -BackupType Full -BackupRoot '{{ backup_root }}' -RetentionDays {{ backups.retention_days }} -Parallel {{ backups.parallel.full | default(4) }}"
+        triggers:
+          - type: daily
+            start_boundary: "2025-01-01T{{ full_backup_time }}:00"
+        username: SYSTEM
+        run_level: highest
+        state: present
+        enabled: yes
+      tags: [backups]
+
+    - name: Schedule DIFF backups (every 6 hours)
+      community.windows.win_scheduled_task:
+        name: "SQLDBA_BackupDiff"
+        description: "Differential backups"
+        actions:
+          - path: powershell.exe
+            arguments: "-NoProfile -ExecutionPolicy Bypass -File {{ scripts_dir }}\\BackupDatabases.ps1 -BackupType Diff -BackupRoot '{{ backup_root }}' -RetentionDays {{ backups.retention_days }} -Parallel {{ backups.parallel.diff | default(6) }}"
+        triggers:
+          - type: daily
+            start_boundary: "2025-01-01T00:30:00"
+            repetition:
+              interval: "{{ diff_backup_interval }}"
+              duration: P1D
+        username: SYSTEM
+        run_level: highest
+        state: present
+        enabled: yes
+      tags: [backups]
+
+    - name: Schedule LOG backups (every 15 min)
+      community.windows.win_scheduled_task:
+        name: "SQLDBA_BackupLog"
+        description: "Transaction-log backups for FULL/BulkLogged DBs"
+        actions:
+          - path: powershell.exe
+            arguments: "-NoProfile -ExecutionPolicy Bypass -File {{ scripts_dir }}\\BackupDatabases.ps1 -BackupType Log -BackupRoot '{{ backup_root }}' -RetentionDays {{ backups.retention_days }} -Parallel {{ backups.parallel.log | default(8) }}"
+        triggers:
+          - type: daily
+            start_boundary: "2025-01-01T00:05:00"
+            repetition:
+              interval: "{{ log_backup_interval }}"
+              duration: P1D
+        username: SYSTEM
+        run_level: highest
+        state: present
+        enabled: yes
+      tags: [backups]
+
+    - name: Schedule DBCC CHECKDB (weekly)
+      community.windows.win_scheduled_task:
+        name: "SQLDBA_CheckDB"
+        description: "Weekly DBCC CHECKDB; writes C:\\Logs\\checkdb_status.json"
+        actions:
+          - path: powershell.exe
+            arguments: "-NoProfile -ExecutionPolicy Bypass -File {{ scripts_dir }}\\DBCCCheckDB.ps1 -PhysicalOnlyAboveGB {{ integrity.physical_only_above_gb }} -Parallel {{ integrity.parallel | default(2) }}"
+        triggers:
+          - type: weekly
+            days_of_week: "{{ checkdb_day_of_week }}"
+            start_boundary: "2025-01-01T{{ checkdb_time }}:00"
+        username: SYSTEM
+        run_level: highest
+        state: present
+        enabled: yes
+      tags: [integrity]
+
+    # ===================================================================
+    # 5. CheckMK Windows agent + plugins
+    # ===================================================================
+    - name: Copy CheckMK agent MSI
+      ansible.windows.win_copy:
+        src: files/check_mk_agent.msi
+        dest: "{{ temp_dir }}\\check_mk_agent.msi"
+      tags: [bootstrap, install, checkmk]
+
+    - name: Install CheckMK agent
+      ansible.windows.win_shell: msiexec /i "{{ temp_dir }}\check_mk_agent.msi" /qn
+      args:
+        executable: cmd
+      register: checkmk_install
+      ignore_errors: yes
+      changed_when: "'1605' not in (checkmk_install.stdout | default(''))"
+      tags: [bootstrap, install, checkmk]
+
+    - name: Deploy mk_mssql.cfg from template
+      ansible.windows.win_template:
+        src: ../templates/mk_mssql_cfg.ps1.j2
+        dest: "{{ checkmk_agent }}\\config\\mk_mssql_cfg.ps1"
+      tags: [bootstrap, install, checkmk]
+
+    - name: Copy mk_mssql plugin
+      ansible.windows.win_copy:
+        src: files/mk_mssql.ps1
+        dest: "{{ checkmk_agent }}\\plugins\\mk_mssql.ps1"
+      tags: [bootstrap, install, checkmk]
+
+    - name: Push CheckMK local plugin (default, ~60s)
+      ansible.windows.win_copy:
+        src: "files/checkmk_local/mssql_local.ps1"
+        dest: "{{ checkmk_local }}\\mssql_local.ps1"
+      tags: [localplugins, checkmk]
+
+    - name: Push CheckMK local plugin (5 min)
+      ansible.windows.win_copy:
+        src: "files/checkmk_local/300/mssql_disk_tempdb.ps1"
+        dest: "{{ checkmk_local }}\\300\\mssql_disk_tempdb.ps1"
+      tags: [localplugins, checkmk]
+
+    - name: Push CheckMK local plugin (10 min)
+      ansible.windows.win_copy:
+        src: "files/checkmk_local/600/mssql_backups_jobs.ps1"
+        dest: "{{ checkmk_local }}\\600\\mssql_backups_jobs.ps1"
+      tags: [localplugins, checkmk]
+
+    - name: Push CheckMK local plugin (hourly)
+      ansible.windows.win_copy:
+        src: "files/checkmk_local/3600/mssql_security_checkdb.ps1"
+        dest: "{{ checkmk_local }}\\3600\\mssql_security_checkdb.ps1"
+      tags: [localplugins, checkmk]
+
+    - name: Push CheckMK local plugin (daily)
+      ansible.windows.win_copy:
+        src: "files/checkmk_local/86400/mssql_patch.ps1"
+        dest: "{{ checkmk_local }}\\86400\\mssql_patch.ps1"
+      tags: [localplugins, checkmk]
+
+    - name: Restart CheckmkService if anything changed
+      ansible.windows.win_service:
+        name: CheckmkService
+        state: restarted
+      when: checkmk_install is changed
+      tags: [bootstrap, install, checkmk]
+
+    # ===================================================================
+    # 6. Cleanup of obsolete scheduled tasks
+    # ===================================================================
+    - name: Remove obsolete scheduled tasks
+      community.windows.win_scheduled_task:
+        name: "{{ item }}"
+        state: absent
+      loop:
+        - SQLDBA_PushInflux
+        - SQLDBA_DiskSpace
+        - SQLDBA_AgentJobs
+        - SQLDBA_TempDB
+        - SQLDBA_AlwaysOn
+        - SQLDBA_SecurityAudit
+        - SQLDBA_PatchLevel
+        - SQLDBA_VerifyBackups
+        - CheckmssqlStatus
+        - DetectBlockingLocks
+        - DetectDeadlocks
+        - IndexMaintenance
+        - MonitorAccountSecurity
+      tags: [cleanup]

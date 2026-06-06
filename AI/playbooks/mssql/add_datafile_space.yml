@@ -1,0 +1,45 @@
+---
+- name: Grow a SQL Server datafile by N megabytes
+  hosts: "{{ target_host }}"
+  gather_facts: false
+
+  tasks:
+    - name: Read current datafile size
+      ansible.windows.win_shell: |
+        Import-Module dbatools -ErrorAction Stop
+        $row = Invoke-DbaQuery `
+          -SqlInstance '{{ sql_instance }}' `
+          -Database    '{{ sql_database }}' `
+          -Query @"
+        SELECT name, size_mb = (size * 8) / 1024
+        FROM sys.database_files
+        WHERE name = N'{{ logical_file }}'
+        "@ `
+          -ReadOnly `
+          -As PSObject
+        if (-not $row) { Write-Error "Logical file '{{ logical_file }}' not found"; exit 2 }
+        $row | ConvertTo-Json -Compress
+      register: current_size
+      changed_when: false
+
+    - name: Compute new size
+      ansible.builtin.set_fact:
+        new_size_mb: "{{ (current_size.stdout | from_json).size_mb | int + add_mb | int }}"
+
+    - name: Grow datafile
+      ansible.windows.win_shell: |
+        Import-Module dbatools -ErrorAction Stop
+        Invoke-DbaQuery `
+          -SqlInstance '{{ sql_instance }}' `
+          -Database    'master' `
+          -Query @"
+        ALTER DATABASE [{{ sql_database }}]
+        MODIFY FILE (NAME = N'{{ logical_file }}', SIZE = {{ new_size_mb }}MB);
+        "@
+        "Grew {{ logical_file }} in {{ sql_database }} to {{ new_size_mb }} MB"
+      register: grow_result
+      changed_when: true
+
+    - name: Surface result
+      ansible.builtin.debug:
+        var: grow_result.stdout

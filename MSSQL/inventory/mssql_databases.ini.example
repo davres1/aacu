@@ -1,0 +1,47 @@
+; SQL Server database inventory — one section per database the chatbot
+; should know about. Copy this file to AI/inventory/databases.ini and edit,
+; or let Oracle-style auto-discovery do it for you:
+;
+;   ansible-playbook -i /etc/ansible/hosts dba_automation.yaml --tags facts
+;   python3 AI/tools/generate_databases_ini.py
+;
+; The chatbot uses these sections to:
+;   1) Populate the "Database" dropdown in the chat UI.
+;   2) Auto-resolve `ansible_servername` so the LLM never has to guess the
+;      target Windows host — picking a database is enough.
+;
+; Section headers are arbitrary identifiers (most teams use the DB name; if
+; the same DB name exists on multiple instances suffix with __<host>).
+; Each section accepts the following fields:
+;
+;   ansible_servername  - Windows host in /etc/ansible/hosts [sql_servers]
+;   sql_instance        - SQL instance identifier (default = the host name)
+;   database            - actual database name on the instance
+;   sql_user            - optional; defaults to integrated auth via Ansible
+;   sql_password        - ansible-vault encrypt_string ...
+;   environment         - prod | uat | dev (free-form, surfaced in the UI)
+;   emaillist           - comma-separated dba contact list
+;   retention           - business retention policy in days
+;   lastupdated         - auto-stamped by generate_databases_ini.py
+
+[sql_servers]
+sqlprod01.example.com
+sqlprod02.example.com
+
+[ContosoSales]
+ansible_servername = sqlprod01.example.com
+sql_instance       = sqlprod01.example.com
+database           = ContosoSales
+environment        = prod
+emaillist          = dba@example.com
+retention          = 90
+lastupdated        = 2026-05-16 00:00:00
+
+[FabrikamCRM]
+ansible_servername = sqlprod02.example.com
+sql_instance       = sqlprod02.example.com\PROD2
+database           = FabrikamCRM
+environment        = prod
+emaillist          = dba@example.com
+retention          = 90
+lastupdated        = 2026-05-16 00:00:00

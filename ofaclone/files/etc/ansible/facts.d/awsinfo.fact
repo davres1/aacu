@@ -1,0 +1,75 @@
+#!/usr/bin/python3  
+import json
+import subprocess
+import os
+import sys
+import boto3
+from genericpath import exists
+import pickle
+#Ansible Custom facts
+if exists('/tmp/awsinfo.txt'):
+            file = open('/tmp/awsinfo.txt', 'rb')
+            tgt_vol = pickle.load(file)
+            file.close()
+            print(json.dumps(tgt_vol))
+else:
+    
+    inst_id = os.popen("wget -q -O- http://169.254.169.254/latest/meta-data/instance-id").read()
+    REGION = subprocess.check_output(r"""wget -q -O- http://169.254.169.254/latest/meta-data/placement/availability-zone | sed -e 's/\([1-9]\).$/\1/g'""", shell=True).decode(sys.stdout.encoding).strip()
+    server_name = os.popen("hostname").read()
+    devices = []
+    Filters = [
+            {
+                'Name': 'tag:createdby',
+                'Values': [
+                    'UpenderThota',
+                ]
+            },
+            {
+                'Name': 'tag:Application',
+                'Values': [
+                    'OFADB',
+                ]
+            }
+        ]
+    conn = boto3.Session()
+    EC2_RESOURCE = conn.resource('ec2', region_name=REGION)
+    ec2 = conn.client('ec2', region_name=REGION)
+    def render_data(data):
+        return json.dumps(data)
+
+
+    volume_list = os.popen(r"""
+            for disk in $(lsblk | grep -E 'u0|data' | awk '{print $1":"$7}'); do
+                    vol=$(nvme id-ctrl /dev/$(echo $disk | awk -F ':' '{print $1}') | grep sn | awk '{print $3}')
+                    device=$(nvme id-ctrl --raw-binary /dev/$(echo $disk | awk -F ':' '{print $1}') | cut -c3073-3104 | tr -s ' ' | sed 's/ $//g')
+                    local_device=$(echo $disk | awk -F ':' '{print $1}')
+                    echo "$vol:$(echo "$disk" | awk -F ':' '{print $2}'):$device:/dev/$local_device"
+            done
+            """).read().strip()
+    List = []
+    response = ec2.describe_snapshots(Filters=Filters)
+    snapshots = response['Snapshots']
+    print(snapshots)
+    for snap in snapshots:
+            for tag in snap['Tags']:
+                    if tag["Key"] == 'Mountpoint':
+                            Mountpoint = tag["Value"]
+            snap_id = snap['SnapshotId']
+            volid = snap['VolumeId']
+            date = snap['StartTime']
+            List.append({'Mountpoint': Mountpoint,'snap_id': snap_id, 'date': date, 'vol': volid })
+            newlist = list(sorted(List, key=lambda k: (k['date'], k['Mountpoint']), reverse=True))
+            VolumeList = newlist[:2]
+            #print(VolumeList)
+
+    for item in VolumeList:
+        devices.append({ "snapshot_id_clone" : item["snap_id"], "aws_volume_id" : item["vol"],"mount_point" : item["Mountpoint"] , "ec2_id" : inst_id, "region" : REGION })
+
+
+
+    print(json.dumps(devices))
+    file = open('/tmp/awsinfo.txt', 'wb')
+    pickle.dump(devices, file)
+    file.close()
+    

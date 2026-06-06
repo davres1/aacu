@@ -1,0 +1,14 @@
+#!/bin/bash 
+. ~/.bash_profile
+
+. {{ app_tgt_mount }}/EBSapps.env RUN
+
+cd $APPLCSF/$APPLLOG
+find $APPLCSF/$APPLLOG -name "FNDCP*" -mtime +7 -exec rm {} \;
+for file in `find $APPLCSF/$APPLLOG -name "FNDCP*" -size +50M`
+do
+echo $file
+echo "" > $file
+done
+
+echo "" > /home/applmgr/.signingmanager/logs/smpkcs11.log

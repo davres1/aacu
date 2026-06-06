@@ -1,0 +1,12 @@
+#!/bin/bash 
+. ~/.profile
+
+. {{ app_tgt_mount }}/EBSapps.env RUN
+
+cd $APPLCSF/$APPLLOG
+for file in `find $APPLCSF/$APPLLOG -name "FNDCP*" -size +50M`
+do
+echo $file
+echo "" > $file
+done
+

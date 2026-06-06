@@ -1,0 +1,44 @@
+---
+# List Oracle restore points — one row per RP with SCN, type, age, and the
+# flashback log storage they occupy.
+- name: List Oracle restore points
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ oracle_user | default('oracle') }}"
+
+  vars:
+    tns_alias:      "{{ tns_alias }}"
+    databases_ini:  "{{ databases_ini | default('/etc/oracle/databases.ini') }}"
+    delimiter:      "{{ delimiter | default('|') }}"
+
+  tasks:
+    - name: Read system password from databases.ini
+      ansible.builtin.set_fact:
+        ora_pw: >-
+          {{ lookup('ini', 'syspass section=' + tns_alias + ' file=' + databases_ini) }}
+      no_log: true
+
+    - name: List restore points
+      ansible.builtin.shell: |
+        set -e
+        cat <<'SQL' | sqlplus -S -L "system/{{ ora_pw }}@{{ tns_alias }}"
+        SET PAGESIZE 0 FEEDBACK OFF VERIFY OFF ECHO OFF HEADING ON
+        SET COLSEP "{{ delimiter }}"
+        SET LINESIZE 32767 TRIMSPOOL ON UNDERLINE OFF
+        WHENEVER SQLERROR EXIT 1
+        SELECT name,
+               scn,
+               guarantee_flashback_database AS guaranteed,
+               TO_CHAR(time, 'YYYY-MM-DD HH24:MI:SS')  AS created,
+               ROUND(NVL(storage_size, 0) / 1024 / 1024)  AS storage_mb,
+               database_incarnation#                   AS incarnation
+          FROM v$restore_point
+         ORDER BY scn DESC;
+        EXIT;
+        SQL
+      args:
+        executable: /bin/bash
+      register: result
+      changed_when: false
+      no_log: true

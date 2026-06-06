@@ -1,0 +1,18 @@
+{{ src_db }}=
+        (DESCRIPTION=
+                (ADDRESS=(PROTOCOL=tcp)(HOST={{ src_db_node_ip }})(PORT={{ src_db_port }}))
+            (CONNECT_DATA=
+                (SERVICE_NAME={{ src_db }})
+                (INSTANCE_NAME={{ src_db }})
+            )
+        )
+
+
+{{ tgt_db }}=
+        (DESCRIPTION=
+                (ADDRESS=(PROTOCOL=tcp)(HOST={{ tgt_db_node }})(PORT={{ tgt_db_port }}))
+            (CONNECT_DATA=
+                (SERVICE_NAME={{ tgt_db }})
+                (INSTANCE_NAME={{ tgt_db }})
+            )
+        )

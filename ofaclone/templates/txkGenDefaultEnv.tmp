@@ -1,0 +1,539 @@
+# +===========================================================================+
+# |   Copyright (c) 2003 Oracle Corporation, Redwood Shores, California, USA
+# |                         All Rights Reserved
+# |                        Applications Division
+# +===========================================================================+
+# |
+# | FILENAME
+# |  txkGenDefaultEnv.tmp 
+# |
+# | DESCRIPTION
+# |   This script is run from AutoConfig and generates %s_ora_config_home%%/%10.1.2%/%forms%/%server%/%default.env for formsservlet, 
+# |   And %s_ora_config_home%%/%10.1.2%/%forms%/%server%/%socket.env for forms server.
+# |
+# | USAGE
+# |   
+# |
+# | PLATFORM
+# |   Unix Generic (with some platform-specific logic)
+# |
+# | NOTES
+# |
+# +===========================================================================+
+# dbdrv: none
+#
+# $AutoConfig$
+
+require 5.005;
+
+use strict;
+use English;
+
+######################################
+# Package Specific Modules
+######################################
+
+use TXK::Runtime     ();
+use TXK::IO          ();
+use TXK::FileSys     ();
+
+###############################
+# Forward method declarations
+###############################
+
+sub setPlatformDepParam;
+sub setFormsModeDepParam;
+sub checkFileExists;
+
+######################################
+# Main
+######################################
+
+
+my $destfile='%s_ora_config_home%%/%10.1.2%/%forms%/%server%/%default.env';
+my $sockfile='%s_ora_config_home%%/%10.1.2%/%forms%/%server%/%socket.env';
+
+#
+# Keep a copy of the default.env, if it exists
+#
+
+my $appltmp = '%s_appltmp%';
+
+if($ENV{'APPLRGF'} eq "")
+{
+    TXK::OSD->setEnvVar({ name => "APPLRGF",
+                          value=> $appltmp,
+                          translate => TXK::Util::TRUE });
+}
+my $APPLRGF = $ENV{'APPLRGF'} . "/TXK";
+
+my $tmpfile = $APPLRGF."/default.env_preAC";
+my $fsys = TXK::FileSys->new();
+
+$fsys->copy({ source => "$destfile",
+              dest   => "$tmpfile"
+            })
+            if ( -e "$destfile" );
+
+my $tmpfile_sock = $APPLRGF."/socket.env_preAC";
+my $fsys_sock = TXK::FileSys->new();
+
+$fsys_sock->copy({ source => "$sockfile",
+              dest   => "$tmpfile_sock"
+            })
+            if ( -e "$sockfile" );
+
+
+my $io = TXK::IO->new(); 
+$io->open( { fileName => $destfile,             
+             mode     => TXK::IO::WRITE} );
+
+my $io_sock = TXK::IO->new(); 
+$io_sock->open( { fileName => $sockfile,             
+             mode     => TXK::IO::WRITE} );
+
+$io->print('# $Header: txkGenDefaultEnv.tmp 120.30.12020000.2 2012/11/16 18:58:24 njoseph ship $'."\n");
+$io_sock->print('# $Header: txkGenDefaultEnv.tmp 120.30.12020000.2 2012/11/16 18:58:24 njoseph ship $'."\n");
+
+
+my $formServletInitParams = <<'END_OF_PARAMS';
+
+# --- <oa_environment type="tools_home"> 
+ORACLE_HOME=%s_tools_oh%		
+ORA_NLS=%s_tools_oranls%	
+ORA_NLS10=%s_tools_oranls%
+TNS_ADMIN=%s_tools_tnsadmin%
+TWO_TASK=%s_tools_twotask% 
+LOCAL=%s_tools_twotask%	
+ORACLE_LOCALPREFERENCE=%s_tools_locpref%	
+NLS_LANG=%s_tools_nlslang%		
+EM=%s_formshost%_A%s_webport%_%s_dbSid%
+GWYUID=%s_gwyuid_user%/%s_gwyuid_pass%
+ # webutil config file path
+WEBUTIL_CONFIG=%s_tools_oh%%/%forms%/%server%/%webutil.cfg
+
+#Forms runtime env variables
+FORMS_REDIRECT_DATA_PROPS=1
+FORMS_DISABLED_NOT_REQD=1
+FORMS_NONNAVIGABLE_NOT_REQD=0
+FORMS_REINIT_EMPTY_BLOCKS=1
+FORMS_UNALTERABLE_NOT_REQD=1
+
+# VMMC Custom Env
+XBOL_TOP=%s_at%/%xbol%/%12.0.0
+KBACE_TOP=%s_at%/%kbace%/%3.0
+XXKBACE_TOP=%s_at%/%kbace/%3.0
+INTERFACE_HOME=/interface/infvmmci/edba
+FORMS60_CATCHTERM=0
+CUSTOM_TOP=%s_at%/%custom
+
+# --- <oa_environment type="applsys"> 
+APPL_TOP=%s_at%			
+APPL_TOP2=%s_at2% 
+APPL_TOP3=%s_at3% 
+APPL_TOP4=%s_at4% 
+ADMIN_SID=%s_admin_sid% 
+APPLTMP=%s_appltmp% 
+APPLPTMP=%s_applptmp% 
+NLS_LANG=%s_nlslang% 
+NLS_DATE_FORMAT=%s_nlsdate% 
+NLS_NUMERIC_CHARACTERS=%s_oa_nlsnumchar% 
+NLS_SORT=%s_nlssort% 
+REPORTS_TMP=%s_reptmp% 
+REPORTS_PATH=%s_reppath% 
+CNTL_BREAK=%s_ctrlbrk% 
+FORMS_MESSAGE_ENCRYPTION=%s_forms_encr% 
+FORMS_SESSION=%s_forms_ses% 
+ORACLE_TERM=%s_oraterm% 
+FORMS_FORCE_MENU_MNEMONICS=%s_forms_fmm%
+FORMS_PATH=%s_forms_path%
+FORMS_TIMEOUT=%s_forms_time%
+FORMS_WEB_CONFIG_FILE=%s_forms_webcfg%
+FORMS_OAM_FRD=%s_forms_oam_frd%
+FORMS_RESTRICT_ENTER_QUERY=TRUE 
+FORMS_CATCHTERM=%s_forms_catchterm% 
+FORMS_RTI_DIR=%s_formsrtidir% 
+FORMS_TRACE_DIR=%s_forms_trace_dir% 
+FORMS_TRACE_CONFIG_FILE=%s_ora_config_home%%/%10.1.2%/%forms%/%server%/%ftrace.cfg
+FORMS_LOV_INITIAL=%s_forms_lov%
+FORMS_BLOCKING_LONGLIST=%s_forms_blocklist%
+FORMS_LOV_MINIMUM=%s_forms_lovminimum%
+FORMS_LOV_WEIGHT=%s_forms_lovweight%
+FORMS_NONBLOCKING_SLEEP=%s_forms_nonblockingsleep%
+FORMS_OVERRIDE_ENV=%s_forms_override_env%
+FORMS_MODULE_PATH=%s_forms_module_path%
+FND_TOP=%s_fndtop% 
+FND_SECURE=%s_fnd_secure% 
+# variables from fndenv.env 
+APPLMSG=mesg 
+APPLFRM=forms 
+APPLRSC=resource 
+APPLGRAF=%s_applgraf% 
+EM_PROCESS_FILE=%s_formsrtidir%%/%Servlet_RTI.log  
+
+FORMS_REJECT_GO_DISABLED_ITEM=0
+FORMS_DISABLE_UNPAD_LOV=%s_forms_disable_unpad_lov%
+FORMS_SCROLL_ALL_BUT_ONE=TRUE
+FORMS_RECMGR_RECSIZE_POWER=%s_forms_recmgr_recsize_power%
+END_OF_PARAMS
+
+setPlatformDepParam();
+setFormsModeDepParam();
+
+$io_sock->print($formServletInitParams);
+
+my $forms_socket_exports = <<'END_OF_EXPORTS';
+export TMPDIR
+export LD_LIBRARY_PATH LIBPATH SHLIB_PATH
+export ORACLE_LOCALPREFERENCE EM EM_PROCESS_FILE WEBUTIL_CONFIG ADMIN_SID FORMS_WEB_CONFIG_FILE
+export FORMS_USEREXITS FORMS_REDIRECT_DATA_PROPS FORMS_DISABLED_NOT_REQD FORMS_NONNAVIGABLE_NOT_REQD
+export FORMS_REINIT_EMPTY_BLOCKS FORMS_UNALTERABLE_NOT_REQD FORMS_USER_DATE_FORMAT
+export FORMS_USER_DATETIME_FORMAT FORMS_TRACE_CONFIG_FILE FORMS_LOV_MINIMUM FORMS_LOV_WEIGHT
+export FORMS_NONBLOCKING_SLEEP FORMS_MESSAGE_ENCRYPTION FORMS_SESSION  ORACLE_TERM  FORMS_APPSLIBS
+export DISPLAY ORA_NLS LOCAL NLS_LANG FORMS_FORCE_MENU_MNEMONICS  FORMS_PATH FORMS_TIMEOUT  
+export FORMS_OAM_FRD FORMS_RESTRICT_ENTER_QUERY FORMS_CATCHTERM 
+export FORMS_OVERRIDE_ENV FORMS_MODULE_PATH
+export FORMS_SCROLL_ALL_BUT_ONE
+export FORMS_USERNAME_CASESENSITIVE
+export FORMS_RECMGR_RECSIZE_POWER
+END_OF_EXPORTS
+
+$io_sock->print($forms_socket_exports);
+
+my $CONTEXT_FILE='%s_contextfile%';
+my ($val1,$val2,$val3,$istring);
+
+my $fsys = TXK::FileSys->new();
+
+if ( $fsys->access ( { fileName  => $CONTEXT_FILE,
+	               checkMode => TXK::FileSys::READ_ACCESS } ) eq TXK::Error::FAIL )
+ {
+    print "Context File $CONTEXT_FILE not readable\n";
+    print "ERRORCODE = 1 ERRORCODE_END\n";
+    exit (1);
+ }
+
+my $contextIO = TXK::IO->new();
+
+$contextIO->open( { fileName => $CONTEXT_FILE,             
+                    mode     => TXK::IO::READ} );
+
+my $contextIO_ref = $contextIO->getFileHandle();
+
+my @contextContents = <$contextIO_ref>;
+
+$contextIO->close();
+
+foreach (@contextContents)
+ {
+  if ($_ =~ m/PROD_TOP/)
+   {
+     $istring = $_;
+     ($val1,$val2)=split("\>", $istring);
+     ($val1,$val2)=split("\</",$val2);
+     $val3 = $val2."=".$val1.chr(10);
+     $formServletInitParams .= $val3 ;
+     #$io->print($val3);
+    }
+ }
+
+
+$io->print($formServletInitParams);
+
+if(-e "$tmpfile")
+{
+    #
+    # open the backed-up default.env
+    #
+    
+    my $io_tmp = TXK::IO->new();
+    $io_tmp->open( { fileName => $tmpfile,
+                     mode     => TXK::IO::READ} );
+    
+    #
+    # Search for the string "\#\sBegin\sCustomization", case insensitive
+    #
+    
+    my $op_ref = $io_tmp->getFileHandle();
+    my $op_data ;
+    my $flag = TXK::Util::FALSE;
+    
+    
+    while ( $op_data = <$op_ref> )
+     {
+       if ( ($op_data =~ m/\s*\#\s*Begin\s*Customization/i) || ($flag eq TXK::Util::TRUE) )    {
+          $flag = TXK::Util::TRUE;
+          $io->print($op_data);
+        }
+       if ($op_data =~ m/\s*\#\s*End\s*Customization/i)
+        {
+          $flag = TXK::Util::FALSE
+        }
+     }
+    
+    #
+    # Stop at # End Customization
+    #
+    $io_tmp->close();
+
+    #
+    # Remove the temp file
+    #
+    unlink($tmpfile);
+
+}
+
+if(-e "$tmpfile_sock")
+{
+    #
+    # open the backed-up socket.env
+    #
+    
+    my $io_tmp = TXK::IO->new();
+    $io_tmp->open( { fileName => $tmpfile_sock,
+                     mode     => TXK::IO::READ} );
+    
+    #
+    # Search for the string "\#\sBegin\sCustomization", case insensitive
+    #
+    
+    my $op_ref = $io_tmp->getFileHandle();
+    my $op_data ;
+    my $flag = TXK::Util::FALSE;
+    
+    
+    while ( $op_data = <$op_ref> )
+     {
+       if ( ($op_data =~ m/\s*\#\s*Begin\s*Customization/i) || ($flag eq TXK::Util::TRUE) )    {
+          $flag = TXK::Util::TRUE;
+	  $io_sock->print($op_data);
+        }
+       if ($op_data =~ m/\s*\#\s*End\s*Customization/i)
+        {
+          $flag = TXK::Util::FALSE
+        }
+     }
+    
+    #
+    # Stop at # End Customization
+    #
+    $io_tmp->close();
+
+    #
+    # Remove the temp file
+    #
+    unlink($tmpfile_sock);
+
+}
+
+
+# close the IO object
+
+$io->close();  
+$io_sock->close();
+
+print "ERRORCODE = 0 ERRORCODE_END\n";
+
+######################################
+# End of Main
+######################################
+
+#########################################################################
+# setPlatformDepParam - 1. Sets platform dependant parameters
+#                           (For example PATH, CLASSPATH, Library paths)
+#                       2. Parameters set will be written into
+#                       default.env and socket.env
+#                       3. This method also takes of path separators
+#                       (':' for Unix and ';' for Windows)
+#########################################################################
+sub setPlatformDepParam
+{
+
+    my $DISPLAY;
+    my $LD_LIBRARY_PATH;
+    my $LIBPATH;
+    my $SHLIB_PATH;
+    my $PATH;
+    my $CLASSPATH;
+    my $FORMS_USEREXITS;
+    my $FORMS_TMPDIR;
+
+    # --------------------------------------------
+    # Setting parameters common to all platforms
+    # --------------------------------------------
+    $CLASSPATH =  TXK::OSD->getEnvVar({name=>'CLASSPATH'});
+    TXK::OSD->setCommandPath("");
+    TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase('%s_tools_oh%' . '/j2ee' . '/OC4J_BI_Forms' . '/applications'. '/formsapp' . '/formsweb' . '/WEB-INF' . '/lib' . '/frmsrv.jar'));
+    TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase('%s_tools_oh%' . '/jlib' . '/repository.jar'));
+    TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase('%s_tools_oh%' . '/jlib' . '/ldapjclnt10.jar'));
+    TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase('%s_tools_oh%' . '/jlib' . '/debugger.jar'));
+    TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase('%s_tools_oh%' . '/jlib' . '/ewt3.jar'));
+    TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase('%s_tools_oh%' . '/jlib' . '/share.jar'));
+    TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase('%s_tools_oh%' . '/jlib' . '/utj.jar'));
+    TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase('%s_tools_oh%' . '/jlib' . '/zrclient.jar'));
+    TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase('%s_tools_oh%' . '/reports' . '/jlib' . '/rwrun.jar'));
+    TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase('%s_tools_oh%' . '/forms' . '/java' . '/frmwebutil.jar'));
+    $CLASSPATH = TXK::OSD->getCommandPath();
+ 
+    $FORMS_TMPDIR = TXK::OSD->trDirPathToBase('%s_forms_tmpdir%');
+
+    # -----------------------------
+    # Setting parameters for Unix
+    # -----------------------------
+    if (TXK::OSD->isUNIX())
+    {
+         # ---------------------------
+         # Setting the PATH variable
+         # ---------------------------
+         $PATH = TXK::OSD->getEnvVar({name=>'PATH'});
+         TXK::OSD->setCommandPath("");
+         TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase('%s_tools_oh%' . '/bin'));
+         TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase($PATH));
+         $PATH = TXK::OSD->getCommandPath();
+
+         $DISPLAY='%s_display%';
+         $LD_LIBRARY_PATH=TXK::OSD->trDirPathToBase('%s_fndtop%/bin' . ':' . '%s_tools_ldlib%');
+         $LIBPATH=TXK::OSD->trDirPathToBase('%s_fndtop%/bin' . ':' . '%s_tools_ldlib%');
+         $SHLIB_PATH=TXK::OSD->trDirPathToBase('%s_fndtop%/bin' . ':' . '%s_tools_ldlib%');
+
+         # --------------------------
+         # Setting FORMS USER EXITS
+         # --------------------------
+         $FORMS_USEREXITS='fndfmxit.%s_lib_ext%';
+
+        # --------------------------------------          
+        # # Setting location for temporary files            
+        # # --------------------------------------          
+         $io->print("TMPDIR=" . $FORMS_TMPDIR . "\n");     
+         $io_sock->print("TMPDIR=" . $FORMS_TMPDIR . "\n");
+        
+    }
+
+    # --------------------------------
+    # Setting parameters for Windows
+    # --------------------------------
+    if (TXK::OSD->isWindows())
+    {
+         # ---------------------------
+         # Setting the PATH variable
+         # ---------------------------
+         $PATH = TXK::OSD->getEnvVar({name=>'PATH'});
+         TXK::OSD->setCommandPath("");
+         TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase('%s_autop%' . '/bin'));
+         TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase('%s_tools_oh%' . '/bin'));
+         TXK::OSD->addCommandPath(TXK::OSD->trDirPathToBase($PATH));
+         $PATH = TXK::OSD->getCommandPath();
+
+         # -----------------------------------------------------
+         # Setting variables not applicable to Windows to NULL
+         # -----------------------------------------------------
+         $DISPLAY="";
+         $LD_LIBRARY_PATH="";
+         $LIBPATH="";
+         $SHLIB_PATH="";
+
+         # --------------------------
+         # Setting FORMS USER EXITS
+         # --------------------------
+         $FORMS_USEREXITS='fnd115w.%s_lib_ext%';
+
+        # --------------------------------------
+        # # Setting location for temporary files
+        # # --------------------------------------
+         $io->print("TMP=" . $FORMS_TMPDIR . "\n");
+         $io_sock->print("TMP=" . $FORMS_TMPDIR . "\n");
+    }
+
+    # --------------------------------
+    # Setting parameters for Solaris
+    # --------------------------------
+   
+    if( TXK::OSD->isSolaris() )
+    {
+         my $temp_file = TXK::OSD->trDirPathToBase('/usr/lib/extendedFILE.so.1');
+
+         if (checkFileExists($temp_file))
+         {
+              $io->print("LD_PRELOAD_32=$temp_file \n");
+              $io_sock->print("LD_PRELOAD_32=$temp_file \n");
+         }
+    }
+    
+ 
+    # ---------------------------------------
+    # Writing the parameters to default.env
+    # ---------------------------------------
+    $io->print("PATH=" . $PATH . "\n");
+    $io->print("CLASSPATH=" . $CLASSPATH . "\n");
+    $io->print("DISPLAY=" . $DISPLAY . "\n");
+    $io->print("LD_LIBRARY_PATH=" . $LD_LIBRARY_PATH . "\n");
+    $io->print("LIBPATH=" . $LIBPATH . "\n");
+    $io->print("SHLIB_PATH=" . $SHLIB_PATH . "\n");
+    $io->print("FORMS_USEREXITS=" . $FORMS_USEREXITS. "\n");
+
+    # ---------------------------------------
+    # Writing the parameters to socket.env
+    # ---------------------------------------
+    $io_sock->print("PATH=" . $PATH . "\n");
+    $io_sock->print("CLASSPATH=" . $CLASSPATH . "\n");
+    $io_sock->print("DISPLAY=" . $DISPLAY . "\n");
+    $io_sock->print("LD_LIBRARY_PATH=" . $LD_LIBRARY_PATH . "\n");
+    $io_sock->print("LIBPATH=" . $LIBPATH . "\n");
+    $io_sock->print("SHLIB_PATH=" . $SHLIB_PATH . "\n");
+    $io_sock->print("FORMS_USEREXITS=" . $FORMS_USEREXITS. "\n");
+}
+
+##################################################################################
+# setFormsModeDepParam - 1. Sets Forms Mode dependant parameters
+#                           (For example FORMS_APPSLIBS, FORMS_USER_DATE_FORMAT)
+#                        2. Parameters set will be written into
+#                           default.env and socket.env
+#################################################################################$
+sub setFormsModeDepParam
+{
+    my $FORMS_APPSLIBS               = "%s_forms_appslib%";
+    my $FORMS_USERNAME_CASESENSITIVE = "TRUE";
+    my $FORMS_USER_DATE_FORMAT       = "%s_forms_udate%";
+    my $FORMS_USER_DATETIME_FORMAT   = "%s_forms_udatetime%";
+
+    # --------------------------------------------------------------------
+    # For Socket mode values should be enclosed in quotes
+    # Values have spaces. Unless they are enclosed in quotes sourcing of
+    # socket.env before starting the Forms Server will fail
+    # --------------------------------------------------------------------
+
+    $io_sock->print("FORMS_APPSLIBS=" . "\"" . $FORMS_APPSLIBS . "\"" . "\n");
+    $io_sock->print("FORMS_USERNAME_CASESENSITIVE=" . $FORMS_USERNAME_CASESENSITIVE . "\n");
+    $io_sock->print("FORMS_USER_DATE_FORMAT=" . "\"" .  $FORMS_USER_DATE_FORMAT . "\"" . "\n");
+    $io_sock->print("FORMS_USER_DATETIME_FORMAT=" . "\"" . $FORMS_USER_DATETIME_FORMAT . "\"" . "\n");
+
+    # -----------------------------------------------------------------------
+    # For Servlet mode values need not be enclosed in quotes as default.env
+    # is not sourced before starting the Forms Server
+    # -----------------------------------------------------------------------
+
+    $io->print("FORMS_APPSLIBS=" . $FORMS_APPSLIBS . "\n");
+    $io->print("FORMS_USERNAME_CASESENSITIVE=" . $FORMS_USERNAME_CASESENSITIVE . "\n");
+    $io->print("FORMS_USER_DATE_FORMAT=" . $FORMS_USER_DATE_FORMAT . "\n");
+    $io->print("FORMS_USER_DATETIME_FORMAT=" . $FORMS_USER_DATETIME_FORMAT . "\n");
+}
+
+#################################################################
+# checkFileExists - Checks whether specified file exists or not
+#################################################################
+sub checkFileExists
+{
+    my $file = $ARG[0];
+    my $fsys = TXK::FileSys->new();
+
+    $fsys->access({ fileName   => $file,
+                    checkMode  => TXK::FileSys::READ_ACCESS,
+                    type       => TXK::FileSys::FILE
+                 })
+      or return TXK::Error::FAIL;
+
+    return TXK::Error::SUCCESS;
+}
+
+
+

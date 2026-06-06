@@ -1,0 +1,75 @@
+#!/bin/sh
+
+server=`hostname`
+mail={{ email_address}}
+SID=$1
+
+# Source the environment file
+if test -s {{ app_tgt_mount }}/EBSapps.env
+then
+. {{ app_tgt_mount }}/EBSapps.env RUN
+else
+  exit 1
+fi
+
+np=`ps -fu applmgr | grep Dweblogic.Name=AdminServer | wc -l`
+if [ ${np} -eq 2 ];
+then
+echo "`ps -fu applmgr | grep Dweblogic-Name=AdminServer`" | mailx -s "Admin Server is DOWN and restarting ${server}" ${mail}
+#{ echo weblogic123; echo G0ldenUAT; } | $ADMIN_SCRIPTS_HOME/adadminsrvctl.sh start
+{ echo $WLST; echo $PSWD; } | $ADMIN_SCRIPTS_HOME/adadminsrvctl.sh start
+sleep 60
+echo "Admin Server is  started on $TWO_TASK "| mail -s " Admin Server is STARTED on ${server}" ${mail}
+elif [ `ps -fu applmgr | grep Dweblogic.Name=AdminServer | wc -l` -lt 2 ];
+then
+echo "Please check Admin server and start manually" | mailx -s "Admin Server is DOWN  ${server}" ${mail}
+else
+echo "Admin Server - No action required"
+fi
+
+oa=`ps -fu applmgr | grep Dweblogic.Name=oacore_server1 | wc -l`
+if [ ${oa} -eq 1 ];
+then
+echo "`ps -fu applmgr | grep Dweblogic-Name=oacore_server1`" | mailx -s "OACORE server is DOWN and restarting ${server}" ${mail}
+#{ echo weblogic123; echo G0ldenUAT; } | $ADMIN_SCRIPTS_HOME/adadminsrvctl.sh start
+{ echo $WLST; } | $ADMIN_SCRIPTS_HOME/admanagedsrvctl.sh start oacore_server1
+sleep 60
+echo "OACORE Server  started on $TWO_TASK "| mail -s " OACORE Server is STARTED ${server}" ${mail}
+elif [ `ps -fu applmgr | grep Dweblogic.Name=AdminServer | wc -l` -lt 2 ];
+then
+echo "Please check OACORE server and start manually" | mailx -s "OACORE Server is DOWN  ${server}" ${mail}
+else
+echo "OACORE server - No action required"
+fi
+
+form=`ps -fu applmgr | grep Dweblogic.Name=forms_server1 | wc -l`
+if [ ${form} -eq 1 ];
+then
+echo "`ps -fu applmgr | grep Dweblogic-Name=forms_server1`" | mailx -s "FORMS Server is DOWN and restarting ${server}" ${mail}
+#{ echo weblogic123; echo G0ldenUAT; } | $ADMIN_SCRIPTS_HOME/adadminsrvctl.sh start
+{ echo $WLST; } | $ADMIN_SCRIPTS_HOME/admanagedsrvctl.sh start forms_server1
+sleep 60
+echo "FORMS Server is  started on $TWO_TASK "| mail -s " FORMS Server is  STARTED ${server}" ${mail}
+elif [ `ps -fu applmgr | grep Dweblogic.Name=AdminServer | wc -l` -lt 2 ];
+then
+echo "Please check Forms server and start manually" | mailx -s "FORMS Server is DOWN  ${server}" ${mail}
+else
+echo "FORMS Server - No action required"
+fi
+
+oafm=`ps -fu applmgr | grep Dweblogic.Name=oafm_server1 | wc -l`
+if [ ${oafm} -eq 1 ];
+then
+echo "`ps -fu applmgr | grep Dweblogic-Name=oafm_server1`" | mailx -s "OAFM Server is DOWN and restarting ${server}" ${mail}
+#{ echo weblogic123; echo G0ldenUAT; } | $ADMIN_SCRIPTS_HOME/adadminsrvctl.sh start
+{ echo $WLST; } | $ADMIN_SCRIPTS_HOME/admanagedsrvctl.sh start oafm_server1
+sleep 60
+echo "OAFM Server is  started on $TWO_TASK "| mail -s " OAFM Server is  STARTED ${server}" ${mail}
+elif [ `ps -fu applmgr | grep Dweblogic.Name=AdminServer | wc -l` -lt 2 ];
+then
+echo "Please check OAFM server and start manually" | mailx -s "OAFM Server is DOWN  ${server}" ${mail}
+else
+echo "OAFM Server - No action required"
+fi
+
+

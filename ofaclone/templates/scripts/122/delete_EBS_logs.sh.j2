@@ -1,0 +1,45 @@
+#/bin/bash -x
+
+program=`basename $0`
+HOST=`uname -n`
+EMAIL_ADDRESS={{ email_address }}
+
+
+if [ $# -lt 1 ];
+then
+   printf "\n$program: too few arguments specified.\n\n"
+   printf "\n$program: exiting with status 1\n\n"
+   printf "\n=======================================================================\n \n"
+   exit 1;
+fi
+
+SID=$1
+echo $SID
+NODE=`hostname -s`
+cname={{ app_tgt_mount }}
+
+source $cname/EBSapps.env RUN
+
+date=`date +%y%m%d`
+echo $date
+SID=$1
+#deldir=`date -d "$date -7 day" _%y%m%d`
+#echo $deldir
+#dest_dir=
+#rm -rf $dest_dir/$deldir
+#mkdir -l $dest_dir/$date
+find $EBS_DOMAIN_HOME/servers/oacore_server1/logs/oacore_server1.log* -mtime +30 -exec rm {} \;
+find $EBS_DOMAIN_HOME/servers/forms_server1/logs/forms_server1.log* -mtime +30 -exec rm {} \;
+find $EBS_DOMAIN_HOME/servers/oafm_server1/logs/oafm_server1.log* -mtime +30 -exec rm {} \;
+find $EBS_DOMAIN_HOME/servers/oacore_server*/logs/oacore_server1.out* -mtime +30 -exec rm {} \;
+find $EBS_DOMAIN_HOME/servers/forms_server1/logs/forms_server1.out* -mtime +30 -exec rm {} \;
+find $EBS_DOMAIN_HOME/servers/oafm_server1/logs/oafm_server1.out* -mtime +30 -exec rm {} \;
+find $EBS_DOMAIN_HOME/servers/AdminServer/logs/*.log* -mtime +30 -exec rm {} \;
+find $EBS_DOMAIN_HOME/servers/AdminServer/logs/*.out* -mtime +30 -exec rm {} \;
+
+find /u01/prodora/inst/apps/PRODORA_ebsappprod/temp -name "*.tmp" -mtime +5 -exec rm -rf {} \;
+find /u01/prodora/inst/apps/PRODORA_ebsappprod/temp -name "*.html" -mtime +5 -exec rm -rf {} \;
+
+find $APPLCSF/log  -mtime +45 -exec rm {} \;
+find $APPLCSF/out  -mtime +45 -exec rm {} \;
+echo "" > /tmp/check_health30.log

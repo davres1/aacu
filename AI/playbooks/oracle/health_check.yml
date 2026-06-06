@@ -1,0 +1,52 @@
+---
+# Oracle health check: service watchdog (CheckOracleStatus.sh, runs as root
+# so it can restart services) + database inventory (db_inventory.sh, runs as
+# oracle so it can sqlplus to every DB in databases.ini).
+- name: Oracle host + database health check
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true                          # root by default; tasks downgrade as needed
+
+  vars:
+    remote_dir: '/tmp/dba'
+
+  tasks:
+    - name: Ensure remote dir + lib subdir exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ remote_dir }}"
+        - "{{ remote_dir }}/lib"
+
+    - name: Copy shared library
+      ansible.builtin.copy:
+        src: ../files/lib/oracle_common.sh
+        dest: "{{ remote_dir }}/lib/oracle_common.sh"
+        mode: '0755'
+
+    - name: Copy CheckOracleStatus.sh
+      ansible.builtin.copy:
+        src: ../files/CheckOracleStatus.sh
+        dest: "{{ remote_dir }}/CheckOracleStatus.sh"
+        mode: '0755'
+
+    - name: Copy db_inventory.sh
+      ansible.builtin.copy:
+        src: ../files/db_inventory.sh
+        dest: "{{ remote_dir }}/db_inventory.sh"
+        mode: '0755'
+
+    - name: Run CheckOracleStatus.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/CheckOracleStatus.sh"
+      register: status_result
+      changed_when: false
+      failed_when: false
+
+    - name: Run db_inventory.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/db_inventory.sh"
+      become_user: "{{ oracle_user | default('oracle') }}"
+      register: inventory_result
+      changed_when: false
+      failed_when: false

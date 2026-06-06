@@ -1,0 +1,52 @@
+// Device Key Configuration Mapping File
+// This file has two section.
+// The first section marked [devices] maps device to device key config
+// file for DHCP support. Format for each line is DeviceName=file.
+//
+// DeviceName will be used for translation. The prompt that will be
+// shown is stored in AK prompt under region "MWARUNTIME" and
+// attribute_code "INDUSTRIAL_" + DeviceName,
+// e.g. "INDUSTRIAL_DEFAULT", etc.
+//
+// The second section marked [map] maps IP address to device key
+// config file. Format for this section is IP address=file. 
+// $Header: deviceIP.ini 120.2.12020000.2 2015/12/21 07:55:54 sowu ship $
+//
+// ###############################################################
+// 
+// Do not edit settings in this file manually. They are managed
+// automatically and will be overwritten when AutoConfig runs.
+// For more information about AutoConfig, refer to the Oracle
+// E-Business Suite Setup Guide.
+// 
+// ###############################################################
+
+//
+
+//# ********************
+//#
+//# Begin customizations
+//#
+//# ********************
+//# Customizations below this line will be preserved if patching this
+//# file via the instantiation utility.
+
+[device]
+DEFAULT=default_key.ini
+SYMBOL=symbol.ini
+INTERMEC=internec.ini
+//# GUI=gui_key.ini
+SMART=mobile_key.ini
+
+// Wildcard at the end of IP address is supported.
+[map]
+//# 127.0.0.1=default_key.ini
+
+//# ********************
+//#
+//# End customizations
+//#
+//# ********************
+
+[host]
+TelnetServer=edbaapp.internal.vmmc.org

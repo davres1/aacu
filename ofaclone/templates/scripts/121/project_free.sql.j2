@@ -1,0 +1,45 @@
+set pagesize 0
+set linesize 80
+set termout off
+set echo  off
+set verify  off
+column status            format a7   
+column tablespace_name   format a17 
+column contents          format a10
+column extent_management format a10
+column ts_size           format 9,999,990
+column used              format 9,999,990
+column used_pct          format 990.90  
+spool &3/free.lst_&2
+SELECT d.status ||'|'||
+       d.tablespace_name ||'|'||
+       d.contents ||'|'||
+       d.extent_management ||'|'||
+       round(NVL(a.bytes / 1024 / 1024, 0),2) ||'|'||
+       round((NVL(a.bytes - NVL(f.bytes, 0), 0)/1024/1024),2) ||'|'||
+       round(NVL((a.bytes - NVL(f.bytes, 0)) / a.bytes * 100, 0),2) used_pct 
+FROM   sys.dba_tablespaces d,
+      (select tablespace_name,
+              sum(bytes) bytes
+         from dba_data_files
+        group by tablespace_name) a,
+      (select tablespace_name,
+              sum(bytes) bytes
+         from dba_free_space
+        group by tablespace_name ) f
+WHERE d.tablespace_name = a.tablespace_name(+)
+  AND d.tablespace_name = f.tablespace_name(+)
+  AND NOT ( d.contents in  ( 'TEMPORARY', 'UNDO' ))
+--  AND d.tablespace_name != 'SYSAUX'
+  and d.tablespace_name not like '%UNDO%'
+  and NVL((a.bytes - NVL(f.bytes, 0)) / a.bytes * 100, 0) > &1
+order by round(NVL((a.bytes - NVL(f.bytes, 0)) / a.bytes * 100, 0),2)  desc;
+
+spool off;
+
+set termout on
+set echo  on
+set verify  on
+/* prompt Created free.lst for your viewing pleasure... */
+exit
+

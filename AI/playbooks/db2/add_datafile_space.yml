@@ -1,0 +1,46 @@
+---
+# Extend a Db2 tablespace by add_mb megabytes.
+#   ALTER TABLESPACE <ts> EXTEND (ALL <add_mb> M)
+#
+# Works for DMS / automatic-storage tablespaces. Connection uses the instance
+# owner with credentials from databases.ini, so the playbook needs DBADM on the
+# target database.
+- name: Extend a Db2 tablespace by N MB
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ db2_user | default('db2inst1') }}"
+
+  vars:
+    db2_database:  "{{ db2_database }}"
+    tablespace:    "{{ tablespace }}"
+    add_mb:        "{{ add_mb | int }}"
+    databases_ini: "{{ databases_ini | default('/etc/db2/databases.ini') }}"
+
+  tasks:
+    - name: Read connection credentials from databases.ini
+      ansible.builtin.set_fact:
+        db2_conn_user: >-
+          {{ lookup('ini', 'connuser section=' + db2_database + ' file=' + databases_ini, errors='ignore')
+             | default('db2inst1', true) }}
+        db2_conn_pass: >-
+          {{ lookup('ini', 'connpass section=' + db2_database + ' file=' + databases_ini) }}
+      no_log: true
+
+    - name: Extend tablespace
+      ansible.builtin.shell: |
+        set -e
+        source ~/sqllib/db2profile 2>/dev/null || true
+        db2 connect to {{ db2_database }} user {{ db2_conn_user }} using "{{ db2_conn_pass }}" >/dev/null
+        db2 "ALTER TABLESPACE {{ tablespace }} EXTEND (ALL {{ add_mb | int }} M)"
+        echo "Extended {{ tablespace }} by {{ add_mb | int }} MB in {{ db2_database }}"
+        db2 connect reset >/dev/null 2>&1 || true
+      args:
+        executable: /bin/bash
+      register: grow_result
+      no_log: true
+      changed_when: "'Extended' in (grow_result.stdout | default(''))"
+
+    - name: Surface result
+      ansible.builtin.debug:
+        var: grow_result.stdout

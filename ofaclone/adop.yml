@@ -1,0 +1,70 @@
+---
+# Summary: This playbook automates the application of Oracle EBS patches using ADOP.
+# It handles unarchiving patch files, executing the adop.sh script, and cleaning up.
+
+- name: Oracle EBS Code Migration
+  hosts: "{{ domain }}-{{ tgt_env }}-OFA-APP"
+  gather_facts: no
+
+  vars:
+    date: "{{ lookup('pipe', 'date +%Y-%m-%d-%M') }}"
+
+  vars_files:
+  - vars/{{ domain }}/{{ tgt_env }}/targetdbinfo.yaml
+
+  tasks:
+  - name: Create {{ tgt_dir }} directory
+    file:
+      path: "{{ tgt_dir }}"
+      state: directory
+      owner: applmgr
+      group: dba
+      mode: '0755'
+
+  # Set Suffix
+  - set_fact:
+      suffix: "ansible{{ 1000 | random }}"
+    run_once: yes
+    become: yes
+    become_user: applmgr
+
+  - name: Unarchive zip file to target server
+    unarchive:
+      src: "{{ filename }}"
+      dest: "{{ tgt_dir }}"
+
+  - name: Find all patch zip files in the destination directory
+    find:
+      paths: "{{ tgt_dir }}"
+      patterns: "*.zip"
+    register: patch_zip_files
+
+  # - name: Copy shell script to target Application server
+  - template: src=templates/adop.sh.j2 dest="{{ tgt_dir }}/adop.sh" mode=0777
+    become: yes
+    become_user: applmgr
+
+  - name: Unarchive and process each patch
+    include_tasks: adop_patch_loop.yml
+    loop: "{{ patch_zip_files.files }}"
+    loop_control:
+      loop_var: patch_file_item
+
+  # - name: Run ADOP patch on {{ tgt_env }}
+  #   shell: "sh adop.sh"
+  #   args:
+  #     chdir: "{{ tgt_dir }}"
+  #   become: yes
+  #   become_user: applmgr
+  #   register: adoplog
+
+  # - debug: msg="{{ adoplog.stdout_lines }}"
+  # #- debug: msg="{{ adoplog.stderr }}"
+
+  - name: Cleanup extracted patch directories
+    file:
+      path: "{{ item.path | regex_replace('.zip$','') }}"
+      state: absent
+    loop: "{{ patch_zip_files.files }}"
+    loop_control:
+      loop_var: item

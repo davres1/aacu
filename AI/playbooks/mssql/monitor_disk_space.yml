@@ -1,0 +1,18 @@
+---
+- name: Disk + datafile space report
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  vars:
+    remote_dir: 'C:\Windows\Temp'
+
+  tasks:
+    - name: Copy MonitorDiskSpace.ps1
+      ansible.windows.win_copy:
+        src: "{{ scripts_dir }}/MonitorDiskSpace.ps1"
+        dest: "{{ remote_dir }}\\MonitorDiskSpace.ps1"
+
+    - name: Run MonitorDiskSpace.ps1
+      ansible.windows.win_shell: "& '{{ remote_dir }}\\MonitorDiskSpace.ps1'"
+      register: result
+      changed_when: false
+      failed_when: false

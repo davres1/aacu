@@ -1,0 +1,406 @@
+#!/bin/bash
+# source ~/.bash_profile
+
+if [ -f ~/.profile ]; then
+. ~/.profile
+elif [ -f ~/.bash_profile ]; then
+#. ~/.bash_profile
+echo ""
+fi
+
+HOST_NAME=$(hostname)
+GREEN="\033[0;32m"
+RED="\033[0;31m"
+NC="\033[0m" # No Color
+
+if [ $# != 5 ]
+then
+echo "${RED} $0 <PRODDUCTION APPS PASSWORD> <Current system Password> <New APPS Password for DEV> <SYSADMIN PASSWORD> <weblogic passwrd>${NC}"
+exit 1;
+fi
+
+echo "Setting up parameters using node_info.txt"
+DIR=$(echo "{{ tgt_db }}"|tr [A-Z] [a-z])
+SDIR=$(echo "{{ src_db }}"|tr [A-Z] [a-z])
+host_name=`hostname|sed 's/\..*//g'`
+
+
+#Parameters
+cdate=$(date +%m-%d-%y)
+echo $cdate
+
+#DIR=$(echo "{{ tgt_db }}"|tr [A-Z] [a-z])
+#SDIR=$(echo "{{ src_db }}"|tr [A-Z] [a-z])
+OLDDIR=junkdir
+WDIR={{ tgt_dir }}
+ENVFILE={{ app_tgt_mount }}/EBSapps.env
+CONTEXTFILE=$WDIR/{{ tgt_db }}_{{ tgt_app_node }}.xml
+LOGFILE=$WDIR/Clone_LOG_"$cdate".log
+PWPSWD=$5
+SYSAPASS=$4
+APPSPASS=$3
+PAPPSPASS=$1
+PSYSPASS=$2
+COMMON_TOP={{ app_tgt_mount }}/{{ current_base }}/EBSapps/comn
+L_TARGET_RUN_FS={{ app_tgt_mount }}/{{ current_base }}
+L_TARGET_PATCH_FS={{ app_tgt_mount }}/{{ patch_base }}
+L_FMW_HOME_FS=$L_TARGET_RUN_FS/FMW_Home
+#L_TARGET_RUN_FS=$run_base
+#L_TARGET_PATCH_FS=$patch_base
+#L_FMW_HOME_FS=$run_base/FMW_Home
+#COMMON_TOP=$run_base/EBSapps/comn
+
+#fixing efs file issue
+#echo "fixing $L_TARGET_RUN_FS/FMW_Home/webtier/instances/EBS_web_OHS1/config/OHS/EBS_web/httpd.conf for images directory"
+#sed -ie 's/"\/images/"\/efs\/images/g' $L_TARGET_RUN_FS/FMW_Home/webtier/instances/EBS_web_OHS1/config/OHS/EBS_web/httpd.conf
+
+#mkdir -p /home/applmgr/clone
+#Rename Source name to target
+#if [ -d /u01/${SDIR} ]
+#then
+#[[ -d {{ app_tgt_mount }} ]] && mv {{ app_tgt_mount }} {{ app_tgt_mount }}_old
+#mv /u01/${SDIR} {{ app_tgt_mount }}
+#fi
+
+
+echo "logfile is : $LOGFILE"
+#exec &> >(tee -a "$LOGFILE") # bash script.sh
+exec 3>&1 1>>${LOGFILE} 2>&1
+
+###### Functions
+# Error handler function for when the shell doesn't cut it
+_Die()
+{
+    _EXITSTATUS="${?}"
+    _BASE=$(basename -- "$0")
+    echo -e "${_BASE}: error: $* [exit status ${?}]" >&2
+    exit ${_EXITSTATUS}
+}
+
+FN_remove_insttop()
+{
+
+
+  if [[ -z  ${L_TARGET_RUN_FS} ]]; then
+    echo "the L_TARGET_RUN_FS variable is null and being generated"
+  fi
+
+  L_INSTTOP=${L_TARGET_RUN_FS}/inst/apps/{{ tgt_db }}_{{ tgt_app_node }}
+
+  if [ -d ${L_INSTTOP} ]; then
+    echo "Removing the INST_TOP (${L_INSTTOP})"
+    rm -rf ${L_INSTTOP}
+  else
+    echo "The INST_TOP (${L_INSTTOP}) does not exist"
+  fi
+
+  if [ -d ${L_TARGET_PATCH_FS} ]; then
+    echo "Removing the PATCH_TOP (${L_TARGET_PATCH_FS})"
+    rm -rf ${L_TARGET_PATCH_FS}
+  else
+    echo "The PATCH_TOP (${L_TARGET_PATCH_FS}) does not exist"
+  fi
+
+  if [ -d ${L_FMW_HOME_FS} ]; then
+    echo "Removing the FMW_HOME (${L_FMW_HOME_FS})"
+    rm -rf ${L_FMW_HOME_FS}
+  else
+    echo "The FMW_HOME (${L_FMW_HOME_FS}) does not exist"
+  fi
+
+}
+
+
+
+FN_ADCFGCLONE()
+{
+  FN_remove_insttop
+
+ # printf "\t == updating the /etc/oraInst.loc == \n"
+  #echo "inventory_loc=/${L_APPLUSER}/csf/oraInventory" > /etc/oraInst.loc
+
+  if [ ! -d /u01/app/oraInventory ]; then
+    mkdir -p /u01/app/oraInventory
+  fi
+
+  echo "Running adcfgclone Apps Tier"
+
+ echo "apps pwd ${PAPPSPASS}; echo ${PWPSWD}"; echo " perl ${COMMON_TOP}/clone/bin/adcfgclone.pl component=appsTier pairsfile={{ tgt_dir }}/mypairfile.txt dualfs=yes "
+
+# perl ${L_TARGET_RUN_FS}/EBSapps/comn/clone/bin/adcfgclone.pl appsTier $CONTEXTFILE dualfs <<PLEOF
+# ${PAPPSPASS}
+# ${PWPSWD}
+# PLEOF
+
+{ echo ${PAPPSPASS}; echo ${PWPSWD}; } | perl ${COMMON_TOP}/clone/bin/adcfgclone.pl component=appsTier pairsfile={{ tgt_dir }}/mypairfile.txt dualfs=yes
+
+if [ $? -eq 0 ]; then
+   echo "adcfgclone completed."
+else
+   echo "adcfgclone Failed."
+   exit 1;
+fi
+
+
+## n - does not work to disable the starting of the services (default)
+
+  if [ $? -eq 0 ]; then
+     echo "adcfgclone completed."
+  else
+     echo "STAGE 1: adcfgclone Failed."
+     export L_ERROR=5;
+  fi
+} ### End of FN_ADCFGCLONE ###
+
+
+#STAGE 0: Checking env files
+echo "STAGE 0: Checking env files"
+
+if [ -f /tmp/P0 ] ; then
+echo "Step Already Performed. Moving to next step"
+sleep 20
+else
+echo "Cleaning old sessions"
+ps -ef|grep -E 'EBSapps'|awk '{print $2}'|xargs kill -9 
+echo "please check $LOGFILE"
+#Check logfile
+  if [ -f ${WDIR}/$(echo $ENVFILE) ]
+  then
+    echo ""
+    . ${WDIR}/$(echo $ENVFILE)
+  fi
+
+#Stopping application
+#echo "Stopping Application if its already running"
+#{ echo "apps"; echo ${PAPPSPASS}; echo ${PWPSWD}; } | $ADMIN_SCRIPTS_HOME/adstpall.sh -nodbchk  | tee -a $LOGFILE
+
+# APPLPTMp directory permission
+chmod -R 777 ${L_TARGET_RUN_FS}/inst/apps/{{ tgt_db }}_$(hostname -a)/temp
+#Unregister Oracle homes
+cd {{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/oui/bin/
+{{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/oui/bin/runInstaller -detachHome -silent ORACLE_HOME={{ app_tgt_mount }}/{{ current_base }}/FMW_Home/Oracle_EBS-app1
+{{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/oui/bin/runInstaller -detachHome -silent ORACLE_HOME={{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier
+{{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/oui/bin/runInstaller -detachHome -silent ORACLE_HOME={{ app_tgt_mount }}/{{ current_base }}/FMW_Home/oracle_common
+{{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/oui/bin/runInstaller -detachHome -silent ORACLE_HOME={{ app_tgt_mount }}/{{ current_base }}/EBSapps/10.1.2
+
+#Unregister Patch oracle home
+cd {{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/oui/bin/
+{{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/oui/bin/runInstaller -detachHome -silent ORACLE_HOME={{ app_tgt_mount }}/{{ patch_base }}/FMW_Home/Oracle_EBS-app1
+{{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/oui/bin/runInstaller -detachHome -silent ORACLE_HOME={{ app_tgt_mount }}/{{ patch_base }}/FMW_Home/webtier
+{{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/oui/bin/runInstaller -detachHome -silent ORACLE_HOME={{ app_tgt_mount }}/{{ patch_base }}/FMW_Home/oracle_common
+{{ app_tgt_mount }}/{{ current_base }}/FMW_Home/webtier/oui/bin/runInstaller -detachHome -silent ORACLE_HOME={{ app_tgt_mount }}/{{ patch_base }}/EBSapps/10.1.2
+
+touch /tmp/P0
+fi
+
+
+# STAGE 1 : cloning apps Tier
+echo "STAGE 1 : cloning apps Tier"
+if [ -f /tmp/P1 ] ; then
+echo "Step Already Performed. Moving to next step"
+sleep 20
+else
+echo "please check $LOGFILE"
+echo "Crosschecking inventory file"
+cp /u01/oraInventory/ContentsXML/inventory.xml /u01/oraInventory/ContentsXML/inventory.xml_`date +%m-%d-%H:%M`
+cp {{ tgt_dir }}/inventory.xml /u01/oraInventory/ContentsXML/inventory.xml
+cd $COMMON_TOP/clone/bin/
+echo "Start AppsTier Cloning...."
+FN_ADCFGCLONE
+touch /tmp/P1
+fi
+
+#-------------------------------------------------------
+#Stage  2 - Starting Admin server and reverting xml file
+#-------------------------------------------------------
+if [ -f /tmp/P2 ] ; then
+echo "Step Already Performed. Moving to next step"
+echo "Stage  2 - Starting Admin server and reverting xml file"
+sleep 20
+else
+echo "please check $LOGFILE"
+echo "stage  2 - Starting Admin server"
+. {{ app_tgt_mount }}/EBSapps.env RUN
+cp $CONTEXT_FILE $CONTEXT_FILE_`date +%m-%d-%H:%M`
+#cp {{ tgt_dir }}/{{ tgt_db }}_{{ tgt_app_node }}.xml  $CONTEXT_FILE
+{  echo ${PWPSWD}; echo ${PAPPSPASS}; } | $ADMIN_SCRIPTS_HOME/adadminsrvctl.sh start  | tee -a $LOGFILE
+touch /tmp/P2
+fi
+#---------------------------------------------------
+#STAGE 3: Change APPS and APPLSYS password
+#---------------------------------------------------
+
+if [ -f /tmp/P3 ] ; then
+echo "Step Already Performed. Moving to next step"
+sleep 20
+else
+echo "please check $LOGFILE"
+
+echo "STAGE 3: Change APPS and APPLSYS password"
+. {{ app_tgt_mount }}/EBSapps.env RUN
+FNDCPASS apps/$PAPPSPASS 0 Y system/$PSYSPASS USER SYSADMIN $SYSAPASS | tee -a $LOGFILE
+FNDCPASS apps/$PAPPSPASS 0 Y system/$PSYSPASS SYSTEM APPLSYS $APPSPASS | tee -a $LOGFILE
+perl $FND_TOP/patch/115/bin/txkManageDBConnectionPool.pl -options=updateDSPassword -contextfile=$CONTEXT_FILE <<EOF
+$PWPSWD
+$APPSPASS
+EOF
+# # perl $FND_TOP/patch/115/bin/txkManageDBConnectionPool.pl -options= updateDSPassword \
+# # -contextfile=$CONTEXT_FILE -appspass=$APPSPASS -adminpass=$PWPSWD
+
+# { echo $PWPSWD ; echo ${APPSPASS}; } | perl $FND_TOP/patch/115/bin/txkManageDBConnectionPool.pl -options=updateDSPassword,updateDSJdbcUrl -contextfile=$CONTEXT_FILE -nopromptmsg
+#Check Error
+if [ $? -eq 0 ]; then
+   echo "txkManageDBConnectionPool.pl completed."
+else
+   echo "STAGE 3 : txkManageDBConnectionPool.pl Failed."
+   exit 1;
+fi
+touch /tmp/P3
+fi
+
+
+#STAGE 4: RESTART Application
+echo "STAGE 4: RESTART Application"
+
+if [ -f /tmp/P4 ] ; then
+echo "Step Already Performed. Moving to next step"
+sleep 20
+else
+echo "please check $LOGFILE"
+
+. {{ app_tgt_mount }}/EBSapps.env RUN
+#Stop application
+{  echo ${PWPSWD}; } |$ADMIN_SCRIPTS_HOME/adstpall.sh apps/$APPSPASS  | tee -a $LOGFILE
+sleep 30
+#start application
+{  echo ${PWPSWD}; } |$ADMIN_SCRIPTS_HOME/adstrtal.sh apps/$APPSPASS  | tee -a $LOGFILE
+sleep 30
+#Stop application
+{  echo ${PWPSWD}; } |$ADMIN_SCRIPTS_HOME/adstpall.sh apps/$APPSPASS  | tee -a $LOGFILE
+sleep 10
+echo "Running AutoConfig"
+cp $CONTEXT_FILE $CONTEXT_FILE_$cdate
+
+echo "changing prod to nonprod in contect file for APPLTMP"
+perl -pi -e 's/(^.*s_applptmp.*?)({{ src_env | upper }})/$1{{ tgt_env | upper }}/' $CONTEXT_FILE
+
+$ADMIN_SCRIPTS_HOME/adautocfg.sh appspass=$APPSPASS
+echo "Modifying Config.xml to allow logging"
+cp $FMW_HOME/user_projects/domains/EBS_domain/config/config.xml $FMW_HOME/user_projects/domains/EBS_domain/config/config.xml_bkp
+cat $FMW_HOME/user_projects/domains/EBS_domain/config/config.xml_bkp  |sed 's/filter-rule>ofa.\+</filter-rule>0.0.0.0\/0 * * allow<\/connection-filter-rule>\n    <connection-filter-rule>0.0.0.0\/0 * 7001 allow http #AC<\/connection-filter-rule>\n    <connection-filter-rule>0.0.0.0\/0 * 7002 allow http #AC</' > $FMW_HOME/user_projects/domains/EBS_domain/config/config.xml
+perl -pi -e 's/oa_var="s_wls_admin_console_access_nodes".>/oa_var="s_wls_admin_console_access_nodes">0.0.0.0\/0<\/s_wls_admin_console_access_nodes>/' $CONTEXT_FILE
+touch /tmp/P4
+fi
+
+#STAGE 5: POST Steps"
+echo "STAGE 5: POST Steps"
+if [ -f /tmp/P5 ] ; then
+echo "Step Already Performed. Moving to next step"
+sleep 20
+else
+echo "please check $LOGFILE"
+
+. {{ app_tgt_mount }}/EBSapps.env RUN
+sqlplus apps/$APPSPASS <<  EOF
+define date1=$cdate
+begin
+fnd_profile_option_values_pkg.UPDATE_ROW(
+      X_APPLICATION_ID => 0,
+      X_PROFILE_OPTION_ID => 125,
+      X_LEVEL_ID => 10001,
+      X_LEVEL_VALUE => 0,
+      X_LEVEL_VALUE_APPLICATION_ID => NULL,
+      X_LEVEL_VALUE2 => NULL,
+      X_PROFILE_OPTION_VALUE => '{{ tgt_db }} Cloned from PRODUCTION on {{ date }}',
+      X_LAST_UPDATE_DATE =>SYSDATE,
+      X_LAST_UPDATED_BY => 0,
+      X_LAST_UPDATE_LOGIN => 1
+   );
+   dbms_output.put_line('Done ');
+   commit;
+exception
+when others then
+dbms_output.put_line('Error is '||substr(sqlerrm,1,200));
+end;
+/
+exit;
+EOF
+#Clean Workflow Queues
+sqlplus apps/$APPSPASS @$FND_TOP/patch/115/sql/wfntfqup.sql apps $APPSPASS applsys | tee -a $LOGFILE
+touch /tmp/P5
+fi
+
+# Steps for External Tier
+#STAGE 6: Steps for External Tier
+echo "STAGE 6: Steps for External Tier"
+if [ -f /tmp/P6 ] ; then
+echo "Step Already Performed. Moving to next step"
+sleep 20
+else
+echo "please check $LOGFILE"
+
+. {{ app_tgt_mount }}/EBSapps.env RUN
+if [ "{{ tgt_db }}" ==  "etest" ]
+then
+echo "change s_shared_file_system to true"
+cp $CONTEXT_FILE $WDIR/.
+sed  "s/"s_shared_file_system">(false)/"s_shared_file_system">true/g" $CONTEXT_FILE > /tmp/{{ tgt_db }}_context.xml
+cp /tmp/{{ tgt_db }}_context.xml $CONTEXT_FILE
+
+echo "running Preclone on Run filesystem"
+. {{ app_tgt_mount }}/EBSapps.env RUN 
+sh $INST_TOP/admin/scripts/adautocfg.sh appspass=${APPSPASS}
+
+. {{ app_tgt_mount }}/EBSapps.env patch
+{ echo ${APPSPASS}; } |$ADJVAPRG oracle.apps.ad.autoconfig.oam.CtxSynchronizer action=upload \
+contextfile={{ app_tgt_mount }}/{{ patch_base }}/inst/apps/{{ tgt_db }}_{{ tgt_app_node }}/appl/admin/{{ tgt_db }}_{{ tgt_app_node }}.xml \
+logfile=/tmp/patchctxupload.log
+
+. {{ app_tgt_mount }}/EBSapps.env RUN
+cd /home/applmgr/CustomFiles/
+cp default_key.ini $INST_TOP/admin/install/.
+cp deviceIP.ini $INST_TOP/admin/install/.
+
+
+{ echo ${PWPSWD}; echo ${APPSPASS}; }|$INST_TOP/admin/scripts/adadminsrvctl.sh start
+{ echo ${APPSPASS}; echo ${PWPSWD}; } |$INST_TOP/admin/scripts/adpreclone.pl appsTier
+{ echo ${PWPSWD}; echo ${APPSPASS}; }|$INST_TOP/admin/scripts/adadminsrvctl.sh stop
+{ echo ${PWPSWD}; echo ${APPSPASS}; }|$INST_TOP/admin/scripts/adnodemgrctl.sh stop
+
+echo "running Preclone on Patch filesystem"
+. {{ app_tgt_mount }}/EBSapps.env patch
+                
+{ echo ${PWPSWD}; echo ${APPSPASS}; }|$INST_TOP/admin/scripts/adadminsrvctl.sh start forcepatchfs
+{ echo ${APPSPASS}; echo ${PWPSWD}; } |$INST_TOP/admin/scripts/adpreclone.pl appsTier
+{ echo ${PWPSWD}; echo ${APPSPASS}; }|$INST_TOP/admin/scripts/adadminsrvctl.sh stop
+{ echo ${PWPSWD}; echo ${APPSPASS}; }|$INST_TOP/admin/scripts/adnodemgrctl.sh stop
+
+echo "connection filter rule on the Run file system"
+. {{ app_tgt_mount }}/EBSapps.env RUN   
+{ echo ${PWPSWD}; echo ${APPSPASS}; } |$INST_TOP/admin/scripts/adadminsrvctl.sh start
+
+
+{ echo ${PWPSWD}; }|perl $AD_TOP/patch/115/bin/txkWLSConnectionFilterManager.pl -contextfile=$CONTEXT_FILE -option=add-filter-rule -hostname={{ tgt_app_external_node }}
+{ echo ${PWPSWD}; }|java -cp $CLASSPATH:$FMW_HOME/wlserver_10.3/server/lib/weblogic.jar oracle.apps.ad.tools.configuration.RegisterNodePreReq add-filter-rule -contextfile $CONTEXT_FILE -hostname {{ tgt_app_external_node }}
+
+{ echo ${PWPSWD}; echo ${APPSPASS}; }|$INST_TOP/admin/scripts/adadminsrvctl.sh stop
+{ echo ${PWPSWD}; echo ${APPSPASS}; }|$INST_TOP/admin/scripts/adadminsrvctl.sh start
+
+echo "connection filter rule on the Patch file system"
+. {{ app_tgt_mount }}/EBSapps.env patch  
+{ echo ${PWPSWD}; echo ${APPSPASS}; } |$INST_TOP/admin/scripts/adadminsrvctl.sh start forcepatchfs
+{ echo ${PWPSWD}; }|perl $AD_TOP/patch/115/bin/txkWLSConnectionFilterManager.pl -contextfile=$CONTEXT_FILE -option=add-filter-rule -hostname={{ tgt_app_external_node }}
+{ echo ${PWPSWD}; }|java -cp $CLASSPATH:$FMW_HOME/wlserver_10.3/server/lib/weblogic.jar \
+oracle.apps.ad.tools.configuration.RegisterNodePreReq add-filter-rule -contextfile $CONTEXT_FILE \
+-hostname {{ tgt_app_external_node }}
+{ echo ${PWPSWD}; echo ${APPSPASS}; }|$INST_TOP/admin/scripts/adadminsrvctl.sh stop forcepatchfs
+{ echo ${PWPSWD}; echo ${APPSPASS}; }|$INST_TOP/admin/scripts/adadminsrvctl.sh start forcepatchfs
+fi
+touch /tmp/P6
+fi
+
+#Removing stages and old filesystem
+if [ $? == 0 ]; then rm -rf /tmp/P0 /tmp/P1 /tmp/P2 /tmp/P3 /tmp/P4 /tmp/P5  /tmp/P6 ; else echo "Clone Failed"; fi
+echo "===================================================="
+echo "Clone Completed"
+echo "===================================================="

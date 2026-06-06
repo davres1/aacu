@@ -1,0 +1,15 @@
+{{ tgt_db }} =
+  (DESCRIPTION_LIST =
+    (DESCRIPTION =
+      (ADDRESS = (PROTOCOL = TCP)(HOST = {{ tgt_db_node }})(PORT = 1521))
+    )
+  )
+
+SID_LIST_{{ tgt_db }} =
+  (SID_LIST =
+    (SID_DESC =
+      (ORACLE_HOME= {{ tgt_oracle_home }})
+      (SID_NAME = {{ tgt_db }})
+    )
+  )
+

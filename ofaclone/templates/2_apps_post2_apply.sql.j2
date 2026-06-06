@@ -1,0 +1,159 @@
+
+CREATE OR REPLACE PROCEDURE XX_mailer_workflow_start (errbuf OUT VARCHAR2,
+retcode OUT VARCHAR2)
+IS
+p_retcode NUMBER;
+p_errbuf VARCHAR2 (100);
+m_mailerid fnd_svc_components.component_id%TYPE;
+v_component_status fnd_svc_components.component_status%TYPE;
+v_PARAMETER_VALUE APPLSYS.FND_SVC_COMP_PARAM_VALS.PARAMETER_VALUE%TYPE;
+v_password_string VARCHAR2 (2000) := '{{ MAILER_PASSWORD }}';
+v_encrypted_password VARCHAR2 (2000);
+v_errmsg VARCHAR (1000);
+v_retcode NUMBER;
+BEGIN
+-- Due to autoconfig need to reset to *
+UPDATE wf_resources
+SET text = '*'
+WHERE name = 'WF_ADMIN_ROLE' AND text <> '*';
+
+COMMIT;
+
+
+SELECT component_id
+INTO m_mailerid
+FROM fnd_svc_components
+WHERE component_name = 'Workflow Notification Mailer';
+
+SELECT PARAMETER_VALUE
+INTO v_PARAMETER_VALUE
+FROM APPLSYS.FND_SVC_COMP_PARAM_VALS
+WHERE PARAMETER_ID = (SELECT parameter_id
+FROM APPLSYS.FND_SVC_COMP_PARAMS_B
+WHERE parameter_name = 'OUTBOUND_SERVER' and ZD_EDITION_NAME='SET1') and ZD_EDITION_NAME='SET1';
+
+IF v_PARAMETER_VALUE <> 'smtp.gmail.com' -- give IP or hostname of mail server
+THEN
+-- Outbound settings
+
+UPDATE APPLSYS.FND_SVC_COMP_PARAM_VALS
+SET PARAMETER_VALUE = 'smtp.gmail.com'
+WHERE PARAMETER_ID = (SELECT PARAMETER_ID
+FROM APPLSYS.FND_SVC_COMP_PARAMS_B
+WHERE parameter_name = 'OUTBOUND_SERVER' and ZD_EDITION_NAME='SET1') and ZD_EDITION_NAME='SET1';
+
+UPDATE APPLSYS.FND_SVC_COMP_PARAM_VALS
+SET PARAMETER_VALUE = '{{ tgt_env }}_erpwftest@commonspirit.org'
+WHERE PARAMETER_ID = (SELECT parameter_id
+FROM APPLSYS.FND_SVC_COMP_PARAMS_B
+WHERE parameter_name = 'OUTBOUND_USER' and ZD_EDITION_NAME='SET1') and ZD_EDITION_NAME='SET1';
+
+ECX_OBFUSCATE.ecx_data_encrypt (
+l_input_string => v_password_string,
+l_output_string => v_encrypted_password,
+errmsg => v_errmsg,
+retcode => v_retcode);
+
+IF (retcode > 0)
+THEN
+FND_FILE.PUT_LINE (
+FND_FILE.OUTPUT,
+'Error while encrypting password: '
+|| v_retcode
+|| ' - '
+|| v_errmsg);
+ELSE
+FND_SVC_COMP_PARAM_VALS_PKG.load_row (
+X_COMPONENT_NAME => 'Workflow Notification Mailer',
+X_PARAMETER_NAME => 'OUTBOUND_PASSWORD',
+X_PARAMETER_VALUE => v_encrypted_password,
+X_CUSTOMIZATION_LEVEL => 'L',
+X_OBJECT_VERSION_NUMBER => -1,
+X_OWNER => 'ORACLE');
+
+FND_SVC_COMP_PARAM_VALS_PKG.load_row (
+X_COMPONENT_NAME => 'Workflow Notification Mailer',
+X_PARAMETER_NAME => 'INBOUND_PASSWORD',
+X_PARAMETER_VALUE => v_encrypted_password,
+X_CUSTOMIZATION_LEVEL => 'L',
+X_OBJECT_VERSION_NUMBER => -1,
+X_OWNER => 'ORACLE');
+
+COMMIT;
+FND_FILE.PUT_LINE (
+FND_FILE.OUTPUT,
+'Workflow mailer setting were not correct may be due to autoconfig now set.');
+END IF;
+
+--Inbound Settings
+
+UPDATE APPLSYS.FND_SVC_COMP_PARAM_VALS
+SET PARAMETER_VALUE = 'imap.gmail.com'
+WHERE PARAMETER_ID = (SELECT parameter_id
+FROM APPLSYS.FND_SVC_COMP_PARAMS_B
+WHERE parameter_name = 'INBOUND_SERVER' and ZD_EDITION_NAME='SET1') and ZD_EDITION_NAME='SET1';
+
+UPDATE APPLSYS.FND_SVC_COMP_PARAM_VALS
+SET PARAMETER_VALUE = '{{ tgt_env }}_erpwftest@commonspirit.org'
+WHERE PARAMETER_ID = (SELECT parameter_id
+FROM APPLSYS.FND_SVC_COMP_PARAMS_B
+WHERE parameter_name = 'INBOUND_USER' and ZD_EDITION_NAME='SET1') and ZD_EDITION_NAME='SET1';
+
+
+UPDATE APPLSYS.FND_SVC_COMP_PARAM_VALS
+SET PARAMETER_VALUE = '{{ tgt_env }}_erpwftest@commonspirit.org'
+WHERE PARAMETER_ID = (SELECT parameter_id
+FROM APPLSYS.FND_SVC_COMP_PARAMS_B
+WHERE parameter_name = 'REPLYTO' and ZD_EDITION_NAME='SET1') and ZD_EDITION_NAME='SET1';
+
+UPDATE APPLSYS.FND_SVC_COMP_PARAM_VALS
+SET PARAMETER_VALUE = 'TLS'
+WHERE PARAMETER_ID = (SELECT parameter_id
+FROM APPLSYS.FND_SVC_COMP_PARAMS_B
+WHERE parameter_name = 'INBOUND_SECURE_PROTOCOL' and ZD_EDITION_NAME='SET1') and ZD_EDITION_NAME='SET1';
+
+UPDATE APPLSYS.FND_SVC_COMP_PARAM_VALS
+SET PARAMETER_VALUE = 'asif.mohammed@commonspirit.org'
+WHERE PARAMETER_ID = (SELECT parameter_id
+FROM APPLSYS.FND_SVC_COMP_PARAMS_B
+WHERE parameter_name = 'TEST_ADDRESS' and ZD_EDITION_NAME='SET1') and ZD_EDITION_NAME='SET1';
+
+commit;
+
+END IF;
+
+SELECT component_status
+INTO v_component_status
+FROM fnd_svc_components
+WHERE component_id =
+(SELECT component_id
+FROM fnd_svc_components
+WHERE component_name = 'Workflow Notification Mailer');
+
+FND_FILE.PUT_LINE (
+FND_FILE.OUTPUT,
+'As per system Workflow Notification mailer status is: '
+|| v_component_status);
+
+IF v_component_status <> 'RUNNING'
+THEN
+fnd_svc_component.start_component (m_mailerid, p_retcode, p_errbuf);
+COMMIT;
+
+END IF;
+END;
+/
+
+
+DECLARE
+    -- Variable declarations
+    l_ERRBUF    VARCHAR2 (32767);
+    l_RETCODE   VARCHAR2 (32767);
+BEGIN
+    -- Call
+    APPS.XX_MAILER_WORKFLOW_START (ERRBUF => l_ERRBUF, RETCODE => l_RETCODE);
+
+    -- Transaction control
+    COMMIT;
+END;
+/

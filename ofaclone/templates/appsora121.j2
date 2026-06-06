@@ -1,0 +1,58 @@
+#! /bin/sh
+#
+# chkconfig: 2345 80 05
+# description: start and stop Oracle Database Enterprise Edition on Oracle Linux 5 and 6
+#
+
+# In /etc/oratab, change the autostart field from N to Y for any
+# databases that you want autostarted.
+#
+# Create this file as /etc/init.d/appsora and execute:
+#  chmod 750 /etc/init.d/appsora
+#  chkconfig --add appsora
+#  chkconfig appsora on
+
+# Note: Change the value of ORACLE_HOME to specify the correct Oracle home
+# directory for your installation.
+#
+# Note: Change the value of ORACLE to the login name of the oracle owner
+ORACLE=applmgr
+source {{ app_tgt_mount }}/apps/apps_st/appl/APPS{{ tgt_env }}_{{ tgt_app_node }}.env > /dev/null 2>&1
+dbstatus=$(tnsping $TWO_TASK|tail -1|awk '{print $1}')
+PATH=${PATH}:$ORACLE_HOME/bin
+HOST=`hostname`
+PLATFORM=`uname`
+export ORACLE_HOME PATH
+
+case $1 in
+'status')
+        echo -n $"Oracle Process: "
+        su $ORACLE -c ". {{ app_tgt_mount }}/apps/apps_st/appl/APPS{{ tgt_env }}_{{ tgt_app_node }}.env > /dev/null;adopmnctl.sh status|head -n 10|tail -4;" &
+        ;;
+'start')
+        echo -n $"Starting Oracle Application: "
+        count=0
+        while [ `echo $dbstatus` != 'OK' ] && [ `echo $count` != 20 ]; do echo "DB is down. Waiting on database to come up....."; sleep 60; ((count+=1)); echo $count; done
+        if [ $dbstatus == 'OK' ]
+        then
+        su $ORACLE -c "{{ tgt_dir }}/restart.sh start {{ tgt_apps_pwd }}" &
+        fi
+        ;;
+'stop')
+        echo -n $"Shutting down Oracle Application: "
+        su $ORACLE -c "{{ tgt_dir }}/restart.sh stop {{ tgt_apps_pwd }}" &
+        ;;
+'restart')
+        echo -n $"Shutting down Oracle Application: "
+        su $ORACLE -c "{{ tgt_dir }}/restart.sh stop {{ tgt_apps_pwd }}" &
+        sleep 600
+        echo -n $"Starting Oracle Application: "
+        su $ORACLE -c "{{ tgt_dir }}/restart.sh start {{ tgt_apps_pwd }}" &
+        ;;
+*)
+        echo "usage: $0 {start|stop|restart}"
+        exit
+        ;;
+esac
+
+exit

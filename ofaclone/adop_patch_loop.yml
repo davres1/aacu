@@ -1,0 +1,32 @@
+---
+- name: "Get patch number from filename: {{ patch_file_item.path | basename }}"
+  set_fact:
+    current_patch_number: "{{ (patch_file_item.path | basename).split('.')[0] }}"
+
+- name: "Unarchive patch {{ current_patch_number }}"
+  unarchive:
+    src: "{{ patch_file_item.path }}"
+    dest: "{{ tgt_dir }}"
+    remote_src: yes
+  become: yes
+  become_user: applmgr
+
+- name: "Run ADOP for patch {{ current_patch_number }} on {{ tgt_env }}"
+  shell: "sh adop.sh"
+  args:
+    chdir: "{{ tgt_dir }}"
+  vars:
+    # Override patch_number for the adop.sh.j2 template if it's used inside the shell script
+    patch_number: "{{ current_patch_number }}"
+  become: yes
+  become_user: applmgr
+  register: adoplog
+
+- name: "Display log for patch {{ current_patch_number }}"
+  debug:
+    msg: "{{ adoplog.stdout_lines }}"
+
+- name: "Cleanup patch zip file {{ patch_file_item.path | basename }}"
+  file:
+    path: "{{ patch_file_item.path }}"
+    state: absent

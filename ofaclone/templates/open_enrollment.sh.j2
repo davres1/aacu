@@ -1,0 +1,80 @@
+#!/bin/bash
+source ~/.bash_profile
+
+if [ -f ~/.profile ]; then
+. ~/.profile
+elif [ -f ~/.bash_profile ]; then
+#. ~/.bash_profile
+echo ""
+fi
+
+
+. {{ app_tgt_mount }}/EBSapps.env RUN 
+
+
+sqlplus apps/{{ tgt_apps_pwd }} << EOF
+declare
+   l_errm        varchar2(4000);
+   l_rep_sql     varchar2(4000);
+   l_rep_eml     varchar2(4000);
+   l_password    varchar2(100) := '{{ enrollment_password }}';
+   l_cnt         number        := 0;
+       
+   cursor c1 is
+
+      select eav.login_name,eav.employee_number,eav.name, eav.system_person_type,eav.cost_center 
+        from vmmc_emp_active_v eav 
+       where eav.cost_center in ('810872', '301010', '301014', '301024', '301025', '301026', '301027', '761102', '761112')
+         --and rownum <= 5
+         and eav.login_name not in (select x.EMPLOYEE_NUMBER
+                                      from VMMC_PACKAGE_HOLD_VALUES_TMP x
+                                     where x.program_name = 'VMMC_ERP_OPEN_ENROLL_RESET_PSWD');
+       
+
+begin
+   /***
+   delete from VMMC_PACKAGE_HOLD_VALUES_TMP x
+    where x.program_name = 'VMMC_ERP_OPEN_ENROLL_RESET_PSWD';
+   commit;
+   ***/ 
+   l_cnt := 0;
+   for c1_rec in c1
+   loop
+      begin
+         l_cnt := l_cnt + 1;
+         --vmmc_commons_pk.VMMC_CHANGE_ERP_PASSWORD(c1_rec.login_name, 'Open2023$', 'pgmamc@vmmc.org');
+         vmmc_commons_pk.VMMC_CHANGE_ERP_PASSWORD(c1_rec.login_name, l_password, '');
+         l_errm := 'Success'; 
+         insert into VMMC_PACKAGE_HOLD_VALUES_TMP (program_name,rundate,request_type,employee_number,employee_name,attribute001,attribute002)
+         values ('VMMC_ERP_OPEN_ENROLL_RESET_PSWD',sysdate,'RESET_EMP_PSWD',c1_rec.login_name,c1_rec.name,l_errm,l_password);
+      exception
+      when others
+      then
+         l_errm := SQLERRM;
+         insert into VMMC_PACKAGE_HOLD_VALUES_TMP (program_name,rundate,request_type,employee_number,attribute001,attribute002)
+         values ('VMMC_ERP_OPEN_ENROLL_RESET_PSWD',sysdate,'RESET_EMP_PSWD',c1_rec.login_name,l_errm,l_password);
+      end;
+      commit;
+   end loop;
+   if l_cnt > 0
+   then 
+      l_rep_sql := 'select program_name,to_char(rundate,"DD-MON-RRRR HH:MI:SSAM") rundate,request_type,employee_number,employee_name,attribute002 New_Password, attribute001 process_status
+                      from VMMC_PACKAGE_HOLD_VALUES_TMP
+                     where program_name = "VMMC_ERP_OPEN_ENROLL_RESET_PSWD"';
+      l_rep_eml := '{{ emailaddress }}:[[Report for Password Reset of Employees for the Open Enrollment...]]((Attached is the report for the password reset for employees for Open Enrollment...))';
+      vmmc_generate_quick_report (l_rep_sql,l_rep_eml);
+   else
+      vmmc_commons_pk.send_email('',                                       -- p_program_name
+                                 'vmerp@vmmc.org',                -- p_from_address
+                                 'Anjan.Chakraborty@CommonSpirit.org',                        -- p_to_address
+                                 NULL,                                     -- p_cc_address
+                                 'R12 Message : Report for Password Reset of Employees for the Open Enrollment...', -- p_subject
+                                 'No Employees were found to RESET Password...'  -- p_message
+                                );   
+   end if;   
+end;
+/
+exit;
+EOF
+
+
