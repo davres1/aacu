@@ -57,6 +57,8 @@ inventory:
   sql_servers_group: sql_servers
   # Oracle tab ↔ this group of Linux hosts.
   oracle_servers_group: oracle_servers
+  # Db2 tab ↔ this group of Linux hosts (IBM Db2 LUW).
+  db2_servers_group: db2_servers
 
 
 # ---------- Windows paths -----------------------------------------------------
@@ -275,13 +277,15 @@ chatbot:
     debug: false
   llm:
     # LiteLLM routes by model prefix:
-    #   "anthropic/claude-sonnet-4-6"  → ANTHROPIC_API_KEY
+    #   "anthropic/claude-sonnet-4-6"  → ANTHROPIC_API_KEY   (Claude AI)
     #   "openai/gpt-4o-mini"           → OPENAI_API_KEY
+    #   "gemini/gemini-2.0-flash"      → GEMINI_API_KEY      (Google Gemini)
+    #   "oci/<model-ocid>"             → Oracle OCI GenAI (~/.oci/config auth)
     #   "ollama/llama3.1:8b"           → local Ollama (slow on CPU)
     #   "azure/<deployment>"           → AZURE_API_KEY + AZURE_API_BASE
     #   "bedrock/anthropic.claude-…"   → AWS Bedrock
-    # Leave `model:` empty to auto-select based on which API keys are set
-    # (anthropic > openai > ollama).
+    # Leave `model:` empty to auto-select based on which providers are set
+    # (anthropic > openai > gemini > oci > ollama).
     model:        ''
     fallbacks:    []              # comma-separated model strings, or list here
     timeout:      60              # per-call timeout, seconds
@@ -304,6 +308,16 @@ chatbot:
     anthropic:
       api_key:  ''
       model:    claude-sonnet-4-6
+    gemini:
+      api_key:  ''                  # GEMINI_API_KEY (Google AI Studio key)
+      model:    gemini-2.0-flash
+    oci:
+      # Oracle OCI Generative AI. `model` is the model name or OCID; auth comes
+      # from ~/.oci/config (or instance principals). region + compartment_id
+      # are required. Leave model empty to disable.
+      model:           ''
+      region:          ''
+      compartment_id:  ''
   cache:
     # Semantic cache for the classify() step (LanceDB, embedded — no server).
     # Near-identical questions reuse a prior structured intent instead of

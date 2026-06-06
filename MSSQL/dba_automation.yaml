@@ -1,21 +1,21 @@
 ---
 # Bootstrap + DBA automation playbook for all SQL Server hosts.
 #
-#   ansible-playbook -i /etc/ansible/hosts dba_automation.yaml --ask-vault-pass
-#   ansible-playbook -i /etc/ansible/hosts dba_automation.yaml --tags bootstrap
-#   ansible-playbook -i /etc/ansible/hosts dba_automation.yaml --tags localplugins
-#   ansible-playbook -i /etc/ansible/hosts dba_automation.yaml --tags backups
+#   ansible-playbook -i /etc/ansible/hosts MSSQL/dba_automation.yaml --ask-vault-pass
+#   ansible-playbook -i /etc/ansible/hosts MSSQL/dba_automation.yaml --tags bootstrap
+#   ansible-playbook -i /etc/ansible/hosts MSSQL/dba_automation.yaml --tags localplugins
+#   ansible-playbook -i /etc/ansible/hosts MSSQL/dba_automation.yaml --tags backups
 #
-# Single configuration file: setup.yaml (loaded below via vars_files).
-# Edit setup.yaml to change any threshold / path / schedule.
+# Single configuration file: setup.yaml at the repo root (loaded below via
+# vars_files). Edit setup.yaml to change any threshold / path / schedule.
 
-- hosts: sql_servers
+- hosts: "sql_servers:&{{ onboard_group | default('sql_servers') }}"
   become_method: runas
   strategy: free
   gather_facts: true              # we use ansible_date_time when rendering thresholds.json
 
   vars_files:
-    - setup.yaml
+    - ../setup.yaml
 
   vars:
     # Short aliases so the task list stays readable.
@@ -79,7 +79,7 @@
     # ===================================================================
     - name: Render thresholds.json from setup.yaml
       ansible.windows.win_template:
-        src: templates/mssql_thresholds.json.j2
+        src: ../templates/mssql_thresholds.json.j2
         dest: "{{ config_dir }}\\thresholds.json"
       tags: [always, config, localplugins]
 
@@ -352,7 +352,7 @@
 
     - name: Deploy mk_mssql.cfg from template
       ansible.windows.win_template:
-        src: templates/mk_mssql_cfg.ps1.j2
+        src: ../templates/mk_mssql_cfg.ps1.j2
         dest: "{{ checkmk_agent }}\\config\\mk_mssql_cfg.ps1"
       tags: [bootstrap, install, checkmk]
 

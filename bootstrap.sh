@@ -26,7 +26,7 @@
 #
 # Skip phases with env vars (each accepts 1/true to skip):
 #   SKIP_GITHUB, SKIP_INFLUXDB, SKIP_CHECKMK, SKIP_NAGFLUX, SKIP_RUNDECK,
-#   SKIP_OLLAMA, SKIP_CHATBOT, SKIP_TICKTATOR, SKIP_FIREWALL
+#   SKIP_OLLAMA, SKIP_CHATBOT, SKIP_AUTOONBOARD, SKIP_TICKTATOR, SKIP_FIREWALL
 #
 # Override the path to setup.yaml:
 #   SETUP_YAML=/path/to/setup.yaml ./bootstrap.sh
@@ -398,10 +398,10 @@ qa_phase4_influxdb() {
 # --- Phase 5: CheckMK Raw ----------------------------------------------------
 phase5_checkmk() {
     if ! command -v omd >/dev/null 2>&1; then
-        # Look for an RPM in files/ first; the user can drop any supported version there.
-        cmk_rpm="$(ls -1 "$SCRIPT_DIR"/files/check-mk-raw-*.rpm 2>/dev/null | sort -V | tail -1)"
+        # Look for an RPM in MSSQL/files/ first; the user can drop any supported version there.
+        cmk_rpm="$(ls -1 "$SCRIPT_DIR"/MSSQL/files/check-mk-raw-*.rpm 2>/dev/null | sort -V | tail -1)"
         if [[ -z $cmk_rpm ]]; then
-            die "CheckMK RPM not found. Download from https://checkmk.com/download and place in $SCRIPT_DIR/files/"
+            die "CheckMK RPM not found. Download from https://checkmk.com/download and place in $SCRIPT_DIR/MSSQL/files/"
         fi
         log "Installing $cmk_rpm"
         dnf -y install "$cmk_rpm" >>"$LOG_FILE" 2>&1
@@ -687,6 +687,32 @@ qa_phase8_chatbot() {
     log "QA: chatbot service active on :$FLASK_PORT"
 }
 
+# --- Phase 8b: nightly auto-onboarding cron ----------------------------------
+# Installs a cron.d job that runs auto_onboard.yml every night, pushing each
+# flavor's dba_automation.yaml to hosts newly added to /etc/ansible/hosts
+# (those without the onboarding marker). A vault password file at
+# /etc/aacu/.vault_pass is used automatically when present (unattended runs
+# can't prompt).
+phase8b_autoonboard() {
+    if [[ ! -f "$SCRIPT_DIR/auto_onboard.yml" ]]; then
+        warn "auto_onboard.yml not found in $SCRIPT_DIR — skipping"
+        return 99
+    fi
+    local cron_file=/etc/cron.d/aacu-auto-onboard
+    cat > "$cron_file" <<EOF
+# Nightly auto-onboarding of newly added DB hosts (managed by bootstrap.sh).
+# Pushes MSSQL/Oracle/Db2 dba_automation to hosts missing the onboarding marker.
+SHELL=/bin/bash
+30 1 * * * root cd $SCRIPT_DIR && ansible-playbook -i /etc/ansible/hosts auto_onboard.yml -e onboard_group=pending_onboard \$( [ -f /etc/aacu/.vault_pass ] && echo --vault-password-file /etc/aacu/.vault_pass ) >> /var/log/aacu_auto_onboard.log 2>&1
+EOF
+    chmod 0644 "$cron_file"
+    log "installed nightly auto-onboard cron at $cron_file (01:30 daily)"
+}
+qa_phase8b_autoonboard() {
+    [[ -f /etc/cron.d/aacu-auto-onboard ]] || { warn "auto-onboard cron not installed"; return 1; }
+    log "QA: nightly auto-onboard cron present"
+}
+
 # --- Phase 9: ticktator ------------------------------------------------------
 phase9_ticktator() {
     if [[ ! -f "$SCRIPT_DIR/ticktator.py" ]]; then
@@ -756,6 +782,7 @@ run_phase "Phase 5b: nagflux ${NAGFLUX_VERSION}" SKIP_NAGFLUX phase5b_nagflux   
 run_phase "Phase 6: Rundeck"                 SKIP_RUNDECK    phase6_rundeck         qa_phase6_rundeck
 run_phase "Phase 7: Ollama + model $OLLAMA_MODEL" SKIP_OLLAMA phase7_ollama         qa_phase7_ollama
 run_phase "Phase 8: DBA chatbot"             SKIP_CHATBOT    phase8_chatbot         qa_phase8_chatbot
+run_phase "Phase 8b: nightly auto-onboard"   SKIP_AUTOONBOARD phase8b_autoonboard   qa_phase8b_autoonboard
 run_phase "Phase 9: ticktator"               SKIP_TICKTATOR  phase9_ticktator       qa_phase9_ticktator
 run_phase "Phase 10: firewalld"              SKIP_FIREWALL   phase10_firewall       qa_phase10_firewall
 
@@ -773,7 +800,7 @@ ${c_green}========== bootstrap complete ==========${c_off}
 
 Next steps:
   1. Add Windows SQL hosts to /etc/ansible/hosts under [sql_servers]
-  2. ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/dba_automation.yaml --ask-vault-pass
+  2. ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/MSSQL/dba_automation.yaml --ask-vault-pass
   3. In CheckMK WATO, add a notification rule that invokes 'ticktator'
   4. In Rundeck, register the SQL hosts (rundeckfacts.py provides the facts)
 SUMMARY

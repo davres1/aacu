@@ -1,0 +1,54 @@
+---
+# Read-only Db2 SELECT — sanitized client-side, executed via the db2 CLP on the
+# target as the instance owner. Credentials come from databases.ini.
+#
+# The Db2 CLP has no COLSEP option, so we run the query in default (formatted)
+# mode and post-process: drop the dashes separator + "N record(s) selected"
+# footer, then collapse runs of 2+ spaces (the CLP column gap) into '|'. The
+# first surviving line is the header row — exactly what the handler's pipe-parser
+# expects. This suits catalog/admin queries (SYSCAT.* / SYSIBMADM.*) whose values
+# are identifiers/numbers; values containing 2+ consecutive spaces are the known
+# limitation. The query is fed through a temp .sql file (heredoc) so embedded
+# quotes/identifiers can't break shell quoting.
+- name: Run a read-only SQL query on a Db2 database
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ db2_user | default('db2inst1') }}"
+
+  vars:
+    db2_database:  "{{ db2_database }}"
+    sql_query:     "{{ sql_query }}"
+    databases_ini: "{{ databases_ini | default('/etc/db2/databases.ini') }}"
+
+  tasks:
+    - name: Read connection credentials from databases.ini
+      ansible.builtin.set_fact:
+        db2_conn_user: >-
+          {{ lookup('ini', 'connuser section=' + db2_database + ' file=' + databases_ini, errors='ignore')
+             | default('db2inst1', true) }}
+        db2_conn_pass: >-
+          {{ lookup('ini', 'connpass section=' + db2_database + ' file=' + databases_ini) }}
+      no_log: true
+
+    - name: Run read-only SQL query
+      ansible.builtin.shell: |
+        set -o pipefail
+        source ~/sqllib/db2profile 2>/dev/null || true
+        qf="$(mktemp /tmp/dba_q_XXXXXX.sql)"
+        cat > "$qf" <<'SQLEOF'
+        {{ sql_query }};
+        SQLEOF
+        db2 connect to {{ db2_database }} user {{ db2_conn_user }} using "{{ db2_conn_pass }}" >/dev/null
+        db2 -tf "$qf" \
+          | sed -e '/^$/d' -e '/record(s) selected/d' -e '/^[[:space:]]*-\{2,\}/d' \
+          | sed -e 's/[[:space:]]\{2,\}/|/g' -e 's/^[[:space:]]\+//' -e 's/[[:space:]]\+$//'
+        rc=$?
+        db2 connect reset >/dev/null 2>&1 || true
+        rm -f "$qf"
+        exit $rc
+      args:
+        executable: /bin/bash
+      register: query_result
+      changed_when: false
+      no_log: true

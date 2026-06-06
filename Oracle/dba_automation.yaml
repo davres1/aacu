@@ -16,7 +16,7 @@
 # Required: databases.ini on each host (pushed by this playbook), the oracle
 # OS user must exist with ORACLE_HOME set in /etc/oratab.
 
-- hosts: oracle_servers
+- hosts: "oracle_servers:&{{ onboard_group | default('oracle_servers') }}"
   gather_facts: true
   become: true                    # most tasks need root; sudo to oracle for sqlplus/rman
 

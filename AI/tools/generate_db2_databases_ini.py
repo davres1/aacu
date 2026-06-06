@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-generate_databases_ini.py — SQL Server edition
------------------------------------------------
+generate_databases_ini.py — IBM Db2 (LUW) edition
+-------------------------------------------------
 
-Walks every Windows SQL Server host in the Ansible inventory, pulls each
-host's `ansible_local.db_inventory` fact (produced by files/db_inventory.ps1
-deployed at C:\\ProgramData\\ansible\\facts.d\\db_inventory.ps1), and writes
-MSSQL/inventory/databases.ini with one [<DB_NAME>] section per discovered user
+Walks every Db2 host in the Ansible inventory, pulls each host's
+`ansible_local.db_inventory` fact (produced by Db2/files/db_inventory.sh
+deployed at /etc/ansible/facts.d/db_inventory.fact), and writes
+Db2/inventory/databases.ini with one [<DB_NAME>] section per discovered
 database.
 
   * `ansible_servername` is set from the host that reported the DB.
-  * `sql_instance` is the dbatools instance name (host\\instance).
-  * Existing sections (sql_user, sql_password, retention, emaillist, ...) are
+  * `db2_instance` is the instance the DB lives in (host\\instance).
+  * Existing sections (connuser, connpass, retention, emaillist, ...) are
     PRESERVED — re-running picks up newly added DBs without clobbering edits.
 
 Two ways to source facts:
@@ -20,9 +20,8 @@ Two ways to source facts:
      as produced by `ansible -m setup --tree <dir>`).
 
 Usage:
-    python3 generate_databases_ini.py
-    python3 generate_databases_ini.py --from-tree /tmp/facts --dry-run
-    python3 generate_databases_ini.py --include-system-dbs
+    python3 generate_db2_databases_ini.py
+    python3 generate_db2_databases_ini.py --from-tree /tmp/facts --dry-run
 """
 
 from __future__ import annotations
@@ -39,19 +38,19 @@ from datetime import datetime
 from pathlib import Path
 
 
-# System DBs that aren't useful targets for the chatbot. The generator skips
-# these by default; --include-system-dbs adds them back if needed.
-SYSTEM_DBS = {"master", "model", "msdb", "tempdb", "ReportServer",
-              "ReportServerTempDB", "distribution", "SSISDB"}
+# Db2 has no fixed "system database" set the way SQL Server does; the catalog
+# lives inside each database (SYSCAT.*). Kept for symmetry with the other
+# generators — populate if a site wants to exclude admin/sample DBs by default.
+SYSTEM_DBS: set[str] = set()
 
 # Fields managed manually — preserved verbatim from existing sections.
 USER_OWNED_FIELDS = (
-    "sql_user", "sql_password",
+    "connuser", "connpass",
     "environment", "emaillist", "retention",
 )
 
 # Fields the generator always (re)writes.
-MANAGED_FIELDS = ("ansible_servername", "sql_instance", "database",
+MANAGED_FIELDS = ("ansible_servername", "db2_instance", "database",
                   "version", "edition", "lastupdated")
 
 
@@ -93,11 +92,11 @@ def load_facts_from_tree(tree_dir: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def extract_databases(per_host_facts: dict, include_system: bool) -> list[dict]:
-    """db_inventory.ps1 emits:
-       ansible_local.db_inventory.mssql = {
+    """db_inventory.sh emits:
+       ansible_local.db_inventory.db2 = {
            "<host>\\<instance>": {
                "instance_name": "...",  "version": ...,  "edition": "...",
-               "databases": [{"name": "MyApp", ...}, ...],
+               "databases": [{"name": "SAMPLE", ...}, ...],
            }, ...
        }
     """
@@ -108,14 +107,12 @@ def extract_databases(per_host_facts: dict, include_system: bool) -> list[dict]:
         if not isinstance(inv, dict):
             continue
 
-        # Top-level host hint may include FQDN; instance keys give us the dbatools
-        # connection string.
-        host_hint = inv.get("computer_name") or host
-        mssql = inv.get("mssql") or {}
-        if not isinstance(mssql, dict):
+        host_hint = inv.get("computer_name") or inv.get("hostname") or host
+        db2 = inv.get("db2") or {}
+        if not isinstance(db2, dict):
             continue
 
-        for instance_key, instance_info in mssql.items():
+        for instance_key, instance_info in db2.items():
             if not isinstance(instance_info, dict):
                 continue
             instance_name = instance_info.get("instance_name") or instance_key
@@ -131,7 +128,7 @@ def extract_databases(per_host_facts: dict, include_system: bool) -> list[dict]:
                 rows.append({
                     "name":         name,
                     "host":         host_hint,
-                    "sql_instance": instance_name,
+                    "db2_instance": instance_name,
                     "database":     name,
                     "version":      version,
                     "edition":      edition,
@@ -163,10 +160,10 @@ def merge_into_ini(existing_path: Path, db_rows: list[dict]) -> tuple[configpars
     stats = {"added": 0, "updated": 0, "unchanged": 0, "hosts": set()}
     today = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # Rebuild [sql_servers] roster.
+    # Rebuild [db2_servers] roster.
     hosts = set()
-    if parser.has_section("sql_servers"):
-        for key in parser["sql_servers"]:
+    if parser.has_section("db2_servers"):
+        for key in parser["db2_servers"]:
             host = key.split()[0].strip()
             if host:
                 hosts.add(host)
@@ -174,14 +171,14 @@ def merge_into_ini(existing_path: Path, db_rows: list[dict]) -> tuple[configpars
         hosts.add(row["host"])
         stats["hosts"].add(row["host"])
 
-    if parser.has_section("sql_servers"):
-        parser.remove_section("sql_servers")
-    parser.add_section("sql_servers")
+    if parser.has_section("db2_servers"):
+        parser.remove_section("db2_servers")
+    parser.add_section("db2_servers")
     for h in sorted(hosts):
-        parser.set("sql_servers", h, None)
+        parser.set("db2_servers", h, None)
 
-    # Handle name collisions across hosts: if "Reports" exists on two hosts,
-    # the second one gets `Reports__<host>` as its section header.
+    # Handle name collisions across hosts: if "TRADEDB" exists on two hosts,
+    # the second one gets `TRADEDB__<host>` as its section header.
     used_sections: set[str] = set(parser.sections())
 
     for row in db_rows:
@@ -191,7 +188,6 @@ def merge_into_ini(existing_path: Path, db_rows: list[dict]) -> tuple[configpars
         if existing is not None:
             existing_host = parser.get(existing, "ansible_servername", fallback="")
             if existing_host and existing_host != row["host"]:
-                # Collision: suffix this one with the host to disambiguate.
                 candidate = f"{candidate}__{row['host'].split('.')[0]}"
                 existing = next((s for s in parser.sections() if s.lower() == candidate.lower()), None)
 
@@ -206,7 +202,7 @@ def merge_into_ini(existing_path: Path, db_rows: list[dict]) -> tuple[configpars
 
         old_host = parser.get(matched, "ansible_servername", fallback="")
         parser.set(matched, "ansible_servername", row["host"])
-        parser.set(matched, "sql_instance",       row["sql_instance"])
+        parser.set(matched, "db2_instance",       row["db2_instance"])
         parser.set(matched, "database",           row["database"])
         parser.set(matched, "version",            row["version"])
         parser.set(matched, "edition",            row["edition"])
@@ -244,23 +240,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--inventory", default="/etc/ansible/hosts",
                     help="Ansible inventory (live mode).")
-    ap.add_argument("--group", default="sql_servers",
+    ap.add_argument("--group", default="db2_servers",
                     help="Inventory group to target (live mode).")
     ap.add_argument("--from-tree", metavar="DIR",
                     help="Load facts from a directory of JSON files (--tree output).")
-    ap.add_argument("--out", default="MSSQL/inventory/databases.ini", type=Path,
+    ap.add_argument("--out", default="Db2/inventory/databases.ini", type=Path,
                     help="Where to write databases.ini.")
     ap.add_argument("--dry-run", action="store_true",
                     help="Print the result to stdout instead of writing.")
     ap.add_argument("--include-system-dbs", action="store_true",
-                    help="Also emit sections for master/model/msdb/tempdb/etc.")
+                    help="Also emit sections for any DBs listed in SYSTEM_DBS.")
     args = ap.parse_args(argv)
 
     # 1. gather
     if args.from_tree:
         per_host = load_facts_from_tree(args.from_tree)
     else:
-        tmp = tempfile.mkdtemp(prefix="mssql_facts_")
+        tmp = tempfile.mkdtemp(prefix="db2_facts_")
         try:
             per_host = gather_facts_live(args.inventory, args.group, tmp)
         finally:
@@ -274,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     rows = extract_databases(per_host, include_system=args.include_system_dbs)
     print(f"[scan] {len(rows)} database(s) across {len({r['host'] for r in rows})} host(s)")
     if not rows:
-        print("[error] no databases found — is db_inventory.ps1 deployed and "
+        print("[error] no databases found — is db_inventory.sh deployed and "
               "ansible_local.db_inventory populated?", file=sys.stderr)
         return 3
 

@@ -354,8 +354,10 @@ function renderData(data, intent) {
     if (data.influx) { const c = renderChart(data.influx); if (c) block.appendChild(c); }
     if (!block.children.length) block.appendChild(emptyHint('Combo query returned no rows or points.'));
   } else if (action === 'health_check') {
-    if (data.inventory && data.inventory.mssql) {
-      Object.entries(data.inventory.mssql).forEach(([inst, info]) => {
+    // mssql + db2 share the instance->databases inventory shape.
+    const instances = data.inventory && (data.inventory.mssql || data.inventory.db2);
+    if (instances) {
+      Object.entries(instances).forEach(([inst, info]) => {
         if (!info || !Array.isArray(info.databases)) return;
         const t = renderTable(info.databases, `${inst} • ${info.databases.length} databases`);
         if (t) block.appendChild(t);

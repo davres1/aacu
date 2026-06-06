@@ -50,8 +50,20 @@ import settings
 # ---------------------------------------------------------------------------
 # Threshold-template rendering
 # ---------------------------------------------------------------------------
+_TEMPLATE_BY_FLAVOR = {
+    "oracle": "oracle_thresholds.json.j2",
+    "db2":    "db2_thresholds.json.j2",
+    "mssql":  "mssql_thresholds.json.j2",
+}
+
+
+def _norm_flavor(flavor: str) -> str:
+    f = (flavor or "").lower()
+    return f if f in _TEMPLATE_BY_FLAVOR else "mssql"
+
+
 def _template_path(flavor: str) -> str:
-    fname = "oracle_thresholds.json.j2" if flavor == "oracle" else "mssql_thresholds.json.j2"
+    fname = _TEMPLATE_BY_FLAVOR[_norm_flavor(flavor)]
     return os.path.join(settings.REPO_DIR, "templates", fname)
 
 
@@ -78,7 +90,7 @@ def _setup_context() -> dict:
 
 def load_thresholds(flavor: str) -> dict:
     """Render the j2 thresholds template for `flavor` against setup.yaml."""
-    flavor = "oracle" if flavor == "oracle" else "mssql"
+    flavor = _norm_flavor(flavor)
     path = _template_path(flavor)
     if not os.path.exists(path):
         raise FileNotFoundError(f"thresholds template not found: {path}")
@@ -190,7 +202,7 @@ def _fmt(v):
 # ---------------------------------------------------------------------------
 def _cover(story, S, flavor, thresholds):
     story.append(Spacer(1, 1.0 * inch))
-    title = "SQL Server" if flavor == "mssql" else "Oracle"
+    title = {"mssql": "SQL Server", "oracle": "Oracle", "db2": "Db2"}.get(flavor, "SQL Server")
     story.append(Paragraph(f"{title} Database Health Report", S["h1b"]))
     story.append(Spacer(1, 0.1 * inch))
     benchmark = (thresholds.get("cis") or {}).get("benchmark", "")
@@ -365,8 +377,9 @@ def _inventory_section(story, S, inventory: dict | None, flavor: str):
         return
     story.append(PageBreak())
     story.append(Paragraph("Database Inventory Snapshot", S["h2b"]))
-    if flavor == "mssql":
-        instances = (inventory.get("mssql") or {})
+    if flavor in ("mssql", "db2"):
+        # Both use the instance->databases shape; db2 facts nest under "db2".
+        instances = (inventory.get(flavor) or inventory.get("mssql") or {})
         for inst_name in sorted(instances.keys()):
             inst = instances[inst_name] or {}
             story.append(Paragraph(inst_name, S["h3b"]))
@@ -423,7 +436,7 @@ def build_report(flavor: str, inventory: dict | None = None) -> bytes:
     `inventory` is optional - pass the merged ansible_local.db_inventory
     facts and an extra snapshot section is appended.
     """
-    flavor = "oracle" if flavor == "oracle" else "mssql"
+    flavor = _norm_flavor(flavor)
     thresholds = load_thresholds(flavor)
 
     buf = io.BytesIO()

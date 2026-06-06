@@ -18,13 +18,14 @@ except ImportError:
 # ---------------------------------------------------------------------------
 BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
 REPO_DIR     = os.path.dirname(BASE_DIR)
-PLAYBOOK_DIR = os.path.join(BASE_DIR, "playbooks")    # contains mssql/ + oracle/
-SCRIPTS_DIR  = os.path.join(REPO_DIR, "files")        # Windows DBA PowerShell
+PLAYBOOK_DIR = os.path.join(BASE_DIR, "playbooks")    # contains mssql/ + oracle/ + db2/
+SCRIPTS_DIR  = os.path.join(REPO_DIR, "MSSQL", "files")  # Windows DBA PowerShell
 
 # Per-flavor inventory paths. databases.ini files live next to each flavor's
 # DBA scripts so they're shared with the on-host Ansible playbooks.
-MSSQL_DATABASES_INI_DEFAULT  = os.path.join(BASE_DIR,  "inventory", "databases.ini")
+MSSQL_DATABASES_INI_DEFAULT  = os.path.join(REPO_DIR, "MSSQL",  "inventory", "databases.ini")
 ORACLE_DATABASES_INI_DEFAULT = os.path.join(REPO_DIR, "Oracle", "inventory", "databases.ini")
+DB2_DATABASES_INI_DEFAULT    = os.path.join(REPO_DIR, "Db2",    "inventory", "databases.ini")
 
 SETUP_YAML = os.environ.get("SETUP_YAML", os.path.join(REPO_DIR, "setup.yaml"))
 
@@ -63,7 +64,9 @@ def _env(name, default):
 #
 #   ollama/llama3.1:8b       → http://localhost:11434
 #   openai/gpt-4o-mini       → OPENAI_API_KEY
-#   anthropic/claude-…       → ANTHROPIC_API_KEY
+#   anthropic/claude-…       → ANTHROPIC_API_KEY        (Claude AI)
+#   gemini/gemini-…          → GEMINI_API_KEY           (Google Gemini)
+#   oci/<model-ocid>         → OCI GenAI (Oracle); auth via ~/.oci/config
 #   azure/<deployment>       → AZURE_API_KEY + AZURE_API_BASE
 #   bedrock/anthropic.claude-…
 # ---------------------------------------------------------------------------
@@ -78,17 +81,36 @@ OPENAI_BASE_URL = _env("OPENAI_BASE_URL",  _path("chatbot", "llm", "openai", "ba
 OPENAI_MODEL    = _env("OPENAI_MODEL",     _path("chatbot", "llm", "openai", "model",    default="gpt-4o-mini"))
 ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY", _path("chatbot", "llm", "anthropic", "api_key", default=""))
 ANTHROPIC_MODEL   = _env("ANTHROPIC_MODEL",   _path("chatbot", "llm", "anthropic", "model",   default="claude-sonnet-4-6"))
+
+# Google Gemini — LiteLLM routes "gemini/<model>" off GEMINI_API_KEY.
+GEMINI_API_KEY  = _env("GEMINI_API_KEY",   _path("chatbot", "llm", "gemini", "api_key", default=""))
+GEMINI_MODEL    = _env("GEMINI_MODEL",     _path("chatbot", "llm", "gemini", "model",   default="gemini-2.0-flash"))
+
+# Oracle OCI Generative AI — LiteLLM routes "oci/<model-ocid-or-name>".
+# Authentication uses the standard OCI SDK config (~/.oci/config) or instance
+# principals; region + compartment are required and exported for LiteLLM.
+OCI_MODEL          = _env("OCI_MODEL",          _path("chatbot", "llm", "oci", "model",          default=""))
+OCI_REGION         = _env("OCI_REGION",         _path("chatbot", "llm", "oci", "region",         default=""))
+OCI_COMPARTMENT_ID = _env("OCI_COMPARTMENT_ID", _path("chatbot", "llm", "oci", "compartment_id", default=""))
+
 LLM_TEMPERATURE = float(_env("LLM_TEMPERATURE", _path("chatbot", "llm", "temperature", default=0.1)))
 LLM_MAX_TOKENS  = int(_env("LLM_MAX_TOKENS",   _path("chatbot", "llm", "max_tokens",  default=1024)))
 
 
 def _auto_litellm_model():
-    """Pick a model string for LiteLLM based on which API keys are present."""
+    """Pick a model string for LiteLLM based on which providers are configured.
+
+    Priority: Anthropic (Claude) > OpenAI > Google Gemini > Oracle OCI > Ollama.
+    """
     if ANTHROPIC_API_KEY:
         return f"anthropic/{ANTHROPIC_MODEL}"
     if OPENAI_API_KEY:
         # 'openai/' prefix is optional but keeps the format consistent.
         return f"openai/{OPENAI_MODEL}"
+    if GEMINI_API_KEY:
+        return f"gemini/{GEMINI_MODEL}"
+    if OCI_MODEL:
+        return f"oci/{OCI_MODEL}"
     return f"ollama/{OLLAMA_MODEL}"
 
 
@@ -105,6 +127,10 @@ def _default_fallback_chain():
         candidates.append(f"anthropic/{ANTHROPIC_MODEL}")
     if OPENAI_API_KEY:
         candidates.append(f"openai/{OPENAI_MODEL}")
+    if GEMINI_API_KEY:
+        candidates.append(f"gemini/{GEMINI_MODEL}")
+    if OCI_MODEL:
+        candidates.append(f"oci/{OCI_MODEL}")
     candidates.append(f"ollama/{OLLAMA_MODEL}")
     for m in candidates:
         if m != primary and m not in chain:
@@ -144,6 +170,8 @@ LITELLM_DEBUG = (_env("LITELLM_DEBUG", str(_path("chatbot", "llm", "debug", defa
 def _auto_embed_model():
     if OPENAI_API_KEY:
         return "openai/text-embedding-3-small"
+    if GEMINI_API_KEY:
+        return "gemini/text-embedding-004"
     return "ollama/nomic-embed-text"
 
 
@@ -160,8 +188,10 @@ CACHE_EMBED_MODEL = _env("CACHE_EMBED_MODEL", _path("chatbot", "cache", "embed_m
 INVENTORY_PATH       = _env("ANSIBLE_INVENTORY",    _path("inventory", "path",                  default="/etc/ansible/hosts"))
 MSSQL_GROUP          = _env("ANSIBLE_SQL_GROUP",    _path("inventory", "sql_servers_group",     default="sql_servers"))
 ORACLE_GROUP         = _env("ANSIBLE_ORACLE_GROUP", _path("inventory", "oracle_servers_group", default="oracle_servers"))
+DB2_GROUP            = _env("ANSIBLE_DB2_GROUP",    _path("inventory", "db2_servers_group",     default="db2_servers"))
 MSSQL_DATABASES_INI  = _env("MSSQL_DATABASES_INI",  MSSQL_DATABASES_INI_DEFAULT)
 ORACLE_DATABASES_INI = _env("ORACLE_DATABASES_INI", ORACLE_DATABASES_INI_DEFAULT)
+DB2_DATABASES_INI    = _env("DB2_DATABASES_INI",    DB2_DATABASES_INI_DEFAULT)
 ANSIBLE_BIN          = _env("ANSIBLE_PLAYBOOK_BIN", "ansible-playbook")
 ANSIBLE_TIMEOUT      = int(_env("ANSIBLE_TIMEOUT",  "600"))
 
@@ -194,6 +224,9 @@ SQL_DENY_KEYWORDS = {
     "openrowset", "openquery", "sp_configure", "xp_cmdshell",
     "utl_file", "utl_http", "dbms_lob", "dbms_xmlgen",
     "into",
+    # Db2 utility / admin verbs (CLP + SQL-callable) that must never run via chat.
+    "load", "import", "export", "reorg", "runstats",
+    "prune", "quiesce", "activate", "deactivate",
 }
 SQL_MAX_ROWS = int(_env("SQL_MAX_ROWS", _path("chatbot", "sql", "max_rows", default=200)))
 
@@ -202,6 +235,12 @@ SQL_MAX_ROWS = int(_env("SQL_MAX_ROWS", _path("chatbot", "sql", "max_rows", defa
 # Oracle-specific
 # ---------------------------------------------------------------------------
 ORACLE_OS_USER = _env("ORACLE_OS_USER", "oracle")
+
+
+# ---------------------------------------------------------------------------
+# Db2-specific
+# ---------------------------------------------------------------------------
+DB2_OS_USER = _env("DB2_OS_USER", "db2inst1")
 
 
 # ---------------------------------------------------------------------------

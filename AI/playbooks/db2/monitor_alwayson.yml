@@ -1,0 +1,38 @@
+---
+# Db2 HADR status — same intent name as the SQL Server AlwaysOn tab for chat parity.
+- name: Db2 HADR status report
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ db2_user | default('db2inst1') }}"
+
+  vars:
+    remote_dir: '/tmp/dba'
+
+  tasks:
+    - name: Ensure remote dir
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ remote_dir }}"
+        - "{{ remote_dir }}/lib"
+
+    - name: Copy shared library
+      ansible.builtin.copy:
+        src: ../files/lib/db2_common.sh
+        dest: "{{ remote_dir }}/lib/db2_common.sh"
+        mode: '0755'
+
+    - name: Copy MonitorHADR.sh
+      ansible.builtin.copy:
+        src: ../files/MonitorHADR.sh
+        dest: "{{ remote_dir }}/MonitorHADR.sh"
+        mode: '0755'
+
+    - name: Run MonitorHADR.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/MonitorHADR.sh"
+      register: result
+      changed_when: false
+      failed_when: false

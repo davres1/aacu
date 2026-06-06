@@ -106,10 +106,59 @@ If the user's request is ambiguous, choose 'chat' and put a clarifying
 question in the reply field."""
 
 
+_DB2_PROMPT = """You are an IBM Db2 (LUW) / InfluxDB operations assistant.
+Classify the user's request into ONE structured action and return STRICT JSON.
+
+The user works with Db2 databases that live inside an instance (e.g. db2inst1) on
+a Linux host. Each database has a name (e.g. SAMPLE, TRADEDB). Most messages should
+set 'database' only — the backend resolves the matching 'server' (Linux host) from
+databases.ini's ansible_servername field automatically. Only emit 'server' explicitly
+when the user names a host that isn't tied to any one DB.
+
+Allowed actions and their parameter shapes:
+
+  sql_query           {"server": str, "database": str, "query": str}
+      Only SELECT statements (Db2 SQL). Use the catalog/admin views: SYSCAT.* (e.g.
+      SYSCAT.TABLES, SYSCAT.DBAUTH, SYSCAT.BUFFERPOOLS) and SYSIBMADM.* / MON_GET_*
+      table functions (e.g. SYSIBMADM.TBSP_UTILIZATION, SYSIBMADM.SNAPDB,
+      MON_GET_CONNECTION, MON_GET_DATABASE). Query SYSIBM.SYSDUMMY1 for scalars.
+
+  influx_query        {"measurement": str, "host": str|null,
+                       "time_range": str, "aggregation": "mean"|"max"|"min"|"last"|"sum"}
+      CheckMK / monitoring stats — measurement names from the Db2 local plugins
+      (e.g. "Db2_TS_SAMPLE_USERSPACE1", "Db2_Backup_Full_SAMPLE", "Db2_HADR_SAMPLE").
+
+  combo_query         {"sql":    {"server": str, "database": str, "query": str} | null,
+                       "influx": {"measurement": str, "host": str|null,
+                                  "time_range": str, "aggregation": str} | null}
+
+  check_blocking_locks  {"server": str, "database": str|null}   Lock waits (MON_LOCKWAITS).
+  add_datafile_space    {"server": str, "database": str,
+                         "tablespace": str, "add_mb": int}       Extend a DMS tablespace.
+  health_check          {"server": str}            Instance + db connect + inventory.
+  backup_status         {"server": str}            Backup age from DB_HISTORY.
+  integrity_status      {"server": str}            Cached INSPECT CHECK result.
+  disk_status           {"server": str}            Tablespace usage + FS free.
+  agent_jobs            {"server": str, "lookback_hours": int|null}
+                                                    Administrative Task Scheduler runs.
+  tempdb_status         {"server": str}            System temporary tablespaces.
+  security_audit        {"server": str}            DBADM/SECADM, PUBLIC grants, defaults.
+  patch_level           {"server": str}            db2level + fixpack registry.
+  alwayson_status       {"server": str}            HADR role + log gap / lag.
+  chat                  {"reply": str}
+
+Return JSON only — no prose, no markdown fences. Pick exactly one action.
+If the user's request is ambiguous, choose 'chat' and put a clarifying
+question in the reply field."""
+
+
 def _system_prompt_for(flavor):
     """Return the right system prompt for the active database flavor."""
-    if (flavor or "").lower() == "oracle":
+    f = (flavor or "").lower()
+    if f == "oracle":
         return _ORACLE_PROMPT
+    if f == "db2":
+        return _DB2_PROMPT
     return _MSSQL_PROMPT
 
 
@@ -157,6 +206,16 @@ def _prime_litellm_env_once():
         os.environ.setdefault("OPENAI_API_BASE", settings.OPENAI_BASE_URL)
     if settings.ANTHROPIC_API_KEY:
         os.environ.setdefault("ANTHROPIC_API_KEY", settings.ANTHROPIC_API_KEY)
+    # Google Gemini — LiteLLM reads GEMINI_API_KEY for the "gemini/" prefix.
+    if settings.GEMINI_API_KEY:
+        os.environ.setdefault("GEMINI_API_KEY", settings.GEMINI_API_KEY)
+    # Oracle OCI Generative AI — region/compartment for the "oci/" prefix; the
+    # rest of auth (user, tenancy, key, fingerprint) comes from ~/.oci/config or
+    # instance principals, which the OCI SDK / LiteLLM pick up automatically.
+    if settings.OCI_REGION:
+        os.environ.setdefault("OCI_REGION", settings.OCI_REGION)
+    if settings.OCI_COMPARTMENT_ID:
+        os.environ.setdefault("OCI_COMPARTMENT_ID", settings.OCI_COMPARTMENT_ID)
     if settings.OLLAMA_BASE_URL:
         os.environ.setdefault("OLLAMA_API_BASE", settings.OLLAMA_BASE_URL)
 

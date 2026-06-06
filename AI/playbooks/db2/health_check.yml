@@ -1,0 +1,51 @@
+---
+# Db2 health check: instance + per-database connect watchdog (CheckDb2Status.sh)
+# plus database inventory (db_inventory.sh). Both run as the instance owner.
+- name: Db2 host + database health check
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ db2_user | default('db2inst1') }}"
+
+  vars:
+    remote_dir: '/tmp/dba'
+
+  tasks:
+    - name: Ensure remote dir + lib subdir exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ remote_dir }}"
+        - "{{ remote_dir }}/lib"
+
+    - name: Copy shared library
+      ansible.builtin.copy:
+        src: ../files/lib/db2_common.sh
+        dest: "{{ remote_dir }}/lib/db2_common.sh"
+        mode: '0755'
+
+    - name: Copy CheckDb2Status.sh
+      ansible.builtin.copy:
+        src: ../files/CheckDb2Status.sh
+        dest: "{{ remote_dir }}/CheckDb2Status.sh"
+        mode: '0755'
+
+    - name: Copy db_inventory.sh
+      ansible.builtin.copy:
+        src: ../files/db_inventory.sh
+        dest: "{{ remote_dir }}/db_inventory.sh"
+        mode: '0755'
+
+    - name: Run CheckDb2Status.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/CheckDb2Status.sh"
+      register: status_result
+      changed_when: false
+      failed_when: false
+
+    - name: Run db_inventory.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/db_inventory.sh"
+      register: inventory_result
+      changed_when: false
+      failed_when: false

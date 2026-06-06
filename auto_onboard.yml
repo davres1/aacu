@@ -1,0 +1,86 @@
+---
+# auto_onboard.yml — nightly auto-onboarding for newly added DB hosts.
+#
+# Walks every flavor group in /etc/ansible/hosts (sql_servers, oracle_servers,
+# db2_servers), finds hosts that have NOT yet been onboarded (no marker file),
+# runs the matching dba_automation.yaml against only those hosts, then drops the
+# marker so they are skipped on subsequent nights.
+#
+#   ansible-playbook -i /etc/ansible/hosts auto_onboard.yml \
+#       -e onboard_group=pending_onboard --ask-vault-pass
+#
+# `-e onboard_group=pending_onboard` is what scopes each dba_automation play to
+# the dynamically-built "pending_onboard" group (see their hosts: patterns,
+# e.g. "sql_servers:&{{ onboard_group | default('sql_servers') }}"). Without it
+# each dba_automation defaults to its full group (a complete refresh).
+#
+# Idempotent: if no new hosts are found, pending_onboard is empty and every
+# imported play simply matches zero hosts. bootstrap.sh schedules this nightly.
+
+# ---------------------------------------------------------------------------
+# Phase 1 — detect un-onboarded hosts and add them to `pending_onboard`.
+# ---------------------------------------------------------------------------
+- name: Detect newly added (un-onboarded) DB hosts
+  hosts: sql_servers:oracle_servers:db2_servers
+  gather_facts: false
+  vars:
+    marker_linux: /opt/dba/.onboarded
+    marker_windows: 'C:\DBA\.onboarded'
+  tasks:
+    - name: Stat onboarding marker (Windows / SQL Server)
+      ansible.windows.win_stat:
+        path: "{{ marker_windows }}"
+      register: m_win
+      when: inventory_hostname in groups.get('sql_servers', [])
+
+    - name: Stat onboarding marker (Linux / Oracle + Db2)
+      ansible.builtin.stat:
+        path: "{{ marker_linux }}"
+      register: m_lin
+      when: inventory_hostname not in groups.get('sql_servers', [])
+
+    - name: Flag host as pending onboarding when the marker is absent
+      ansible.builtin.add_host:
+        name: "{{ inventory_hostname }}"
+        groups: pending_onboard
+      changed_when: false
+      when: >-
+        (inventory_hostname in groups.get('sql_servers', [])
+           and not (m_win.stat.exists | default(false)))
+        or
+        (inventory_hostname not in groups.get('sql_servers', [])
+           and not (m_lin.stat.exists | default(false)))
+
+# ---------------------------------------------------------------------------
+# Phase 2 — run each flavor's automation against the pending hosts only.
+# Each dba_automation's hosts: pattern intersects its group with onboard_group,
+# so pass -e onboard_group=pending_onboard on the command line.
+# ---------------------------------------------------------------------------
+- name: Onboard new SQL Server hosts
+  import_playbook: MSSQL/dba_automation.yaml
+
+- name: Onboard new Oracle hosts
+  import_playbook: Oracle/dba_automation.yaml
+
+- name: Onboard new Db2 hosts
+  import_playbook: Db2/dba_automation.yaml
+
+# ---------------------------------------------------------------------------
+# Phase 3 — stamp the marker so onboarded hosts are skipped next run.
+# ---------------------------------------------------------------------------
+- name: Stamp onboarding marker on freshly onboarded hosts
+  hosts: pending_onboard
+  gather_facts: false
+  tasks:
+    - name: Create marker (Windows)
+      ansible.windows.win_copy:
+        content: "onboarded by auto_onboard.yml"
+        dest: 'C:\DBA\.onboarded'
+      when: inventory_hostname in groups.get('sql_servers', [])
+
+    - name: Create marker (Linux)
+      ansible.builtin.copy:
+        content: "onboarded by auto_onboard.yml\n"
+        dest: /opt/dba/.onboarded
+        mode: '0644'
+      when: inventory_hostname not in groups.get('sql_servers', [])

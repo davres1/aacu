@@ -26,6 +26,7 @@ from handlers import influx_handler
 from handlers import report_pdf
 from handlers.mssql  import sql_handler as mssql_sql,  ops_handler as mssql_ops
 from handlers.oracle import sql_handler as oracle_sql, ops_handler as oracle_ops
+from handlers.db2    import sql_handler as db2_sql,    ops_handler as db2_ops
 from handlers.sql_guard import UnsafeSqlError
 
 
@@ -91,8 +92,11 @@ def _log_response(resp):
 
 def _flavor_modules(flavor):
     """Return (sql_handler_module, ops_handler_module, group_name, ini_path)."""
-    if (flavor or "").lower() == "oracle":
+    f = (flavor or "").lower()
+    if f == "oracle":
         return oracle_sql, oracle_ops, settings.ORACLE_GROUP, settings.ORACLE_DATABASES_INI
+    if f == "db2":
+        return db2_sql, db2_ops, settings.DB2_GROUP, settings.DB2_DATABASES_INI
     return mssql_sql, mssql_ops, settings.MSSQL_GROUP, settings.MSSQL_DATABASES_INI
 
 
@@ -150,7 +154,7 @@ def _read_databases_ini(flavor):
 
 
 # Sections that aren't actual databases.
-_DB_INI_RESERVED = {"sql_servers", "oracle_servers", "DEFAULT"}
+_DB_INI_RESERVED = {"sql_servers", "oracle_servers", "db2_servers", "DEFAULT"}
 
 
 def _databases_metadata(flavor):
@@ -301,7 +305,7 @@ def _dispatch(flavor, intent):
         return result
 
     if action == "check_blocking_locks":
-        if flavor == "oracle":
+        if flavor in ("oracle", "db2"):
             return ops_h.check_blocking_locks(
                 server=params.get("server"),
                 database=params.get("database"),
@@ -315,6 +319,13 @@ def _dispatch(flavor, intent):
                 server=params.get("server"),
                 database=params.get("database"),
                 datafile=datafile,
+                add_mb=params.get("add_mb"),
+            )
+        if flavor == "db2":
+            return ops_h.add_datafile_space(
+                server=params.get("server"),
+                database=params.get("database"),
+                tablespace=params.get("tablespace") or params.get("logical_file"),
                 add_mb=params.get("add_mb"),
             )
         return ops_h.add_datafile_space(
@@ -378,11 +389,18 @@ def _active_model():
         "ollama":    settings.OLLAMA_MODEL,
         "openai":    settings.OPENAI_MODEL,
         "anthropic": settings.ANTHROPIC_MODEL,
-    }.get(settings.LLM_PROVIDER, "unknown")
+        "gemini":    settings.GEMINI_MODEL,
+        "oci":       settings.OCI_MODEL,
+    }.get(settings.LLM_PROVIDER, settings.LITELLM_MODEL or "unknown")
 
 
 def _normalize_flavor(value):
-    return "oracle" if (value or "").lower().strip() == "oracle" else "mssql"
+    v = (value or "").lower().strip()
+    if v == "oracle":
+        return "oracle"
+    if v == "db2":
+        return "db2"
+    return "mssql"
 
 
 @app.route("/")
@@ -510,6 +528,7 @@ def health():
         "flavors": {
             "mssql":  {"group": settings.MSSQL_GROUP,  "databases_ini": settings.MSSQL_DATABASES_INI},
             "oracle": {"group": settings.ORACLE_GROUP, "databases_ini": settings.ORACLE_DATABASES_INI},
+            "db2":    {"group": settings.DB2_GROUP,    "databases_ini": settings.DB2_DATABASES_INI},
         },
     })
 

@@ -6,8 +6,11 @@ tenacity>=9.0
 # PDF report generation - pure-Python, no system libs required
 reportlab>=4.0
 Jinja2>=3.1
-# LLM gateway — speaks Ollama, OpenAI, Anthropic, Azure, Bedrock, Gemini, etc.
-# with one API. Model selection is driven by env / setup.yaml.
+# LLM gateway — speaks Ollama, OpenAI, Anthropic (Claude), Google Gemini,
+# Oracle OCI GenAI, Azure, Bedrock, etc. with one API. Model selection is driven
+# by env / setup.yaml (chatbot.llm). Gemini works through LiteLLM's REST client
+# with no extra dependency; Oracle OCI GenAI additionally needs the OCI SDK:
+#   pip install oci
 litellm>=1.50
 
 # Semantic cache for the classify() step — embedded, file-based vector store

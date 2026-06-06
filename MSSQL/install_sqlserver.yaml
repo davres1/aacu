@@ -29,7 +29,7 @@
   strategy: free
 
   vars_files:
-    - setup.yaml
+    - ../setup.yaml
 
   collections:
     - ansible.windows
