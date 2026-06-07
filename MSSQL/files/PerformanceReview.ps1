@@ -108,8 +108,8 @@ ORDER BY improvement DESC
         $wait  = Invoke-DbaQuery -SqlInstance $sqlInstance -Query $waitQ  -EnableException
         $mi    = Invoke-DbaQuery -SqlInstance $sqlInstance -Query $miQ    -EnableException
 
-        if (@($long).Count)  { Log-Message "$sqlInstance: $(@($long).Count) long-running request(s) >= ${LongRunningSeconds}s" "Warning" }
-        if (@($block).Count) { Log-Message "$sqlInstance: $(@($block).Count) blocked request(s)" "Warning" }
+        if (@($long).Count)  { Log-Message "${sqlInstance}: $(@($long).Count) long-running request(s) >= ${LongRunningSeconds}s" "Warning" }
+        if (@($block).Count) { Log-Message "${sqlInstance}: $(@($block).Count) blocked request(s)" "Warning" }
 
         [void]$report.Add([pscustomobject]@{
             instance        = $sqlInstance
