@@ -356,6 +356,8 @@ def _dispatch(flavor, intent):
         return ops_h.patch_level(server=params.get("server"))
     if action == "alwayson_status":
         return ops_h.alwayson_status(server=params.get("server"))
+    if action == "performance_review":
+        return ops_h.performance_review(server=params.get("server"))
 
     # Oracle-only intents
     if action == "create_restore_point" and flavor == "oracle":

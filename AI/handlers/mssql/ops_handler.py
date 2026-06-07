@@ -191,3 +191,7 @@ def patch_level(server):
 
 def alwayson_status(server):
     return _run_script(server, "mssql/monitor_alwayson.yml", "Run MonitorAlwaysOn.ps1")
+
+
+def performance_review(server):
+    return _run_script(server, "mssql/performance_review.yml", "Run PerformanceReview.ps1")

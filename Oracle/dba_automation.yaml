@@ -127,6 +127,7 @@
         - SecurityAudit.sh
         - PatchLevelCheck.sh
         - MonitorDataGuard.sh
+        - PerformanceReview.sh
         - createcheckmk.sh
         - db_inventory.sh
       tags: [scripts, always]

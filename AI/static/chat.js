@@ -408,6 +408,23 @@ function renderSummaryTables(action, s, block) {
       add(i.databases, `${i.instance} • databases (crit=${i.critical_count ?? 0} warn=${i.warning_count ?? 0})`);
       add(i.listeners, `${i.instance} • listeners`);
     });
+  } else if (action === 'performance_review') {
+    // SQL Server nests per instance; Oracle/Db2 are flat.
+    if (Array.isArray(s.instances)) {
+      s.instances.forEach(i => {
+        add(i.long_running,    `${i.instance} • long-running`);
+        add(i.top_sql,         `${i.instance} • top SQL by CPU`);
+        add(i.blocking,        `${i.instance} • blocking`);
+        add(i.waits,           `${i.instance} • top waits`);
+        add(i.missing_indexes, `${i.instance} • missing indexes`);
+      });
+    } else {
+      add(s.long_running, 'Long-running statements');
+      add(s.top_sql,      'Top SQL');
+      add(s.blocking,     'Blocking');
+      add(s.waits,        'Top waits');
+      add(s.bufferpools,  'Buffer pool hit ratio');
+    }
   }
 }
 

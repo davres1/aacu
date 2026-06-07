@@ -164,6 +164,7 @@
         - SecurityAudit.ps1
         - PatchLevelCheck.ps1
         - MonitorAlwaysOn.ps1
+        - PerformanceReview.ps1
       tags: [scripts, always]
 
     - name: Schedule MSSQL service/agent status (hourly auto-restart)

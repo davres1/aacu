@@ -121,6 +121,7 @@
         - SecurityAudit.sh
         - PatchLevelCheck.sh
         - MonitorHADR.sh
+        - PerformanceReview.sh
         - IndexMaintenance.sh
         - createcheckmk.sh
         - db_inventory.sh

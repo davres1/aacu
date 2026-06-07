@@ -487,9 +487,10 @@ http://&lt;management host&gt;:5000
   `influx_query` (CheckMK metrics, rendered as charts), `combo_query`,
   `health_check`, `backup_status`, `integrity_status`, `disk_status`,
   `agent_jobs`, `tempdb_status`, `security_audit`, `patch_level`,
-  `alwayson_status`, `check_blocking_locks`, `add_datafile_space` —
-  plus Oracle-only `create_restore_point`, `list_restore_points`,
-  `grow_recovery_size`.
+  `alwayson_status`, `check_blocking_locks`, `add_datafile_space`,
+  `performance_review` (long-running SQL + top consumers + waits, with the
+  assistant proposing remediations) — plus Oracle-only `create_restore_point`,
+  `list_restore_points`, `grow_recovery_size`.
 - **Read-only SQL gate** — every query passes through `handlers/sql_guard.py`;
   any non-SELECT / multi-statement / dangerous keyword is rejected before
   it ever leaves the chatbot process.

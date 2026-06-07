@@ -51,6 +51,9 @@ Allowed actions and their parameter shapes:
   security_audit        {"server": str}            sysadmins, sa, configs.
   patch_level           {"server": str}            SQL build + Windows hotfix.
   alwayson_status       {"server": str}            AG replica sync + lag.
+  performance_review    {"server": str}            Long-running queries, top CPU/IO
+                                                    statements, blocking, waits,
+                                                    missing indexes — for tuning.
   chat                  {"reply": str}             Free-form answer.
 
 Return JSON only — no prose, no markdown fences. Pick exactly one action.
@@ -94,6 +97,9 @@ Allowed actions and their parameter shapes:
   security_audit        {"server": str}            DBA role, defaults, PUBLIC.
   patch_level           {"server": str}            opatch + DBA_REGISTRY_HISTORY.
   alwayson_status       {"server": str}            Data Guard role + lag.
+  performance_review    {"server": str}            Long-running sessions, top SQL by
+                                                    elapsed/CPU, blocking, top waits
+                                                    (ASH) — for tuning.
   create_restore_point  {"server": str, "database": str, "name": str,
                          "guarantee": bool}
   list_restore_points   {"server": str, "database": str}
@@ -145,6 +151,9 @@ Allowed actions and their parameter shapes:
   security_audit        {"server": str}            DBADM/SECADM, PUBLIC grants, defaults.
   patch_level           {"server": str}            db2level + fixpack registry.
   alwayson_status       {"server": str}            HADR role + log gap / lag.
+  performance_review    {"server": str}            Long-running activities, top SQL by
+                                                    exec time (package cache), lock
+                                                    waits, bufferpool hit ratio — tuning.
   chat                  {"reply": str}
 
 Return JSON only — no prose, no markdown fences. Pick exactly one action.
@@ -373,12 +382,23 @@ def classify(user_message, known_servers=None, selected_database=None, flavor="m
 
 def summarize(user_message, intent, tool_result):
     """Ask the LLM to turn raw tool output into a friendly answer."""
+    system = ("You are a database operations assistant. "
+              "Summarize the tool result for the user in clear, concise prose. "
+              "If the result has tabular data, render a short markdown table. "
+              "Never invent values not present in the data.")
+    # For a performance review, go beyond describing the numbers — diagnose and
+    # recommend. Remediations must be grounded in the findings in the data.
+    if intent.get("action") == "performance_review":
+        system += (
+            " This is a database PERFORMANCE REVIEW. After summarizing the findings "
+            "(long-running statements, top consumers, blocking, waits, missing indexes), "
+            "add a **Suggested remediations** section with concrete, prioritized, "
+            "DBA-actionable steps tied to the specific findings — e.g. index/statistics "
+            "changes, query rewrites, killing or chasing a blocker, configuration or "
+            "memory/tempdb tuning. Clearly mark anything destructive as requiring review; "
+            "do not claim to have applied any change.")
     messages = [
-        {"role": "system",
-         "content": "You are a database operations assistant. "
-                    "Summarize the tool result for the user in clear, concise prose. "
-                    "If the result has tabular data, render a short markdown table. "
-                    "Never invent values not present in the data."},
+        {"role": "system", "content": system},
         {"role": "user",
          "content": (f"User asked: {user_message}\n\n"
                      f"Action taken: {intent.get('action')}\n"

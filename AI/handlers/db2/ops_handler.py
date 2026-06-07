@@ -191,3 +191,6 @@ def patch_level(server):
 def alwayson_status(server):
     """Db2 HADR — same intent name as the SQL Server side for chat parity."""
     return _run_script(server, "db2/monitor_alwayson.yml",   "Run MonitorHADR.sh")
+
+def performance_review(server):
+    return _run_script(server, "db2/performance_review.yml", "Run PerformanceReview.sh")

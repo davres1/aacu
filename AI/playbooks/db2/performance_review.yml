@@ -1,0 +1,37 @@
+---
+- name: Db2 performance review (long-running activities + top SQL + lock waits)
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ db2_user | default('db2inst1') }}"
+
+  vars:
+    remote_dir: '/tmp/dba'
+
+  tasks:
+    - name: Ensure remote dir
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ remote_dir }}"
+        - "{{ remote_dir }}/lib"
+
+    - name: Copy shared library
+      ansible.builtin.copy:
+        src: ../files/lib/db2_common.sh
+        dest: "{{ remote_dir }}/lib/db2_common.sh"
+        mode: '0755'
+
+    - name: Copy PerformanceReview.sh
+      ansible.builtin.copy:
+        src: ../files/PerformanceReview.sh
+        dest: "{{ remote_dir }}/PerformanceReview.sh"
+        mode: '0755'
+
+    - name: Run PerformanceReview.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/PerformanceReview.sh"
+      register: result
+      changed_when: false
+      failed_when: false

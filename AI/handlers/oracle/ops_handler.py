@@ -192,6 +192,9 @@ def alwayson_status(server):
     """Oracle Data Guard — same intent name as the SQL Server side for chat parity."""
     return _run_script(server, "oracle/monitor_alwayson.yml",   "Run MonitorDataGuard.sh")
 
+def performance_review(server):
+    return _run_script(server, "oracle/performance_review.yml", "Run PerformanceReview.sh")
+
 
 # ---------------------------------------------------------------------------
 # Restore points + Fast Recovery Area
