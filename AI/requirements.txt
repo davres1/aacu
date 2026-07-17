@@ -3,6 +3,7 @@ requests>=2.31
 influxdb>=5.3
 PyYAML>=6.0
 tenacity>=9.0
+botocore>=1.30
 # PDF report generation - pure-Python, no system libs required
 reportlab>=4.0
 Jinja2>=3.1
