@@ -624,7 +624,7 @@ phase8_chatbot() {
 
     cat >/etc/systemd/system/dba-chatbot.service <<UNIT
 [Unit]
-Description=DBA Info Chatbot — unified MSSQL + Oracle, gunicorn, LiteLLM
+Description=DBA Info Chatbot — unified MSSQL, Oracle, Db2, MySQL & MariaDB, gunicorn, LiteLLM
 After=network-online.target ollama.service influxdb.service
 Wants=network-online.target
 
@@ -701,7 +701,7 @@ phase8b_autoonboard() {
     local cron_file=/etc/cron.d/aacu-auto-onboard
     cat > "$cron_file" <<EOF
 # Nightly auto-onboarding of newly added DB hosts (managed by bootstrap.sh).
-# Pushes MSSQL/Oracle/Db2 dba_automation to hosts missing the onboarding marker.
+# Pushes MSSQL/Oracle/Db2/MySQL/MariaDB dba_automation to hosts missing the onboarding marker.
 SHELL=/bin/bash
 30 1 * * * root cd $SCRIPT_DIR && ansible-playbook -i /etc/ansible/hosts auto_onboard.yml -e onboard_group=pending_onboard \$( [ -f /etc/aacu/.vault_pass ] && echo --vault-password-file /etc/aacu/.vault_pass ) >> /var/log/aacu_auto_onboard.log 2>&1
 EOF
@@ -799,8 +799,14 @@ ${c_green}========== bootstrap complete ==========${c_off}
   Log file    : $LOG_FILE
 
 Next steps:
-  1. Add Windows SQL hosts to /etc/ansible/hosts under [sql_servers]
-  2. ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/MSSQL/dba_automation.yaml --ask-vault-pass
+  1. Add hosts to /etc/ansible/hosts under the matching group:
+       [sql_servers] [oracle_servers] [db2_servers] [mysql_servers] [mariadb_servers]
+  2. Push the per-flavor DBA stack (one line per flavor you use):
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/MSSQL/dba_automation.yaml   --ask-vault-pass
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/Oracle/dba_automation.yaml  --ask-vault-pass
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/Db2/dba_automation.yaml     --ask-vault-pass
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/MySQL/dba_automation.yaml   --ask-vault-pass
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/MariaDB/dba_automation.yaml --ask-vault-pass
   3. In CheckMK WATO, add a notification rule that invokes 'ticktator'
-  4. In Rundeck, register the SQL hosts (rundeckfacts.py provides the facts)
+  4. In Rundeck, register the hosts (rundeckfacts.py provides the facts)
 SUMMARY

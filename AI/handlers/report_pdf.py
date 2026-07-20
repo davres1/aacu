@@ -53,6 +53,8 @@ import settings
 _TEMPLATE_BY_FLAVOR = {
     "oracle": "oracle_thresholds.json.j2",
     "db2":    "db2_thresholds.json.j2",
+    "mysql":  "mysql_thresholds.json.j2",
+    "mariadb":"mariadb_thresholds.json.j2",
     "mssql":  "mssql_thresholds.json.j2",
 }
 
@@ -202,7 +204,8 @@ def _fmt(v):
 # ---------------------------------------------------------------------------
 def _cover(story, S, flavor, thresholds):
     story.append(Spacer(1, 1.0 * inch))
-    title = {"mssql": "SQL Server", "oracle": "Oracle", "db2": "Db2"}.get(flavor, "SQL Server")
+    title = {"mssql": "SQL Server", "oracle": "Oracle", "db2": "Db2",
+             "mysql": "MySQL", "mariadb": "MariaDB"}.get(flavor, "SQL Server")
     story.append(Paragraph(f"{title} Database Health Report", S["h1b"]))
     story.append(Spacer(1, 0.1 * inch))
     benchmark = (thresholds.get("cis") or {}).get("benchmark", "")
@@ -377,8 +380,8 @@ def _inventory_section(story, S, inventory: dict | None, flavor: str):
         return
     story.append(PageBreak())
     story.append(Paragraph("Database Inventory Snapshot", S["h2b"]))
-    if flavor in ("mssql", "db2"):
-        # Both use the instance->databases shape; db2 facts nest under "db2".
+    if flavor in ("mssql", "db2", "mysql", "mariadb"):
+        # These all use the instance->databases shape; facts nest under the flavor key.
         instances = (inventory.get(flavor) or inventory.get("mssql") or {})
         for inst_name in sorted(instances.keys()):
             inst = instances[inst_name] or {}

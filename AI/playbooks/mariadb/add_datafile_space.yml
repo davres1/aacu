@@ -1,0 +1,69 @@
+---
+# Add space to a MariaDB tablespace by add_mb megabytes.
+#   ALTER TABLESPACE <ts> ADD DATAFILE '<ts>_<n>.ibd';     (general tablespace)
+#
+# InnoDB file-per-table datafiles autoextend, so when the named target is not a
+# general tablespace this reports the autoextend posture instead of failing.
+# Connection uses credentials from databases.ini, so the account needs the
+# relevant privileges (ALTER, plus filesystem access on the server).
+- name: Add space to a MariaDB tablespace by N MB
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ mysql_user | default('root') }}"
+
+  vars:
+    mysql_database: "{{ mysql_database }}"
+    tablespace:     "{{ tablespace }}"
+    add_mb:         "{{ add_mb | int }}"
+    databases_ini:  "{{ databases_ini | default('/etc/mysql/databases.ini') }}"
+
+  tasks:
+    - name: Read connection credentials from databases.ini
+      ansible.builtin.set_fact:
+        my_conn_user: >-
+          {{ lookup('ini', 'connuser section=' + mysql_database + ' file=' + databases_ini, errors='ignore')
+             | default('root', true) }}
+        my_conn_pass: >-
+          {{ lookup('ini', 'connpass section=' + mysql_database + ' file=' + databases_ini, errors='ignore')
+             | default('', true) }}
+        my_conn_host: >-
+          {{ lookup('ini', 'dbhost section=' + mysql_database + ' file=' + databases_ini, errors='ignore')
+             | default(lookup('ini', 'ansible_servername section=' + mysql_database + ' file=' + databases_ini, errors='ignore'), true)
+             | default('localhost', true) }}
+        my_conn_port: >-
+          {{ lookup('ini', 'dbport section=' + mysql_database + ' file=' + databases_ini, errors='ignore')
+             | default('3306', true) }}
+      no_log: true
+
+    - name: Extend tablespace
+      ansible.builtin.shell: |
+        set -e
+        cnf="$(mktemp /tmp/.my_XXXXXX.cnf)"; chmod 600 "$cnf"
+        {
+          echo '[client]'
+          echo 'user={{ my_conn_user }}'
+          [ -n "{{ my_conn_pass }}" ] && echo 'password={{ my_conn_pass }}'
+          echo 'host={{ my_conn_host }}'
+          echo 'port={{ my_conn_port }}'
+        } > "$cnf"
+        MYSQL() { mysql --defaults-extra-file="$cnf" -N -B -e "$1"; }
+        is_general="$(MYSQL "SELECT COUNT(*) FROM information_schema.INNODB_TABLESPACES WHERE NAME='{{ tablespace }}';" 2>/dev/null || echo 0)"
+        if [ "${is_general:-0}" -ge 1 ]; then
+          suffix="$(date +%s)"
+          mysql --defaults-extra-file="$cnf" -e "ALTER TABLESPACE {{ tablespace }} ADD DATAFILE '{{ tablespace }}_${suffix}.ibd';"
+          echo "Extended {{ tablespace }} by adding a datafile (target ~{{ add_mb | int }} MB) in {{ mysql_database }}"
+        else
+          auto="$(MYSQL "SELECT @@innodb_autoextend_increment;" 2>/dev/null || echo '?')"
+          echo "Tablespace '{{ tablespace }}' is not a general tablespace; InnoDB file-per-table autoextends (innodb_autoextend_increment=${auto} MB). No manual extend applied."
+        fi
+        rm -f "$cnf"
+      args:
+        executable: /bin/bash
+      register: grow_result
+      no_log: true
+      changed_when: "'Extended' in (grow_result.stdout | default(''))"
+
+    - name: Surface result
+      ansible.builtin.debug:
+        var: grow_result.stdout

@@ -52,13 +52,17 @@ bootstrap:
 # ---------- Inventory ---------------------------------------------------------
 inventory:
   path: /etc/ansible/hosts          # consumed by the chatbot's _known_servers()
-  # The unified chatbot under AI/ serves both flavors.
+  # The unified chatbot under AI/ serves every flavor from one app.
   # SQL Server tab ↔ this group of Windows hosts.
   sql_servers_group: sql_servers
   # Oracle tab ↔ this group of Linux hosts.
   oracle_servers_group: oracle_servers
   # Db2 tab ↔ this group of Linux hosts (IBM Db2 LUW).
   db2_servers_group: db2_servers
+  # MySQL tab ↔ this group of Linux hosts.
+  mysql_servers_group: mysql_servers
+  # MariaDB tab ↔ this group of Linux hosts.
+  mariadb_servers_group: mariadb_servers
 
 
 # ---------- Windows paths -----------------------------------------------------

@@ -1,0 +1,322 @@
+{# =============================================================================
+   mysql_thresholds.json.j2 — single source of truth for MySQL / MariaDB DBA
+   scripts, CheckMK Linux local plugins, and the chatbot's MySQL tab. Rendered
+   to /opt/dba/thresholds.json by MySQL/dba_automation.yaml.
+
+   Mirrors templates/db2_thresholds.json.j2 section-for-section but uses
+   MySQL vocabulary:
+     - tablespace    kept (InnoDB tablespaces + datadir / schema sizes)
+     - scheduled_events replaces admin_tasks (information_schema.EVENTS)
+     - replication   replaces hadr (SHOW REPLICA/SLAVE STATUS)
+     - buffer_pool   replaces bufferpools (InnoDB buffer pool hit ratio)
+     - cis           "CIS Oracle MySQL 8.0 Benchmark v1.0.0"
+     - database_status uses MySQL states (ONLINE, READ_ONLY, RECOVERING, ...)
+
+   Every MySQL-namespaced key has a Jinja default() fallback so this renders
+   cleanly against the existing setup.yaml without any new entries.
+============================================================================= #}
+{
+  "version":      2,
+  "flavor":       "mysql",
+  "generated_by": "MySQL/dba_automation.yaml",
+  "generated_at": "{{ ansible_date_time.iso8601 | default('') }}",
+
+  "backups": {
+    "full_max_age_hours":              {{ backups.thresholds.full_max_age_hours }},
+    "log_max_age_hours":                {{ backups.thresholds.log_max_age_hours }},
+    "binlog_max_age_minutes":           {{ (mysql.backups.binlog_max_age_minutes | default(60)) if mysql is defined else 60 }},
+    "incremental_max_age_hours":        {{ (mysql.backups.incremental_max_age_hours | default(30)) if mysql is defined else 30 }},
+    "binlog_required":                 true
+  },
+
+  "disk": {
+    "drive_free_pct_warn":     {{ disk.drive_free_pct_warn }},
+    "drive_free_pct_crit":     {{ disk.drive_free_pct_crit }},
+    "datafile_free_pct_warn":  {{ disk.datafile_free_pct_warn }},
+    "datafile_free_pct_crit":  {{ disk.datafile_free_pct_crit }},
+    "binlogfs_free_pct_warn":  {{ (mysql.disk.binlogfs_free_pct_warn | default(20)) if mysql is defined else 20 }},
+    "binlogfs_free_pct_crit":  {{ (mysql.disk.binlogfs_free_pct_crit | default(10)) if mysql is defined else 10 }},
+    "relevant_mount_regex":    "(mysql|mariadb|var/lib/mysql|backup|data|binlog)"
+  },
+
+  {# Tablespace usage — InnoDB tablespaces + datadir + per-schema size. #}
+  "tablespace": {
+    "used_pct_warn":           {{ (mysql.tablespace.used_pct_warn      | default(85)) if mysql is defined else 85 }},
+    "used_pct_crit":           {{ (mysql.tablespace.used_pct_crit      | default(95)) if mysql is defined else 95 }},
+    "temp_used_pct_warn":      {{ (mysql.tablespace.temp_used_pct_warn | default(80)) if mysql is defined else 80 }},
+    "temp_used_pct_crit":      {{ (mysql.tablespace.temp_used_pct_crit | default(92)) if mysql is defined else 92 }},
+    "autoextend_near_max_warn":{{ (mysql.tablespace.autoextend_near_max_warn | default(90)) if mysql is defined else 90 }}
+  },
+
+  {# Scheduled EVENTS — matches MonitorJobs.sh (admin_tasks.lookback_hours /
+     admin_tasks.long_run_min). Named admin_tasks for parity with the Db2 flavor. #}
+  "admin_tasks": {
+    "lookback_hours":         {{ agent_jobs.lookback_hours }},
+    "long_run_min":           {{ agent_jobs.long_running_minutes | default(60) }},
+    "long_running_minutes":   {{ agent_jobs.long_running_minutes | default(60) }},
+    "failed_warn_count_24h":  {{ (mysql.admin_tasks.failed_warn_count_24h | default(3)) if mysql is defined else 3 }}
+  },
+
+  "security_audit": {
+    "stale_login_days":      {{ security_audit.stale_login_days }},
+    "stale_days":            {{ security_audit.stale_login_days }},
+    "sysadmin_warn_count":   {{ security_audit.sysadmin_warn_count }},
+    "dbadm_warn_count":      {{ (mysql.security_audit.dbadm_warn_count | default(security_audit.sysadmin_warn_count)) if mysql is defined else security_audit.sysadmin_warn_count }},
+    "superuser_warn_count":  {{ (mysql.security_audit.superuser_warn_count | default(security_audit.sysadmin_warn_count)) if mysql is defined else security_audit.sysadmin_warn_count }},
+    "wildcard_host_warn":    {{ (mysql.security_audit.wildcard_host_warn | default(3)) if mysql is defined else 3 }},
+    "empty_password_users_crit": 0,
+    "public_grants_warn":    {{ (mysql.security_audit.public_grants_warn | default(0)) if mysql is defined else 0 }},
+    "failed_login_warn_24h": {{ (mysql.security_audit.failed_login_warn_24h | default(50)) if mysql is defined else 50 }},
+    "failed_login_crit_24h": {{ (mysql.security_audit.failed_login_crit_24h | default(200)) if mysql is defined else 200 }}
+  },
+
+  {# Index maintenance — IndexMaintenance.sh reruns OPTIMIZE/ANALYZE on InnoDB
+     tables whose DATA_FREE exceeds this many bytes (default 100 MiB). #}
+  "index_maintenance": {
+    "data_free_bytes": {{ (mysql.index_maintenance.data_free_bytes | default(104857600)) if mysql is defined else 104857600 }}
+  },
+
+  "patch": {
+    "release_max_age_days": {{ (mysql.patch.release_max_age_days | default(patch.build_max_age_days)) if mysql is defined else patch.build_max_age_days }},
+    "min_version":          "{{ (mysql.patch.min_version | default('8.0.36')) if mysql is defined else '8.0.36' }}",
+    "hotfix_warn_age_days": {{ patch.hotfix_warn_age_days }},
+    "hotfix_crit_age_days": {{ patch.hotfix_crit_age_days }}
+  },
+
+  {# Replication (matches MonitorReplication.sh env LAG_WARN_SEC / LAG_CRIT_SEC). #}
+  "replication": {
+    "lag_warn_sec":            {{ (mysql.replication.lag_warn_sec | default(alwayson.lag_warn_sec)) if mysql is defined else alwayson.lag_warn_sec }},
+    "lag_crit_sec":            {{ (mysql.replication.lag_crit_sec | default(alwayson.lag_crit_sec)) if mysql is defined else alwayson.lag_crit_sec }},
+    "gtid_gap_warn":           {{ (mysql.replication.gtid_gap_warn | default(alwayson.send_queue_warn_kb | default(1000))) if mysql is defined else (alwayson.send_queue_warn_kb | default(1000)) }},
+    "both_threads_required":   true,
+    "required_state":          "{{ (mysql.replication.required_state | default('RUNNING')) if mysql is defined else 'RUNNING' }}"
+  },
+
+  {# InnoDB buffer-pool hit ratio. #}
+  "buffer_pool": {
+    "hit_ratio_warn_pct":  {{ (mysql.buffer_pool.hit_ratio_warn_pct | default(95)) if mysql is defined else 95 }},
+    "hit_ratio_crit_pct":  {{ (mysql.buffer_pool.hit_ratio_crit_pct | default(90)) if mysql is defined else 90 }},
+    "tmp_disk_tables_warn":{{ (mysql.buffer_pool.tmp_disk_tables_warn | default(5)) if mysql is defined else 5 }}
+  },
+
+  "cis": {
+    "benchmark":      "CIS Oracle MySQL 8.0 Benchmark v1.0.0",
+    "report_path":    "/var/log/dba/mysql_cis_latest.json",
+    "score_thresholds": {
+      "green_min":  {{ (mysql.cis.score_thresholds.green_min  | default(95)) if mysql is defined else 95 }},
+      "yellow_min": {{ (mysql.cis.score_thresholds.yellow_min | default(80)) if mysql is defined else 80 }},
+      "red_max":    {{ (mysql.cis.score_thresholds.red_max    | default(79)) if mysql is defined else 79 }}
+    },
+    "critical_controls": [
+      {%- set crit = (mysql.cis.critical_controls | default(['1.1','2.1','4.1','5.1','6.2','7.1','8.1','9.2'])) if mysql is defined else ['1.1','2.1','4.1','5.1','6.2','7.1','8.1','9.2'] -%}
+      {%- for c in crit -%}"{{ c }}"{{ "," if not loop.last }}{%- endfor -%}
+    ],
+    "auto_remediate_safe": [
+      {%- set safe = (mysql.cis.auto_remediate_safe | default(['4.1','5.1','6.2','9.2'])) if mysql is defined else ['4.1','5.1','6.2','9.2'] -%}
+      {%- for c in safe -%}"{{ c }}"{{ "," if not loop.last }}{%- endfor -%}
+    ],
+    "manual_only": ["1.1","2.1","7.1","8.1"],
+    "ansible_fact_key":   "cis_compliance",
+    "score_field":        "compliance_score",
+    "exception_dbs_field":"exception_databases"
+  },
+
+  "audit": {
+    "severity_rules": {
+      "all_privileges_to_public": "critical",
+      "empty_password":           "critical",
+      "root_remote_login":        "high",
+      "audit_log_disabled":       "high",
+      "grant_option_to_public":   "high",
+      "skip_grant_tables_on":     "critical",
+      "ssl_disabled":             "high",
+      "local_infile_on":          "warn"
+    },
+    "superuser_count_warn":  {{ (mysql.audit.superuser_count_warn | default(security_audit.sysadmin_warn_count)) if mysql is defined else security_audit.sysadmin_warn_count }},
+    "superuser_count_crit":  {{ (mysql.audit.superuser_count_crit | default(10)) if mysql is defined else 10 }},
+    "stale_login_days":      {{ security_audit.stale_login_days }},
+    "failed_login_warn_24h": {{ (mysql.audit.failed_login_warn_24h | default(50)) if mysql is defined else 50 }},
+    "failed_login_crit_24h": {{ (mysql.audit.failed_login_crit_24h | default(200)) if mysql is defined else 200 }},
+    "categories": [
+      "Authentication",
+      "Privileges & Roles",
+      "Auditing / Logging",
+      "Server Configuration",
+      "Network / SSL",
+      "Patch / Version"
+    ],
+    "display_columns": ["database","control","severity","observed","recommendation","captured_at"]
+  },
+
+  {# Database status — MySQL schema/instance states + replication role map. #}
+  "database_status": {
+    "status_colors": {
+      "ONLINE":            "#28a745",
+      "READ_ONLY":         "#17a2b8",
+      "RECOVERING":        "#ffc107",
+      "CRASH_RECOVERY":    "#ffc107",
+      "READ_PENDING":      "#ffc107",
+      "STARTING":          "#ffc107",
+      "OFFLINE":           "#dc3545",
+      "UNAVAILABLE":       "#dc3545"
+    },
+    "role_colors": {
+      "PRIMARY":   "#28a745",
+      "REPLICA":   "#17a2b8",
+      "STANDALONE":"#6c757d"
+    },
+    "watch_states":          ["READ_ONLY","RECOVERING","CRASH_RECOVERY","READ_PENDING","OFFLINE","UNAVAILABLE"],
+    "size_warn_gb":          {{ (mysql.database_status.size_warn_gb | default(500))  if mysql is defined else 500 }},
+    "size_crit_gb":          {{ (mysql.database_status.size_crit_gb | default(1000)) if mysql is defined else 1000 }},
+    "binlog_required":       true,
+    "backup_age_warn_hours": {{ backups.thresholds.full_max_age_hours }},
+    "backup_age_crit_hours": {{ ((backups.thresholds.full_max_age_hours | int) * 2) }},
+    "display_columns": [
+      "host","db_name","db_status","repl_role","db_size_gb","binlog_enabled",
+      "last_full_backup","last_binlog_archive","cis_compliant"
+    ]
+  },
+
+  {# InfluxDB — MySQL metrics shipped by CheckMK / nagflux. #}
+  "influxdb": {
+    "host":     "{{ chatbot.influxdb.host     | default('localhost') }}",
+    "port":     {{ chatbot.influxdb.port      | default(8086) }},
+    "database": "{{ chatbot.influxdb.database | default('checkmk') }}",
+    "user":     "{{ chatbot.influxdb.user     | default('checkmk') }}",
+    "ssl":      {{ (chatbot.influxdb.ssl      | default(false)) | string | lower }},
+    "default_window":  "{{ (mysql.influxdb.default_window | default('1h')) if mysql is defined else '1h' }}",
+    "default_bucket":  "{{ (mysql.influxdb.default_bucket | default('5m')) if mysql is defined else '5m' }}",
+    "history_window":  "{{ (mysql.influxdb.history_window | default('7d')) if mysql is defined else '7d' }}",
+    "queries": {
+      "cpu_load":                "SELECT mean(\"value\") FROM \"metrics\" WHERE \"service\"='CPU_load' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(null)",
+      "memory_used_pct":         "SELECT mean(\"value\") FROM \"metrics\" WHERE \"service\"='Memory' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(null)",
+      "filesystem_free_pct":     "SELECT min(\"value\") FROM \"metrics\" WHERE \"service\"=~/^Filesystem/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(null)",
+      "tablespace_used_pct":     "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^MySQL_TS/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(previous)",
+      "temp_used_pct":           "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^MySQL_Temp/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(previous)",
+      "bufferpool_hit_ratio":    "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^MySQL_BP/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(previous)",
+      "backup_age_hours":        "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"=~/^MySQL_Backup_Full/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(previous)",
+      "binlog_archive_age_minutes": "SELECT last(\"value\") FROM \"metrics\" WHERE \"service\"='MySQL_Binlog_Age' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(previous)",
+      "replication_lag_sec":     "SELECT max(\"value\") FROM \"metrics\" WHERE \"service\"=~/^MySQL_Repl_Lag/ AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}), \"service\" fill(null)",
+      "blocking_sessions":       "SELECT max(\"value\") FROM \"metrics\" WHERE \"service\"='MySQL_Blocking' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(0)",
+      "event_failures":          "SELECT sum(\"value\") FROM \"metrics\" WHERE \"service\"='MySQL_Event_Failures' AND \"host\"='{host}' AND time > now() - {window} GROUP BY time({bucket}) fill(0)",
+      "cis_score_history":       "SELECT last(\"value\") FROM \"cis_compliance\" WHERE \"host\"='{host}' AND \"flavor\"='mysql' AND time > now() - {window} GROUP BY time({bucket}) fill(previous)"
+    }
+  },
+
+  {# Dashboard — chart + diagram definitions for the chatbot UI. Same shape as
+     the Oracle/Db2/SQL templates so AI/handlers iterate without flavor branching. #}
+  "dashboard": {
+    "refresh_seconds": {{ (mysql.dashboard.refresh_seconds | default(60)) if mysql is defined else 60 }},
+    "charts": [
+      {
+        "id":     "cis_scorecard",
+        "title":  "CIS MySQL Compliance Score",
+        "type":   "gauge",
+        "source": "ansible_local.db_inventory.mysql.*.cis_compliance.compliance_score",
+        "min":    0, "max": 100, "unit": "%",
+        "thresholds": [
+          { "value": 80,  "color": "#dc3545" },
+          { "value": 95,  "color": "#ffc107" },
+          { "value": 100, "color": "#28a745" }
+        ]
+      },
+      {
+        "id":     "tablespace_usage_top",
+        "title":  "Top Tablespaces / Schemas by Used %",
+        "type":   "bar",
+        "source": "ansible_local.db_inventory.mysql.*.tablespaces[*]",
+        "x":      "tablespace_name",
+        "y":      "used_pct",
+        "limit":  15,
+        "thresholds": [
+          { "value": 85, "color": "#ffc107" },
+          { "value": 95, "color": "#dc3545" }
+        ]
+      },
+      {
+        "id":     "bufferpool_hit_ratio",
+        "title":  "InnoDB Buffer Pool Hit Ratio % (24h)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "bufferpool_hit_ratio",
+        "window": "24h",
+        "bucket": "10m",
+        "thresholds": [
+          { "value": 95, "color": "#ffc107", "below": true },
+          { "value": 90, "color": "#dc3545", "below": true }
+        ]
+      },
+      {
+        "id":     "backup_age_heatmap",
+        "title":  "Backup Age (hours since last FULL)",
+        "type":   "heatmap",
+        "source": "ansible_local.db_inventory.mysql.*.backups[*]",
+        "x":      "db",
+        "y":      "host",
+        "value":  "since_full_hours",
+        "thresholds": [
+          { "value": {{ backups.thresholds.full_max_age_hours }},           "color": "#ffc107" },
+          { "value": {{ (backups.thresholds.full_max_age_hours | int)*2 }}, "color": "#dc3545" }
+        ]
+      },
+      {
+        "id":     "replication_lag",
+        "title":  "Replication Lag (seconds, 24h)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "replication_lag_sec",
+        "window": "24h",
+        "bucket": "5m"
+      },
+      {
+        "id":     "cpu_load_trend",
+        "title":  "CPU Load (7d)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "cpu_load",
+        "window": "7d",
+        "bucket": "30m"
+      },
+      {
+        "id":     "blocking_sessions_spark",
+        "title":  "Blocking Sessions (24h)",
+        "type":   "sparkline",
+        "datasource": "influxdb",
+        "query":  "blocking_sessions",
+        "window": "24h",
+        "bucket": "10m"
+      },
+      {
+        "id":     "cis_score_history",
+        "title":  "CIS Compliance Trend (30d)",
+        "type":   "line",
+        "datasource": "influxdb",
+        "query":  "cis_score_history",
+        "window": "30d",
+        "bucket": "1d",
+        "min":    0, "max": 100
+      }
+    ],
+
+    "diagrams": [
+      {
+        "id":   "data_flow",
+        "title":"MySQL Monitoring & Automation Data Flow",
+        "type": "mermaid",
+        "definition": "graph LR\n  subgraph Host[MySQL Linux Host]\n    DB[(MySQL / MariaDB)]\n    Inv[db_inventory.sh]\n    Checks[CheckMySQLStatus.sh + Monitor*.sh]\n    CM[CheckMK Agent]\n  end\n  DB -->|mysql client| Inv\n  DB -->|mysql client| Checks\n  Inv -->|JSON facts.d| Ansible[Ansible Facts]\n  Checks -->|local plugin JSON| CM\n  CM -->|nagflux| Influx[(InfluxDB)]\n  Ansible -->|API| Bot[Chatbot Flask]\n  Influx -->|HTTP| Bot\n  Bot --> User((DBA / Exec))"
+      },
+      {
+        "id":   "replication_topology",
+        "title":"MySQL Replication Topology",
+        "type": "mermaid",
+        "definition": "graph TB\n  App[Application Tier]\n  Primary[(Source / Primary)]\n  Replica1[(Replica 1)]\n  Replica2[(Replica 2)]\n  App --> Primary\n  Primary ==GTID async/semi-sync==> Replica1\n  Primary -.async.-> Replica2\n  Replica1 -. failover .- Primary"
+      },
+      {
+        "id":   "backup_strategy",
+        "title":"MySQL Backup Strategy (rolling 24h)",
+        "type": "mermaid",
+        "definition": "gantt\n    title Daily MySQL Schedule\n    dateFormat HH:mm\n    axisFormat %H:%M\n    section Logical Full\n    Daily mysqldump :a1, 22:00, 120m\n    section Incremental\n    mariabackup every 6h :02:30, 60m\n    section Binary logs\n    Continuous (log_bin) :crit, 00:00, 24h"
+      }
+    ]
+  }
+}

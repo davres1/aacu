@@ -2,7 +2,8 @@
 # auto_onboard.yml — nightly auto-onboarding for newly added DB hosts.
 #
 # Walks every flavor group in /etc/ansible/hosts (sql_servers, oracle_servers,
-# db2_servers), finds hosts that have NOT yet been onboarded (no marker file),
+# db2_servers, mysql_servers, mariadb_servers), finds hosts that have NOT yet
+# been onboarded (no marker file),
 # runs the matching dba_automation.yaml against only those hosts, then drops the
 # marker so they are skipped on subsequent nights.
 #
@@ -21,7 +22,7 @@
 # Phase 1 — detect un-onboarded hosts and add them to `pending_onboard`.
 # ---------------------------------------------------------------------------
 - name: Detect newly added (un-onboarded) DB hosts
-  hosts: sql_servers:oracle_servers:db2_servers
+  hosts: sql_servers:oracle_servers:db2_servers:mysql_servers:mariadb_servers
   gather_facts: false
   vars:
     marker_linux: /opt/dba/.onboarded
@@ -33,7 +34,7 @@
       register: m_win
       when: inventory_hostname in groups.get('sql_servers', [])
 
-    - name: Stat onboarding marker (Linux / Oracle + Db2)
+    - name: Stat onboarding marker (Linux / Oracle + Db2 + MySQL + MariaDB)
       ansible.builtin.stat:
         path: "{{ marker_linux }}"
       register: m_lin
@@ -64,6 +65,12 @@
 
 - name: Onboard new Db2 hosts
   import_playbook: Db2/dba_automation.yaml
+
+- name: Onboard new MySQL hosts
+  import_playbook: MySQL/dba_automation.yaml
+
+- name: Onboard new MariaDB hosts
+  import_playbook: MariaDB/dba_automation.yaml
 
 # ---------------------------------------------------------------------------
 # Phase 3 — stamp the marker so onboarded hosts are skipped next run.

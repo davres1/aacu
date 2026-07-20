@@ -1,0 +1,66 @@
+---
+# Read-only MySQL/MariaDB SELECT — sanitized client-side, executed via the mysql
+# client on the target host. Credentials come from databases.ini.
+#
+# We run the query in batch mode (-N -B = no column names, tab-separated) then
+# post-process: prepend a header row (mysql -B without -N would print it, but we
+# build it explicitly for a stable contract), and collapse the tab separators
+# into '|'. The first surviving line is the header row — exactly what the
+# handler's pipe-parser expects. Values containing embedded '|' are the known
+# limitation. The query is fed through a temp .sql file (heredoc) so embedded
+# quotes/identifiers can't break shell quoting, and credentials go through a
+# private defaults-file so the password never hits the process list.
+- name: Run a read-only SQL query on a MySQL database
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ mysql_user | default('root') }}"
+
+  vars:
+    mysql_database: "{{ mysql_database }}"
+    sql_query:      "{{ sql_query }}"
+    databases_ini:  "{{ databases_ini | default('/etc/mysql/databases.ini') }}"
+
+  tasks:
+    - name: Read connection credentials from databases.ini
+      ansible.builtin.set_fact:
+        my_conn_user: >-
+          {{ lookup('ini', 'connuser section=' + mysql_database + ' file=' + databases_ini, errors='ignore')
+             | default('root', true) }}
+        my_conn_pass: >-
+          {{ lookup('ini', 'connpass section=' + mysql_database + ' file=' + databases_ini, errors='ignore')
+             | default('', true) }}
+        my_conn_host: >-
+          {{ lookup('ini', 'dbhost section=' + mysql_database + ' file=' + databases_ini, errors='ignore')
+             | default(lookup('ini', 'ansible_servername section=' + mysql_database + ' file=' + databases_ini, errors='ignore'), true)
+             | default('localhost', true) }}
+        my_conn_port: >-
+          {{ lookup('ini', 'dbport section=' + mysql_database + ' file=' + databases_ini, errors='ignore')
+             | default('3306', true) }}
+      no_log: true
+
+    - name: Run read-only SQL query
+      ansible.builtin.shell: |
+        set -o pipefail
+        cnf="$(mktemp /tmp/.my_XXXXXX.cnf)"; chmod 600 "$cnf"
+        {
+          echo '[client]'
+          echo 'user={{ my_conn_user }}'
+          [ -n "{{ my_conn_pass }}" ] && echo 'password={{ my_conn_pass }}'
+          echo 'host={{ my_conn_host }}'
+          echo 'port={{ my_conn_port }}'
+        } > "$cnf"
+        qf="$(mktemp /tmp/dba_q_XXXXXX.sql)"
+        cat > "$qf" <<'SQLEOF'
+        {{ sql_query }}
+        SQLEOF
+        mysql --defaults-extra-file="$cnf" -B {{ mysql_database }} < "$qf" \
+          | sed -e 's/\t/|/g'
+        rc=$?
+        rm -f "$qf" "$cnf"
+        exit $rc
+      args:
+        executable: /bin/bash
+      register: query_result
+      changed_when: false
+      no_log: true

@@ -39,20 +39,26 @@ questions about both SQL Server and Oracle estates from one management host.
 │   │   ├── sql_guard.py         # shared SELECT-only gate
 │   │   ├── mssql/               # T-SQL + dbatools handlers
 │   │   ├── oracle/              # PL/SQL + sqlplus handlers
-│   │   └── db2/                 # Db2 SQL + db2 CLP handlers
+│   │   ├── db2/                 # Db2 SQL + db2 CLP handlers
+│   │   ├── mysql/               # MySQL SQL + mysql client handlers
+│   │   └── mariadb/             # MariaDB SQL + mysql/mariadb client handlers
 │   ├── llm/
 │   │   ├── client.py            # Ollama / OpenAI / Anthropic, flavor-aware prompts
 │   │   └── semantic_cache.py    # LanceDB intent cache for classify() (optional)
 │   ├── playbooks/
 │   │   ├── mssql/               # ad-hoc playbooks the chatbot fires
 │   │   ├── oracle/
-│   │   └── db2/
+│   │   ├── db2/
+│   │   ├── mysql/
+│   │   └── mariadb/
 │   ├── static/                  # chat UI (tab switcher, table + chart render)
 │   ├── templates/index.html
 │   └── tools/
 │       ├── generate_mssql_databases_ini.py
 │       ├── generate_oracle_databases_ini.py
-│       └── generate_db2_databases_ini.py
+│       ├── generate_db2_databases_ini.py
+│       ├── generate_mysql_databases_ini.py
+│       └── generate_mariadb_databases_ini.py
 │
 ├── MSSQL/                       # SQL Server DBA scripts + inventory
 │   ├── files/                   # PowerShell scripts
@@ -76,14 +82,28 @@ questions about both SQL Server and Oracle estates from one management host.
 │   ├── inventory/databases.ini  # Db2 section per DB (read by chatbot + playbooks)
 │   └── dba_automation.yaml      # Bootstrap + cron for Db2 hosts
 │
+├── MySQL/                       # MySQL DBA scripts + inventory
+│   ├── files/                   # Shell scripts (mysql client)
+│   │   ├── lib/mysql_common.sh
+│   │   └── checkmk_local/       # CheckMK plugins for Linux
+│   ├── inventory/databases.ini  # MySQL section per DB (read by chatbot + playbooks)
+│   └── dba_automation.yaml      # Bootstrap + cron for MySQL hosts
+│
+├── MariaDB/                     # MariaDB DBA scripts + inventory
+│   ├── files/                   # Shell scripts (mysql/mariadb client)
+│   │   ├── lib/mariadb_common.sh
+│   │   └── checkmk_local/       # CheckMK plugins for Linux
+│   ├── inventory/databases.ini  # MariaDB section per DB (read by chatbot + playbooks)
+│   └── dba_automation.yaml      # Bootstrap + cron for MariaDB hosts
+│
 ├── auto_onboard.yml             # Nightly: push dba_automation to newly added hosts
-├── rundeckfacts.py              # db_inventory (mssql/oracle/db2) → Rundeck facts
+├── rundeckfacts.py              # db_inventory (mssql/oracle/db2/mysql/mariadb) → Rundeck facts
 ├── bootstrap.sh                 # One-shot RHEL bootstrap for the management host
 ├── setup.yaml                   # Single source of truth for all knobs
 ├── ansible.cfg                  # forks=50 + pipelining
 ├── ticktator.py                 # CheckMK → ServiceNow notification bridge
 ├── sync_influx.sh               # Legacy CheckMK → InfluxDB poller
-└── templates/                   # Per-flavor thresholds.json.j2 (mssql/oracle/db2) + plugin cfg
+└── templates/                   # Per-flavor thresholds.json.j2 (mssql/oracle/db2/mysql/mariadb) + plugin cfg
 ```
 
 ## Setup (management host, fresh RHEL)
@@ -115,6 +135,14 @@ cor089123
 [db2_servers]
 db2host01
 db2host02
+
+[mysql_servers]
+mysqlhost01
+mysqlhost02
+
+[mariadb_servers]
+mariadbhost01
+mariadbhost02
 ```
 
 Then push the per-flavor DBA stack:
@@ -125,6 +153,15 @@ ansible-playbook -i /etc/ansible/hosts MSSQL/dba_automation.yaml --ask-vault-pas
 
 # Oracle hosts (Linux / SSH)
 ansible-playbook -i /etc/ansible/hosts Oracle/dba_automation.yaml --ask-vault-pass
+
+# Db2 hosts (Linux / SSH)
+ansible-playbook -i /etc/ansible/hosts Db2/dba_automation.yaml --ask-vault-pass
+
+# MySQL hosts (Linux / SSH)
+ansible-playbook -i /etc/ansible/hosts MySQL/dba_automation.yaml --ask-vault-pass
+
+# MariaDB hosts (Linux / SSH)
+ansible-playbook -i /etc/ansible/hosts MariaDB/dba_automation.yaml --ask-vault-pass
 ```
 
 Both playbooks install dbatools / dbatools-equivalents, deploy DBA scripts,

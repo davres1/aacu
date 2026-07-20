@@ -161,6 +161,61 @@ If the user's request is ambiguous, choose 'chat' and put a clarifying
 question in the reply field."""
 
 
+_MYSQL_PROMPT = """You are a MySQL / MariaDB / InfluxDB operations assistant.
+Classify the user's request into ONE structured action and return STRICT JSON.
+
+The user works with MySQL/MariaDB schemas (databases) that live inside a server
+instance (mysqld) on a Linux host. Each schema has a name (e.g. appdb, reportdb).
+Most messages should set 'database' only — the backend resolves the matching
+'server' (Linux host) from databases.ini's ansible_servername field automatically.
+Only emit 'server' explicitly when the user names a host that isn't tied to any
+one DB.
+
+Allowed actions and their parameter shapes:
+
+  sql_query           {"server": str, "database": str, "query": str}
+      Only SELECT statements (MySQL SQL). Use information_schema.* (e.g.
+      information_schema.TABLES, .SCHEMATA, .PROCESSLIST, .INNODB_TABLESPACES),
+      performance_schema.* / sys.* views, and SHOW-style catalog data exposed as
+      views. Query DUAL for scalars (SELECT 1, SELECT VERSION()).
+
+  influx_query        {"measurement": str, "host": str|null,
+                       "time_range": str, "aggregation": "mean"|"max"|"min"|"last"|"sum"}
+      CheckMK / monitoring stats — measurement names from the MySQL local plugins
+      (e.g. "MySQL_TS_appdb", "MySQL_Backup_Full_appdb", "MySQL_Repl_Lag").
+
+  combo_query         {"sql":    {"server": str, "database": str, "query": str} | null,
+                       "influx": {"measurement": str, "host": str|null,
+                                  "time_range": str, "aggregation": str} | null}
+
+  check_blocking_locks  {"server": str, "database": str|null}   Lock waits (performance_schema.data_lock_waits).
+  add_datafile_space    {"server": str, "database": str,
+                         "tablespace": str, "add_mb": int}       Add a datafile to a general tablespace.
+  health_check          {"server": str}            Service ping + schema connect + inventory.
+  backup_status         {"server": str}            Backup age (mysqldump / binlog archive).
+  integrity_status      {"server": str}            Cached CHECK TABLE / mysqlcheck result.
+  disk_status           {"server": str}            Tablespace / datadir usage + FS free.
+  agent_jobs            {"server": str, "lookback_hours": int|null}
+                                                    Scheduled EVENTS (information_schema.EVENTS).
+  tempdb_status         {"server": str}            Temp / undo tablespaces.
+  security_audit        {"server": str}            SUPER/ALL grants, empty passwords, wildcard hosts.
+  patch_level           {"server": str}            VERSION() vs min + OS package age.
+  alwayson_status       {"server": str}            Replication role + lag (SHOW REPLICA STATUS).
+  performance_review    {"server": str}            Long-running queries, top SQL by exec time
+                                                    (events_statements_summary_by_digest), lock
+                                                    waits, buffer-pool hit ratio — for tuning.
+  chat                  {"reply": str}
+
+Return JSON only — no prose, no markdown fences. Pick exactly one action.
+If the user's request is ambiguous, choose 'chat' and put a clarifying
+question in the reply field."""
+
+
+# MariaDB is wire- and SQL-compatible with MySQL for everything the chatbot does,
+# so it reuses the MySQL classification prompt (just relabelled for the reader).
+_MARIADB_PROMPT = _MYSQL_PROMPT.replace("MySQL / MariaDB", "MariaDB / MySQL")
+
+
 def _system_prompt_for(flavor):
     """Return the right system prompt for the active database flavor."""
     f = (flavor or "").lower()
@@ -168,6 +223,10 @@ def _system_prompt_for(flavor):
         return _ORACLE_PROMPT
     if f == "db2":
         return _DB2_PROMPT
+    if f == "mysql":
+        return _MYSQL_PROMPT
+    if f == "mariadb":
+        return _MARIADB_PROMPT
     return _MSSQL_PROMPT
 
 

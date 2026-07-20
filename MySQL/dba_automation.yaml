@@ -1,0 +1,295 @@
+---
+# MySQL / MariaDB DBA automation playbook. Mirrors Db2/Oracle/dba_automation.yaml
+# but targets [mysql_servers] in /etc/ansible/hosts and drives the mysql client
+# using credentials from databases.ini.
+#
+#   ansible-playbook -i /etc/ansible/hosts MySQL/dba_automation.yaml
+#   ansible-playbook -i /etc/ansible/hosts MySQL/dba_automation.yaml --tags backups
+#   ansible-playbook -i /etc/ansible/hosts MySQL/dba_automation.yaml --tags localplugins
+#
+# Strategy mirrors the Oracle/Db2/Windows side:
+#   - active work (backup, CHECK TABLE, killing blockers, restarting a downed
+#     service, OPTIMIZE/ANALYZE) is scheduled via cron
+#   - read-only monitoring runs as CheckMK local plugins under
+#     /usr/lib/check_mk_agent/local/{300,600,3600,86400}
+#
+# Required: databases.ini on each host (pushed here), the mysql client on PATH,
+# and an account with the privileges the DBA scripts use.
+
+- hosts: "mysql_servers:&{{ onboard_group | default('mysql_servers') }}"
+  gather_facts: true
+  become: true                    # tasks need root; scripts connect with DB creds
+
+  vars:
+    repo_dir:        '/opt/dba'
+    scripts_dir:     '/opt/dba/scripts'
+    config_dir:      '/opt/dba'
+    log_dir:         '/var/log/dba'
+    status_dir:      '/var/log/dba/status'
+    facts_dir:       '/etc/ansible/facts.d'
+    checkmk_local:   '/usr/lib/check_mk_agent/local'
+    databases_ini:   '/etc/mysql/databases.ini'
+    mysql_user:      'mysql'
+    mysql_group:     'mysql'
+    cron_user:       'root'
+
+    backup_root:           "{{ backup_root | default('/backup/mysql') }}"
+    retention_days:        "{{ retention_days | default(14) }}"
+    full_backup_time:      "{{ full_backup_time | default('22:00') }}"
+    checkdb_day_of_week:   "{{ checkdb_day_of_week | default(0) }}"   # 0=Sunday
+    checkdb_time:          "{{ checkdb_time | default('03:00') }}"
+
+  tasks:
+    # ===================================================================
+    # 0. Directories
+    # ===================================================================
+    - name: Ensure DBA directories exist
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - "{{ scripts_dir }}"
+        - "{{ scripts_dir }}/lib"
+        - "{{ log_dir }}"
+        - "{{ status_dir }}"
+        - "{{ facts_dir }}"
+        - "{{ checkmk_local }}"
+        - "{{ checkmk_local }}/300"
+        - "{{ checkmk_local }}/600"
+        - "{{ checkmk_local }}/3600"
+        - "{{ checkmk_local }}/86400"
+        - /etc/mysql
+      tags: [always]
+
+    - name: Ensure backup root exists (owned by mysql)
+      file:
+        path: "{{ backup_root }}"
+        state: directory
+        owner: "{{ mysql_user }}"
+        group: "{{ mysql_group }}"
+        mode: '0750'
+      tags: [always]
+
+    # ===================================================================
+    # 1. Drop databases.ini onto each host (encrypt with ansible-vault).
+    # ===================================================================
+    - name: Push databases.ini
+      copy:
+        src: inventory/databases.ini
+        dest: "{{ databases_ini }}"
+        owner: root
+        group: "{{ mysql_group }}"
+        mode: '0640'             # contains plaintext passwords — strict perms
+      tags: [config, always]
+
+    # ===================================================================
+    # 2. Render thresholds.json from setup.yaml (MySQL-flavored:
+    #    tablespace / scheduled_events / replication / buffer_pool / CIS MySQL 8 +
+    #    MySQL-shaped InfluxDB queries and dashboard charts).
+    # ===================================================================
+    - name: Render thresholds.json from setup.yaml (MySQL-flavored)
+      template:
+        src: ../templates/mysql_thresholds.json.j2
+        dest: "{{ config_dir }}/thresholds.json"
+        owner: root
+        group: root
+        mode: '0644'
+      tags: [config, localplugins]
+
+    # ===================================================================
+    # 3. Push all the maintenance + monitoring scripts.
+    # ===================================================================
+    - name: Push shared lib
+      copy:
+        src: files/lib/mysql_common.sh
+        dest: "{{ scripts_dir }}/lib/mysql_common.sh"
+        owner: root
+        group: root
+        mode: '0755'
+      tags: [scripts, always]
+
+    - name: Push DBA scripts
+      copy:
+        src: "files/{{ item }}"
+        dest: "{{ scripts_dir }}/{{ item }}"
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - CheckMySQLStatus.sh
+        - DetectBlockingLocks.sh
+        - BackupDatabases.sh
+        - VerifyBackups.sh
+        - CheckDB.sh
+        - GetCheckDBStatus.sh
+        - MonitorTablespaces.sh
+        - MonitorJobs.sh
+        - SecurityAudit.sh
+        - PatchLevelCheck.sh
+        - MonitorReplication.sh
+        - PerformanceReview.sh
+        - IndexMaintenance.sh
+        - createcheckmk.sh
+        - db_inventory.sh
+      tags: [scripts, always]
+
+    # ===================================================================
+    # 4. Ansible custom facts — expose ansible_local.db_inventory.
+    # ===================================================================
+    - name: Ensure Ansible facts.d directory exists
+      ansible.builtin.file:
+        path: "{{ facts_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      tags: [facts, always]
+
+    - name: Install db_inventory.sh as an Ansible custom fact
+      ansible.builtin.copy:
+        src: files/db_inventory.sh
+        dest: "{{ facts_dir }}/db_inventory.fact"
+        owner: root
+        group: root
+        mode: '0755'
+      tags: [facts, always]
+
+    - name: Trigger a re-gather so ansible_local.db_inventory is fresh
+      ansible.builtin.setup:
+        filter: ansible_local
+      tags: [facts]
+
+    # ===================================================================
+    # 5. CheckMK local plugins
+    # ===================================================================
+    - name: Push CheckMK local plugin (default, ~60s)
+      copy:
+        src: files/checkmk_local/mysql_local.sh
+        dest: "{{ checkmk_local }}/mysql_local"
+        mode: '0755'
+      tags: [localplugins, checkmk]
+
+    - name: Push CheckMK local plugin (5 min)
+      copy:
+        src: files/checkmk_local/300/mysql_tablespaces.sh
+        dest: "{{ checkmk_local }}/300/mysql_tablespaces"
+        mode: '0755'
+      tags: [localplugins, checkmk]
+
+    - name: Push CheckMK local plugin (10 min)
+      copy:
+        src: files/checkmk_local/600/mysql_backups_jobs.sh
+        dest: "{{ checkmk_local }}/600/mysql_backups_jobs"
+        mode: '0755'
+      tags: [localplugins, checkmk]
+
+    - name: Push CheckMK local plugin (hourly)
+      copy:
+        src: files/checkmk_local/3600/mysql_security_checkdb.sh
+        dest: "{{ checkmk_local }}/3600/mysql_security_checkdb"
+        mode: '0755'
+      tags: [localplugins, checkmk]
+
+    - name: Push CheckMK local plugin (daily)
+      copy:
+        src: files/checkmk_local/86400/mysql_patch.sh
+        dest: "{{ checkmk_local }}/86400/mysql_patch"
+        mode: '0755'
+      tags: [localplugins, checkmk]
+
+    # ===================================================================
+    # 6. Scheduled (active) work via cron.
+    # ===================================================================
+    - name: Cron - MySQL service watchdog (hourly)
+      cron:
+        name: "MySQL service watchdog"
+        user: "{{ cron_user }}"
+        minute: '0'
+        job: "{{ scripts_dir }}/CheckMySQLStatus.sh >> {{ log_dir }}/cron.log 2>&1"
+      tags: [maintenance, remediation]
+
+    - name: Cron - blocking-lock detector (every 30 min)
+      cron:
+        name: "MySQL blocking detector"
+        user: "{{ cron_user }}"
+        minute: '*/30'
+        job: "{{ scripts_dir }}/DetectBlockingLocks.sh >> {{ log_dir }}/cron.log 2>&1"
+      tags: [maintenance, remediation]
+
+    - name: Cron - security audit (every 30 min)
+      cron:
+        name: "MySQL security audit"
+        user: "{{ cron_user }}"
+        minute: '15,45'
+        job: "{{ scripts_dir }}/SecurityAudit.sh >> {{ log_dir }}/cron.log 2>&1"
+      tags: [security, remediation]
+
+    - name: Cron - FULL backup (daily)
+      cron:
+        name: "MySQL FULL backup"
+        user: "{{ cron_user }}"
+        hour:   "{{ full_backup_time.split(':')[0] }}"
+        minute: "{{ full_backup_time.split(':')[1] }}"
+        job: "BACKUP_ROOT={{ backup_root }} {{ scripts_dir }}/BackupDatabases.sh Full >> {{ log_dir }}/cron.log 2>&1"
+      tags: [backups]
+
+    - name: Cron - INCREMENTAL backup (every 6 hours)
+      cron:
+        name: "MySQL INCR backup"
+        user: "{{ cron_user }}"
+        hour: '2,8,14,20'
+        minute: '30'
+        job: "BACKUP_ROOT={{ backup_root }} {{ scripts_dir }}/BackupDatabases.sh Incr >> {{ log_dir }}/cron.log 2>&1"
+      tags: [backups]
+
+    - name: Cron - binary-log backup (every 15 min)
+      cron:
+        name: "MySQL LOG backup"
+        user: "{{ cron_user }}"
+        minute: '*/15'
+        job: "BACKUP_ROOT={{ backup_root }} {{ scripts_dir }}/BackupDatabases.sh Log >> {{ log_dir }}/cron.log 2>&1"
+      tags: [backups]
+
+    - name: Cron - backup verification (daily 06:00)
+      cron:
+        name: "MySQL backup verify"
+        user: "{{ cron_user }}"
+        hour:   '6'
+        minute: '0'
+        job: "{{ scripts_dir }}/VerifyBackups.sh >> {{ log_dir }}/cron.log 2>&1"
+      tags: [backups]
+
+    - name: Cron - CHECK TABLE integrity (weekly Sunday 03:00)
+      cron:
+        name: "MySQL CheckDB"
+        user: "{{ cron_user }}"
+        weekday: "{{ checkdb_day_of_week }}"
+        hour:    "{{ checkdb_time.split(':')[0] }}"
+        minute:  "{{ checkdb_time.split(':')[1] }}"
+        job: "{{ scripts_dir }}/CheckDB.sh >> {{ log_dir }}/cron.log 2>&1"
+      tags: [integrity]
+
+    - name: Cron - index maintenance (monthly)
+      cron:
+        name: "MySQL index maintenance"
+        user: "{{ cron_user }}"
+        special_time: "monthly"
+        job: "{{ scripts_dir }}/IndexMaintenance.sh >> {{ log_dir }}/cron.log 2>&1"
+      tags: [maintenance]
+
+    # ===================================================================
+    # 7. Cleanup: remove obsolete cron entries (superseded by CheckMK plugins)
+    # ===================================================================
+    - name: Remove obsolete cron entries (legacy names)
+      cron:
+        name: "{{ item }}"
+        state: absent
+      loop:
+        - "MySQL TablespaceMonitor"
+        - "MySQL PatchLevelCheck"
+        - "MySQL ReplicationMonitor"
+        - "MySQL JobsMonitor"
+      tags: [cleanup]

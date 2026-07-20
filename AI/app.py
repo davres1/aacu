@@ -27,6 +27,8 @@ from handlers import report_pdf
 from handlers.mssql  import sql_handler as mssql_sql,  ops_handler as mssql_ops
 from handlers.oracle import sql_handler as oracle_sql, ops_handler as oracle_ops
 from handlers.db2    import sql_handler as db2_sql,    ops_handler as db2_ops
+from handlers.mysql   import sql_handler as mysql_sql,   ops_handler as mysql_ops
+from handlers.mariadb import sql_handler as mariadb_sql, ops_handler as mariadb_ops
 from handlers.sql_guard import UnsafeSqlError
 
 
@@ -97,6 +99,10 @@ def _flavor_modules(flavor):
         return oracle_sql, oracle_ops, settings.ORACLE_GROUP, settings.ORACLE_DATABASES_INI
     if f == "db2":
         return db2_sql, db2_ops, settings.DB2_GROUP, settings.DB2_DATABASES_INI
+    if f == "mysql":
+        return mysql_sql, mysql_ops, settings.MYSQL_GROUP, settings.MYSQL_DATABASES_INI
+    if f == "mariadb":
+        return mariadb_sql, mariadb_ops, settings.MARIADB_GROUP, settings.MARIADB_DATABASES_INI
     return mssql_sql, mssql_ops, settings.MSSQL_GROUP, settings.MSSQL_DATABASES_INI
 
 
@@ -154,7 +160,8 @@ def _read_databases_ini(flavor):
 
 
 # Sections that aren't actual databases.
-_DB_INI_RESERVED = {"sql_servers", "oracle_servers", "db2_servers", "DEFAULT"}
+_DB_INI_RESERVED = {"sql_servers", "oracle_servers", "db2_servers", "mysql_servers",
+                    "mariadb_servers", "DEFAULT"}
 
 
 def _databases_metadata(flavor):
@@ -305,7 +312,7 @@ def _dispatch(flavor, intent):
         return result
 
     if action == "check_blocking_locks":
-        if flavor in ("oracle", "db2"):
+        if flavor in ("oracle", "db2", "mysql", "mariadb"):
             return ops_h.check_blocking_locks(
                 server=params.get("server"),
                 database=params.get("database"),
@@ -321,7 +328,7 @@ def _dispatch(flavor, intent):
                 datafile=datafile,
                 add_mb=params.get("add_mb"),
             )
-        if flavor == "db2":
+        if flavor in ("db2", "mysql", "mariadb"):
             return ops_h.add_datafile_space(
                 server=params.get("server"),
                 database=params.get("database"),
@@ -402,6 +409,10 @@ def _normalize_flavor(value):
         return "oracle"
     if v == "db2":
         return "db2"
+    if v == "mysql":
+        return "mysql"
+    if v == "mariadb":
+        return "mariadb"
     return "mssql"
 
 
@@ -531,6 +542,8 @@ def health():
             "mssql":  {"group": settings.MSSQL_GROUP,  "databases_ini": settings.MSSQL_DATABASES_INI},
             "oracle": {"group": settings.ORACLE_GROUP, "databases_ini": settings.ORACLE_DATABASES_INI},
             "db2":    {"group": settings.DB2_GROUP,    "databases_ini": settings.DB2_DATABASES_INI},
+            "mysql":  {"group": settings.MYSQL_GROUP,  "databases_ini": settings.MYSQL_DATABASES_INI},
+            "mariadb":{"group": settings.MARIADB_GROUP, "databases_ini": settings.MARIADB_DATABASES_INI},
         },
     })
 

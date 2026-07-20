@@ -1,0 +1,51 @@
+---
+# MySQL health check: instance + per-schema connect watchdog (CheckMySQLStatus.sh)
+# plus database inventory (db_inventory.sh).
+- name: MySQL host + database health check
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ mysql_user | default('root') }}"
+
+  vars:
+    remote_dir: '/tmp/dba'
+
+  tasks:
+    - name: Ensure remote dir + lib subdir exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ remote_dir }}"
+        - "{{ remote_dir }}/lib"
+
+    - name: Copy shared library
+      ansible.builtin.copy:
+        src: ../files/lib/mysql_common.sh
+        dest: "{{ remote_dir }}/lib/mysql_common.sh"
+        mode: '0755'
+
+    - name: Copy CheckMySQLStatus.sh
+      ansible.builtin.copy:
+        src: ../files/CheckMySQLStatus.sh
+        dest: "{{ remote_dir }}/CheckMySQLStatus.sh"
+        mode: '0755'
+
+    - name: Copy db_inventory.sh
+      ansible.builtin.copy:
+        src: ../files/db_inventory.sh
+        dest: "{{ remote_dir }}/db_inventory.sh"
+        mode: '0755'
+
+    - name: Run CheckMySQLStatus.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/CheckMySQLStatus.sh"
+      register: status_result
+      changed_when: false
+      failed_when: false
+
+    - name: Run db_inventory.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/db_inventory.sh"
+      register: inventory_result
+      changed_when: false
+      failed_when: false

@@ -1,0 +1,37 @@
+---
+- name: MySQL backup verification + age report
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ mysql_user | default('root') }}"
+
+  vars:
+    remote_dir: '/tmp/dba'
+
+  tasks:
+    - name: Ensure remote dir
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ remote_dir }}"
+        - "{{ remote_dir }}/lib"
+
+    - name: Copy shared library
+      ansible.builtin.copy:
+        src: ../files/lib/mysql_common.sh
+        dest: "{{ remote_dir }}/lib/mysql_common.sh"
+        mode: '0755'
+
+    - name: Copy VerifyBackups.sh
+      ansible.builtin.copy:
+        src: ../files/VerifyBackups.sh
+        dest: "{{ remote_dir }}/VerifyBackups.sh"
+        mode: '0755'
+
+    - name: Run VerifyBackups.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/VerifyBackups.sh"
+      register: result
+      changed_when: false
+      failed_when: false
