@@ -1,0 +1,130 @@
+From:    DBA Automation Platform <hello@dba-automation.example.com>
+To:      {{ first_name }} <{{ email }}>
+Subject: 🐬 One chatbot. Five databases. Zero 3 a.m. pages.
+Preheader: SQL Server, Oracle, Db2, MySQL & MariaDB — automated, monitored, and one question away.
+
+==============================================================================
+  [IMAGE: hero_banner.png — 1200x400]
+  A glowing terminal window beside five database logos (SQL Server, Oracle,
+  Db2, MySQL dolphin, MariaDB seal) all feeding into one friendly chat bubble.
+==============================================================================
+
+        ┌──────────────────────────────────────────────────────┐
+        │   ●  ●  ●        Database Assistant                    │
+        │ ┌────────────────────────────────────────────────────┐ │
+        │ │  [ SQL Server ] [ Oracle ] [ Db2 ] [ MySQL ]        │ │
+        │ │  [ MariaDB ]                                        │ │
+        │ ├────────────────────────────────────────────────────┤ │
+        │ │  you  ›  health check mysqlprod01                   │ │
+        │ │  🤖   ›  All green. Uptime 141d, buffer-pool hit    │ │
+        │ │         99.4%, last full backup 2h ago, replica     │ │
+        │ │         lag 0s. Want the PDF? 📄                     │ │
+        │ └────────────────────────────────────────────────────┘ │
+        └──────────────────────────────────────────────────────┘
+
+
+Hi {{ first_name }},
+
+What if every database in your estate — no matter the engine — answered to
+the same simple question: "How are you doing?"
+
+Meet the **Unified DBA Automation Platform**: one AI chatbot and one Ansible
+control plane that install, monitor, back up, secure, and *explain* your entire
+database fleet. In plain English.
+
+
+------------------------------------------------------------------------------
+  FIVE ENGINES. ONE PANE OF GLASS.
+------------------------------------------------------------------------------
+
+  [IMAGE: flavors_row.png — five circular engine badges]
+
+     🟦            🔴            🟧            🐬            🦭
+  SQL Server     Oracle         Db2          MySQL        MariaDB
+  (Windows)     (Linux)       (Linux)       (Linux)       (Linux)
+
+  Ask the same questions across all of them:
+
+     "backup status on prod"        "check blocking locks"
+     "security audit oracprod2"     "performance review appdb"
+     "replication lag on mariadb"   "patch level db2host01"
+
+  The assistant classifies your intent, runs the right playbook on the right
+  host, and summarizes the result — with tables and charts, not raw logs.
+
+
+------------------------------------------------------------------------------
+  WHAT IT DOES WHILE YOU SLEEP  😴
+------------------------------------------------------------------------------
+
+  [IMAGE: automation_timeline.png — a 24h gantt strip]
+
+   00:00 ──────────── binary/log backups every 15 min ───────────── 24:00
+        │  02:30 incremental      06:00 verify      22:00 FULL backup
+        │  hourly service watchdog + auto-restart
+        │  every 30 min: blocking-lock detector + security audit
+        └─ weekly integrity checks · monthly index maintenance
+
+   ✅ Self-healing service watchdogs        ✅ Automated, verified backups
+   ✅ Blocking / deadlock auto-remediation  ✅ CIS security auditing
+   ✅ Patch & version drift detection       ✅ Replication / HA / DataGuard watch
+
+
+------------------------------------------------------------------------------
+  SEE EVERYTHING. MISS NOTHING.  📊
+------------------------------------------------------------------------------
+
+  [IMAGE: dashboard.png — CheckMK + InfluxDB dashboard with gauges]
+
+        CIS Compliance        Buffer Pool Hit %       Backup Age
+        ╭─────────╮            ╭─────────╮             ╭─────────╮
+        │   96%   │            │  99.4%  │             │   2h    │
+        │  █████▁ │            │  █████▊ │             │  ▁▁▁▁▁  │
+        ╰─────────╯            ╰─────────╯             ╰─────────╯
+          GREEN                  GREEN                   GREEN
+
+  CheckMK local plugins feed InfluxDB; the chatbot renders live trends and
+  turns a single click into a boardroom-ready **PDF health report**. 📄
+
+
+------------------------------------------------------------------------------
+  BRING YOUR OWN AI  🧠
+------------------------------------------------------------------------------
+
+  Runs on whatever LLM you trust — Anthropic Claude, OpenAI, Google Gemini,
+  Oracle OCI, or fully offline with local Ollama. A semantic cache means
+  repeat questions answer instantly. Your data never has to leave the building.
+
+
+------------------------------------------------------------------------------
+  DEPLOY IN AN AFTERNOON  🚀
+------------------------------------------------------------------------------
+
+     $ sudo ./bootstrap.sh
+     $ ansible-playbook -i /etc/ansible/hosts MySQL/dba_automation.yaml
+
+  One idempotent bootstrap installs CheckMK, InfluxDB, Ansible, the chatbot,
+  and the notifier. Add a host to an inventory group and nightly auto-onboarding
+  does the rest. SELECT-only guardrails keep the chatbot safe by design.
+
+
+------------------------------------------------------------------------------
+
+              ┌───────────────────────────────────────────┐
+              │        👉  BOOK A 20-MINUTE DEMO           │
+              │     https://dba-automation.example.com     │
+              └───────────────────────────────────────────┘
+
+  Stop context-switching between five consoles. Start asking one assistant.
+
+
+Talk soon,
+
+The DBA Automation Team
+🌐 dba-automation.example.com   ·   ✉ hello@dba-automation.example.com
+
+------------------------------------------------------------------------------
+  [IMAGE: footer_logo.png — small platform wordmark]
+  You're receiving this because you signed up for product updates.
+  Unsubscribe: {{ unsubscribe_url }}   ·   Manage preferences: {{ prefs_url }}
+==============================================================================
