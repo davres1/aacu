@@ -1,0 +1,299 @@
+---
+# =============================================================================
+# install_db2.yaml
+#
+# Installs IBM Db2 LUW (11.5 or 12.0) on every Linux host in `db2_servers`,
+# using:
+#   - installer tarball copied from the Ansible controller (path in setup.yaml)
+#   - db2setup with a generated response file (silent install)
+#   - creates the instance user, fenced user, DAS user, and initial database
+#
+# Tune behaviour by editing the `db2_install:` block in setup.yaml.
+# Secrets (instance_password, fenced_password, das_password) should be
+# encrypted with ansible-vault.
+#
+# Run:
+#   ansible-galaxy collection install community.general ansible.posix
+#   ansible-playbook -i /etc/ansible/hosts install_db2.yaml --ask-vault-pass
+#
+# Tag-filtered runs:
+#   --tags prereqs    install OS prerequisites only
+#   --tags engine     install the Db2 engine only
+#   --tags database   create instance and database only (assumes engine present)
+#   --tags verify     run post-install verification block
+# =============================================================================
+
+- name: Install IBM Db2 LUW on Linux hosts
+  hosts: db2_servers
+  gather_facts: true
+  strategy: free
+  become: true
+
+  vars_files:
+    - ../setup.yaml
+
+  collections:
+    - ansible.builtin
+    - ansible.posix
+    - community.general
+
+  vars:
+    _src_tarball:  "{{ db2_install.source.tarball_path | default('') }}"
+    _stage_dir:    /opt/software/db2_stage
+    _install_dir:  "{{ db2_install.install_dir | default('/opt/ibm/db2/V11.5') }}"
+    _inst_user:    "{{ db2_install.instance_user  | default('db2inst1') }}"
+    _inst_group:   "{{ db2_install.instance_group | default('db2iadm1') }}"
+    _fenced_user:  "{{ db2_install.fenced_user    | default('db2fenc1') }}"
+    _fenced_group: "{{ db2_install.fenced_group   | default('db2fadm1') }}"
+    _das_user:     "{{ db2_install.das_user        | default('dasusr1') }}"
+
+  pre_tasks:
+
+    # -------------------------------------------------------------------------
+    # 0. Preconditions
+    # -------------------------------------------------------------------------
+    - name: Verify Db2 installer tarball exists on the Ansible controller
+      ansible.builtin.stat:
+        path: "{{ _src_tarball }}"
+      delegate_to: localhost
+      become: false
+      register: media_stat
+      run_once: true
+
+    - name: Fail if Db2 installer is missing on the controller
+      ansible.builtin.fail:
+        msg: >-
+          Db2 installer not found on the Ansible controller.
+          Expected tarball at {{ _src_tarball }}.
+          Update db2_install.source.tarball_path in setup.yaml.
+      when: not media_stat.stat.exists
+      run_once: true
+
+    - name: Show Db2 install plan
+      ansible.builtin.debug:
+        msg:
+          - "Target host:   {{ inventory_hostname }}"
+          - "Db2 version:   {{ db2_install.version }} ({{ db2_install.edition }})"
+          - "Install dir:   {{ _install_dir }}"
+          - "Instance user: {{ _inst_user }} (port {{ db2_install.port | default(50000) }})"
+          - "Database:      {{ db2_install.db_name }}"
+
+    # -------------------------------------------------------------------------
+    # 1. OS prerequisites
+    # -------------------------------------------------------------------------
+    - name: Install Db2 OS prerequisite packages
+      ansible.builtin.dnf:
+        name:
+          - binutils
+          - cpp
+          - gcc
+          - gcc-c++
+          - glibc
+          - glibc-devel
+          - libaio
+          - libstdc++
+          - libstdc++-devel
+          - ksh
+          - numactl
+          - numactl-libs
+          - pam
+          - pam-devel
+          - python3
+          - tar
+          - unzip
+        state: present
+      tags: [prereqs, engine]
+
+    - name: Create Db2 OS groups
+      ansible.builtin.group:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - "{{ _inst_group }}"
+        - "{{ _fenced_group }}"
+        - "{{ _das_user }}"
+      tags: [prereqs, engine]
+
+    - name: Create Db2 OS users
+      ansible.builtin.user:
+        name: "{{ item.name }}"
+        group: "{{ item.group }}"
+        home: "/home/{{ item.name }}"
+        shell: /bin/bash
+        create_home: true
+        state: present
+        password: "{{ item.password | password_hash('sha512') }}"
+      loop:
+        - name: "{{ _inst_user }}"
+          group: "{{ _inst_group }}"
+          password: "{{ db2_install.instance_password }}"
+        - name: "{{ _fenced_user }}"
+          group: "{{ _fenced_group }}"
+          password: "{{ db2_install.fenced_password }}"
+        - name: "{{ _das_user }}"
+          group: "{{ _das_user }}"
+          password: "{{ db2_install.das_password }}"
+      no_log: true
+      tags: [prereqs, engine]
+
+    - name: Create staging directory
+      ansible.builtin.file:
+        path: "{{ _stage_dir }}"
+        state: directory
+        mode: '0755'
+      tags: [engine]
+
+    # -------------------------------------------------------------------------
+    # 2. Stage and install Db2
+    # -------------------------------------------------------------------------
+    - name: Copy Db2 installer tarball from controller to target
+      ansible.builtin.copy:
+        src: "{{ _src_tarball }}"
+        dest: "{{ _stage_dir }}/{{ _src_tarball | basename }}"
+        mode: '0644'
+      tags: [engine]
+
+    - name: Extract Db2 installer tarball
+      ansible.builtin.unarchive:
+        src: "{{ _stage_dir }}/{{ _src_tarball | basename }}"
+        dest: "{{ _stage_dir }}"
+        remote_src: true
+      tags: [engine]
+
+    - name: Generate Db2 response file
+      ansible.builtin.copy:
+        dest: "{{ _stage_dir }}/db2_{{ db2_install.db_name }}.rsp"
+        mode: '0600'
+        content: |
+          LIC_AGREEMENT = ACCEPT
+          PROD = DB2_SERVER_EDITION
+          FILE = {{ _install_dir }}
+          INSTALL_TYPE = TYPICAL
+          DAS_USERNAME = {{ _das_user }}
+          DAS_PASSWORD = {{ db2_install.das_password }}
+          DAS_GROUP_NAME = {{ _das_user }}
+          INSTANCE = DB2_INST
+          DB2_INST.NAME = {{ _inst_user }}
+          DB2_INST.GROUP_NAME = {{ _inst_group }}
+          DB2_INST.HOME_DIRECTORY = /home/{{ _inst_user }}
+          DB2_INST.PASSWORD = {{ db2_install.instance_password }}
+          DB2_INST.AUTOSTART = YES
+          DB2_INST.START_DURING_INSTALL = YES
+          DB2_INST.PORT_NUMBER = {{ db2_install.port | default(50000) }}
+          DB2_INST.FCM_PORT_NUMBER = {{ db2_install.fcm_port | default(60000) }}
+          DB2_INST.SVCENAME = db2c_{{ _inst_user }}
+          DB2_INST.DB2COMM = TCPIP
+          DB2_INST.FENCED_USERNAME = {{ _fenced_user }}
+          DB2_INST.FENCED_GROUP_NAME = {{ _fenced_group }}
+          DB2_INST.FENCED_PASSWORD = {{ db2_install.fenced_password }}
+      no_log: true
+      tags: [engine]
+
+    - name: Run Db2 silent installer
+      ansible.builtin.shell: |
+        db2setup_bin="$(find {{ _stage_dir }} -maxdepth 2 -name 'db2setup' -type f | head -1)"
+        [[ -x "$db2setup_bin" ]] || { echo "db2setup not found in {{ _stage_dir }}"; exit 1; }
+        "$db2setup_bin" -r {{ _stage_dir }}/db2_{{ db2_install.db_name }}.rsp -l /tmp/db2setup.log
+      register: db2setup_result
+      changed_when: db2setup_result.rc == 0
+      failed_when: db2setup_result.rc not in [0, 1]
+      tags: [engine]
+
+    - name: Remove Db2 response file (contains passwords)
+      ansible.builtin.file:
+        path: "{{ _stage_dir }}/db2_{{ db2_install.db_name }}.rsp"
+        state: absent
+      tags: [engine]
+
+    - name: Open Db2 TCP port in firewalld
+      ansible.posix.firewalld:
+        port: "{{ db2_install.port | default(50000) }}/tcp"
+        permanent: true
+        state: enabled
+        immediate: true
+      tags: [engine]
+
+    - name: Open Db2 FCM port in firewalld
+      ansible.posix.firewalld:
+        port: "{{ db2_install.fcm_port | default(60000) }}/tcp"
+        permanent: true
+        state: enabled
+        immediate: true
+      tags: [engine]
+
+    # -------------------------------------------------------------------------
+    # 3. Create database
+    # -------------------------------------------------------------------------
+    - name: Register Db2 TCP/IP service entry in /etc/services
+      ansible.builtin.lineinfile:
+        path: /etc/services
+        line: "db2c_{{ _inst_user }}    {{ db2_install.port | default(50000) }}/tcp    # Db2 instance {{ _inst_user }}"
+        regexp: "^db2c_{{ _inst_user }}"
+        state: present
+      tags: [database]
+
+    - name: Create Db2 database
+      ansible.builtin.shell: |
+        source /home/{{ _inst_user }}/sqllib/db2profile
+        db2 CREATE DATABASE {{ db2_install.db_name }} \
+          ON {{ db2_install.db_path | default('/home/' ~ _inst_user) }} \
+          ALIAS {{ db2_install.db_name }} \
+          USING CODESET {{ db2_install.char_set | default('UTF-8') }} \
+          TERRITORY {{ db2_install.territory | default('US') }} \
+          COLLATE USING {{ db2_install.collation | default('IDENTITY') }}
+      become_user: "{{ _inst_user }}"
+      register: db2_create
+      changed_when: "'DB20000I' in db2_create.stdout"
+      failed_when: >-
+        db2_create.rc != 0 and 'SQL1005N' not in db2_create.stdout
+      tags: [database]
+
+    - name: Remove staged Db2 installer
+      ansible.builtin.file:
+        path: "{{ _stage_dir }}"
+        state: absent
+      when: db2_install.cleanup_after | default(true)
+      tags: [engine]
+
+  post_tasks:
+
+    # -------------------------------------------------------------------------
+    # 4. Verify
+    # -------------------------------------------------------------------------
+    - name: Wait for Db2 TCP port to open
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ db2_install.port | default(50000) }}"
+        timeout: 60
+      tags: [verify]
+
+    - name: Verify Db2 instance is running
+      ansible.builtin.shell: |
+        source /home/{{ _inst_user }}/sqllib/db2profile
+        db2 GET DBM CFG | head -3
+      become_user: "{{ _inst_user }}"
+      register: dbm_cfg
+      changed_when: false
+      tags: [verify]
+
+    - name: Verify Db2 database is accessible
+      ansible.builtin.shell: |
+        source /home/{{ _inst_user }}/sqllib/db2profile
+        db2 CONNECT TO {{ db2_install.db_name }}
+        db2 GET DB CFG FOR {{ db2_install.db_name }} | head -3
+        db2 CONNECT RESET
+      become_user: "{{ _inst_user }}"
+      register: db2_connect
+      changed_when: false
+      tags: [verify]
+
+    - name: Installation summary
+      ansible.builtin.debug:
+        msg:
+          - "Host:          {{ inventory_hostname }}"
+          - "Db2 version:   {{ db2_install.version }} ({{ db2_install.edition }})"
+          - "Install dir:   {{ _install_dir }}"
+          - "Instance:      {{ _inst_user }} (port {{ db2_install.port | default(50000) }})"
+          - "Database:      {{ db2_install.db_name }}"
+          - "Connect test:  {{ 'passed' if db2_connect.rc == 0 else 'FAILED' }}"
+      tags: [verify]

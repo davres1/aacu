@@ -347,6 +347,159 @@ chatbot:
     ssl:      false
 
 
+# ---------- Oracle Database installation -------------------------------------
+# Consumed by Oracle/install_oracle.yaml. Media (RPM or ZIP) lives on the
+# Ansible controller and is copied to /opt/software/oracle_stage on the target.
+# Supports RPM-based install (19c EE/XE) and silent runInstaller (ZIP).
+oracle_install:
+  source:
+    # Either rpm_path or zip_path. rpm_path wins if both are set.
+    rpm_path:    /opt/software/Oracle19c/oracle-database-ee-19c-1.0-1.x86_64.rpm
+    zip_path:    ''                  # e.g. /opt/software/Oracle19c/LINUX.X64_193000_db_home.zip
+    patch_path:  ''                  # optional RU/PSU patch zip
+
+  version: 19c                       # 19c / 21c / 23ai
+  edition: EE                        # EE / SE2 / XE
+  cleanup_after: true                # delete staged media after install
+
+  # Oracle directory layout on the target Linux host
+  oracle_base:  /opt/oracle
+  oracle_home:  /opt/oracle/product/19c/dbhome_1
+  data_dir:     /opt/oracle/oradata
+  fra_dir:      /opt/oracle/fast_recovery_area
+  backup_dir:   /opt/oracle/backup
+
+  # OS user and groups (created by the playbook)
+  oracle_user:  oracle
+  oracle_group: oinstall
+  dba_group:    dba
+
+  # Network
+  listener_port:    1521
+  em_express_port:  5500
+
+  # Database creation (dbca)
+  db_name:   ORCL
+  db_sid:    ORCL
+  pdb_name:  ORCLPDB1
+  char_set:  AL32UTF8
+  nchar_set: AL16UTF16
+
+  # Memory (MB) — set automaticMemoryManagement=FALSE to honour these
+  memory_target_mb: 2048
+
+  # ansible-vault encrypt_string 'SysP@ssw0rd!' --name 'oracle_install_sys_password'
+  sys_password:    CHANGE_ME
+  system_password: CHANGE_ME
+
+
+# ---------- IBM Db2 LUW installation ------------------------------------------
+# Consumed by Db2/install_db2.yaml. Installer tarball lives on the Ansible
+# controller and is extracted on the target, then db2setup is run silently.
+db2_install:
+  source:
+    tarball_path: /opt/software/Db2_11.5/v11.5.9_linuxx64_server_dec.tar.gz
+    patch_path:   ''                 # optional fixpack tarball
+
+  version: '11.5'                    # 11.5 / 12.0
+  edition: SE                        # SE / EE / ESE / Advanced
+  cleanup_after: true
+
+  # Install location on the target
+  install_dir: /opt/ibm/db2/V11.5
+
+  # Instance user / group (created by the playbook)
+  instance_user:  db2inst1
+  instance_group: db2iadm1
+  fenced_user:    db2fenc1
+  fenced_group:   db2fadm1
+  das_user:       dasusr1
+
+  # Database
+  db_name:    SAMPLE
+  db_path:    /home/db2inst1         # CREATE DATABASE ON path
+  char_set:   UTF-8
+  territory:  US
+  collation:  IDENTITY
+
+  # Network
+  port:     50000
+  fcm_port: 60000                    # Fast Communications Manager port
+
+  # ansible-vault encrypt_string 'ChangeMe1!' --name 'db2_install_instance_password'
+  instance_password: CHANGE_ME
+  fenced_password:   CHANGE_ME
+  das_password:      CHANGE_ME
+
+
+# ---------- MySQL Community installation ---------------------------------------
+# Consumed by MySQL/install_mysql.yaml. Adds the official MySQL Community repo
+# and installs mysql-community-server via dnf.
+mysql_install:
+  source:
+    # URL to the MySQL Community release RPM (sets up the yum repo).
+    repo_rpm_url:   https://dev.mysql.com/get/mysql84-community-release-el9-1.noarch.rpm
+    # Supply a pre-downloaded RPM path instead when internet access is restricted.
+    local_rpm_path: ''
+
+  version: '8.4'                     # 8.0 / 8.4 / 9.x (Innovation)
+  edition: Community
+
+  # Service / socket
+  port:          3306
+  bind_address:  '0.0.0.0'
+  datadir:       /var/lib/mysql
+  logdir:        /var/log/mysql
+  socket:        /var/lib/mysql/mysql.sock
+
+  # Authentication
+  # ansible-vault encrypt_string 'MySQLr00t!' --name 'mysql_install_root_password'
+  root_password:        CHANGE_ME
+  default_auth_plugin:  caching_sha2_password   # or mysql_native_password
+
+  # Replication
+  server_id:     1
+  binlog_format: ROW
+
+  # InnoDB tuning (MB)
+  innodb_buffer_pool_mb: 512
+  innodb_log_file_mb:    128
+
+
+# ---------- MariaDB installation -----------------------------------------------
+# Consumed by MariaDB/install_mariadb.yaml. Adds the official MariaDB repo via
+# mariadb_repo_setup and installs MariaDB-server via dnf.
+mariadb_install:
+  source:
+    repo_url:        'https://downloads.mariadb.com/MariaDB/mariadb_repo_setup'
+    # Supply a local repo file path instead when internet access is restricted.
+    local_repo_path: ''
+
+  version: '11.4'                    # 10.11 (LTS) / 11.4 (LTS) / 11.6
+  edition: Community
+
+  # Service / socket
+  port:          3306
+  bind_address:  '0.0.0.0'
+  datadir:       /var/lib/mysql
+  logdir:        /var/log/mariadb
+  socket:        /var/lib/mysql/mysql.sock
+
+  # Authentication
+  # ansible-vault encrypt_string 'MariaDBr00t!' --name 'mariadb_install_root_password'
+  root_password:     CHANGE_ME
+  unix_socket_auth:  true            # false for remote-root or Galera environments
+
+  # Galera cluster (set enabled: true and fill cluster_address for multi-node)
+  galera:
+    enabled:         false
+    cluster_name:    mariadb_cluster
+    cluster_address: ''              # e.g. gcomm://node1,node2,node3
+
+  # InnoDB tuning (MB)
+  innodb_buffer_pool_mb: 512
+
+
 # ---------- ServiceNow / ticktator (CheckMK notification handler) ------------
 # ticktator.py reads its config from environment variables. The simplest
 # integration is to drop a snippet into /etc/default/ticktator that the

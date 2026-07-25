@@ -1,0 +1,248 @@
+---
+# =============================================================================
+# install_mysql.yaml
+#
+# Installs MySQL Community Server 8.4 (or 8.0 / 9.x) on every Linux host in
+# `mysql_servers`, using:
+#   - the official MySQL Community repository (or a local repo RPM)
+#   - dnf package install
+#   - community.mysql modules for secure-install (root password, anon users,
+#     test database removal)
+#
+# Tune behaviour by editing the `mysql_install:` block in setup.yaml.
+# Secrets (root_password) should be encrypted with ansible-vault.
+#
+# Run:
+#   ansible-galaxy collection install community.mysql ansible.posix
+#   ansible-playbook -i /etc/ansible/hosts install_mysql.yaml --ask-vault-pass
+#
+# Tag-filtered runs:
+#   --tags repo      add MySQL community repository only
+#   --tags engine    install MySQL engine only
+#   --tags secure    run secure-installation tasks only
+#   --tags verify    run post-install verification block
+# =============================================================================
+
+- name: Install MySQL Community Server on Linux hosts
+  hosts: mysql_servers
+  gather_facts: true
+  strategy: free
+  become: true
+
+  vars_files:
+    - ../setup.yaml
+
+  collections:
+    - ansible.builtin
+    - ansible.posix
+    - community.mysql
+    - community.general
+
+  vars:
+    _port:          "{{ mysql_install.port           | default(3306) }}"
+    _root_password: "{{ mysql_install.root_password }}"
+    _datadir:       "{{ mysql_install.datadir        | default('/var/lib/mysql') }}"
+    _logdir:        "{{ mysql_install.logdir         | default('/var/log/mysql') }}"
+    _socket:        "{{ mysql_install.socket         | default('/var/lib/mysql/mysql.sock') }}"
+
+  pre_tasks:
+
+    - name: Show MySQL install plan
+      ansible.builtin.debug:
+        msg:
+          - "Target host:   {{ inventory_hostname }}"
+          - "MySQL version: {{ mysql_install.version | default('8.4') }} ({{ mysql_install.edition | default('Community') }})"
+          - "Port:          {{ _port }}"
+          - "Data dir:      {{ _datadir }}"
+
+    # -------------------------------------------------------------------------
+    # 1. Add MySQL Community repository
+    # -------------------------------------------------------------------------
+    - name: Install MySQL community repo RPM from URL
+      ansible.builtin.dnf:
+        name: "{{ mysql_install.source.repo_rpm_url | default('https://dev.mysql.com/get/mysql84-community-release-el9-1.noarch.rpm') }}"
+        state: present
+        disable_gpg_check: true
+      when: mysql_install.source.local_rpm_path | default('') | length == 0
+      tags: [repo, engine]
+
+    - name: Install MySQL community repo from local RPM file
+      ansible.builtin.dnf:
+        name: "{{ mysql_install.source.local_rpm_path }}"
+        state: present
+        disable_gpg_check: true
+      when: mysql_install.source.local_rpm_path | default('') | length > 0
+      tags: [repo, engine]
+
+    - name: Import MySQL GPG signing key
+      ansible.builtin.rpm_key:
+        state: present
+        key: https://repo.mysql.com/RPM-GPG-KEY-mysql-2023
+      ignore_errors: true
+      tags: [repo, engine]
+
+    # -------------------------------------------------------------------------
+    # 2. Install MySQL engine
+    # -------------------------------------------------------------------------
+    - name: Install mysql-community-server and client packages
+      ansible.builtin.dnf:
+        name:
+          - mysql-community-server
+          - mysql-community-client
+          - mysql-community-common
+          - python3-PyMySQL
+        state: present
+      tags: [engine]
+
+    - name: Ensure MySQL log directory exists
+      ansible.builtin.file:
+        path: "{{ _logdir }}"
+        state: directory
+        owner: mysql
+        group: mysql
+        mode: '0750'
+      tags: [engine]
+
+    - name: Write MySQL server configuration
+      ansible.builtin.copy:
+        dest: /etc/my.cnf.d/aacu-mysql.cnf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [mysqld]
+          port            = {{ _port }}
+          bind-address    = {{ mysql_install.bind_address | default('0.0.0.0') }}
+          datadir         = {{ _datadir }}
+          socket          = {{ _socket }}
+          log-error       = {{ _logdir }}/mysqld.log
+          pid-file        = /var/run/mysqld/mysqld.pid
+
+          default_authentication_plugin = {{ mysql_install.default_auth_plugin | default('caching_sha2_password') }}
+
+          server-id       = {{ mysql_install.server_id    | default(1) }}
+          binlog_format   = {{ mysql_install.binlog_format | default('ROW') }}
+
+          innodb_buffer_pool_size = {{ mysql_install.innodb_buffer_pool_mb | default(512) }}M
+          innodb_log_file_size    = {{ mysql_install.innodb_log_file_mb    | default(128) }}M
+          innodb_flush_log_at_trx_commit = 1
+          innodb_file_per_table   = 1
+
+          local_infile    = 0
+          symbolic-links  = 0
+
+          [client]
+          port   = {{ _port }}
+          socket = {{ _socket }}
+      tags: [engine]
+
+    - name: Enable and start MySQL service
+      ansible.builtin.systemd:
+        name: mysqld
+        enabled: true
+        state: started
+      tags: [engine]
+
+    - name: Open MySQL firewall service
+      ansible.posix.firewalld:
+        service: mysql
+        permanent: true
+        state: enabled
+        immediate: true
+      tags: [engine]
+
+    # -------------------------------------------------------------------------
+    # 3. Secure installation
+    # -------------------------------------------------------------------------
+    - name: Retrieve MySQL temporary root password from error log
+      ansible.builtin.shell: |
+        grep 'temporary password' {{ _logdir }}/mysqld.log | awk '{print $NF}' | tail -1
+      register: mysql_temp_pass
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags: [secure]
+
+    - name: Set MySQL root password using temporary credentials
+      community.mysql.mysql_user:
+        login_user: root
+        login_password: "{{ mysql_temp_pass.stdout | default('') }}"
+        login_unix_socket: "{{ _socket }}"
+        user: root
+        host_all: true
+        password: "{{ _root_password }}"
+        state: present
+        connect_timeout: 30
+      no_log: true
+      failed_when: false
+      tags: [secure]
+
+    - name: Remove anonymous MySQL users
+      community.mysql.mysql_user:
+        login_user: root
+        login_password: "{{ _root_password }}"
+        login_unix_socket: "{{ _socket }}"
+        name: ''
+        host_all: true
+        state: absent
+      no_log: true
+      failed_when: false
+      tags: [secure]
+
+    - name: Remove MySQL test database
+      community.mysql.mysql_db:
+        login_user: root
+        login_password: "{{ _root_password }}"
+        login_unix_socket: "{{ _socket }}"
+        name: test
+        state: absent
+      no_log: true
+      failed_when: false
+      tags: [secure]
+
+    - name: Flush MySQL privileges
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ _root_password }}"
+        login_unix_socket: "{{ _socket }}"
+        query: FLUSH PRIVILEGES
+      no_log: true
+      failed_when: false
+      tags: [secure]
+
+  post_tasks:
+
+    # -------------------------------------------------------------------------
+    # 4. Verify
+    # -------------------------------------------------------------------------
+    - name: Wait for MySQL TCP port to open
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ _port }}"
+        timeout: 60
+      tags: [verify]
+
+    - name: Verify MySQL service state
+      ansible.builtin.systemd:
+        name: mysqld
+      register: mysqld_state
+      tags: [verify]
+
+    - name: Capture MySQL version via mysqladmin
+      ansible.builtin.shell: |
+        mysqladmin --user=root --password="{{ _root_password }}" version 2>/dev/null | head -2
+      register: mysql_version
+      changed_when: false
+      no_log: true
+      failed_when: false
+      tags: [verify]
+
+    - name: Installation summary
+      ansible.builtin.debug:
+        msg:
+          - "Host:          {{ inventory_hostname }}"
+          - "MySQL version: {{ mysql_install.version | default('8.4') }} ({{ mysql_install.edition | default('Community') }})"
+          - "Service:       mysqld={{ mysqld_state.status.ActiveState | default('unknown') }}"
+          - "Port:          {{ _port }}"
+          - "Version info:  {{ mysql_version.stdout_lines | default(['n/a']) | first }}"
+      tags: [verify]

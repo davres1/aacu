@@ -1,0 +1,467 @@
+---
+# =============================================================================
+# install_oracle.yaml
+#
+# Installs Oracle Database 19c (or 21c/23ai) on every Linux host in
+# `oracle_servers`, using:
+#   - install media copied from the Ansible controller (paths in setup.yaml)
+#   - RPM-based install (oracle-database-ee-19c.rpm) OR silent runInstaller
+#   - dbca to create a CDB + PDB after engine install
+#
+# Tune behaviour by editing the `oracle_install:` block in setup.yaml.
+# Secrets (sys_password, system_password) should be encrypted with
+# ansible-vault.
+#
+# Run:
+#   ansible-galaxy collection install community.general ansible.posix
+#   ansible-playbook -i /etc/ansible/hosts install_oracle.yaml --ask-vault-pass
+#
+# Tag-filtered runs:
+#   --tags prereqs    install OS prerequisites only
+#   --tags engine     install the Oracle engine only (no dbca)
+#   --tags database   run dbca to create the CDB/PDB (assumes engine present)
+#   --tags verify     run the post-install verification block
+# =============================================================================
+
+- name: Install Oracle Database on Linux hosts
+  hosts: oracle_servers
+  gather_facts: true
+  strategy: free
+  become: true
+
+  vars_files:
+    - ../setup.yaml
+
+  collections:
+    - ansible.builtin
+    - ansible.posix
+    - community.general
+
+  vars:
+    _use_rpm:     "{{ oracle_install.source.rpm_path | default('') | length > 0 }}"
+    _src_rpm:     "{{ oracle_install.source.rpm_path  | default('') }}"
+    _src_zip:     "{{ oracle_install.source.zip_path  | default('') }}"
+    _stage_dir:   /opt/software/oracle_stage
+    _oracle_home: "{{ oracle_install.oracle_home }}"
+    _oracle_base: "{{ oracle_install.oracle_base }}"
+    _ora_user:    "{{ oracle_install.oracle_user  | default('oracle') }}"
+    _ora_group:   "{{ oracle_install.oracle_group | default('oinstall') }}"
+    _dba_group:   "{{ oracle_install.dba_group    | default('dba') }}"
+
+  pre_tasks:
+
+    # -------------------------------------------------------------------------
+    # 0. Preconditions
+    # -------------------------------------------------------------------------
+    - name: Verify Oracle install media exists on the Ansible controller
+      ansible.builtin.stat:
+        path: "{{ _src_rpm if _use_rpm else _src_zip }}"
+      delegate_to: localhost
+      become: false
+      register: media_stat
+      run_once: true
+
+    - name: Fail if Oracle install media is missing on the controller
+      ansible.builtin.fail:
+        msg: >-
+          Oracle install media not found on the Ansible controller.
+          Expected {{ 'RPM at ' ~ _src_rpm if _use_rpm else 'ZIP at ' ~ _src_zip }}.
+          Update oracle_install.source in setup.yaml.
+      when: not media_stat.stat.exists
+      run_once: true
+
+    - name: Show Oracle install plan
+      ansible.builtin.debug:
+        msg:
+          - "Target host:   {{ inventory_hostname }}"
+          - "Version:       {{ oracle_install.version }} ({{ oracle_install.edition }})"
+          - "Oracle Base:   {{ _oracle_base }}"
+          - "Oracle Home:   {{ _oracle_home }}"
+          - "DB Name:       {{ oracle_install.db_name }}"
+          - "PDB Name:      {{ oracle_install.pdb_name }}"
+          - "Listener port: {{ oracle_install.listener_port | default(1521) }}"
+          - "Install method: {{ 'RPM' if _use_rpm else 'Silent runInstaller (ZIP)' }}"
+
+    # -------------------------------------------------------------------------
+    # 1. OS prerequisites
+    # -------------------------------------------------------------------------
+    - name: Install oracle-database-preinstall and OS prerequisite packages
+      ansible.builtin.dnf:
+        name:
+          - oracle-database-preinstall-19c
+          - binutils
+          - compat-openssl10
+          - elfutils-libelf
+          - gcc
+          - gcc-c++
+          - glibc
+          - glibc-devel
+          - ksh
+          - libaio
+          - libaio-devel
+          - libgcc
+          - libstdc++
+          - libstdc++-devel
+          - libXi
+          - libXtst
+          - make
+          - net-tools
+          - nfs-utils
+          - psmisc
+          - smartmontools
+          - sysstat
+          - unzip
+        state: present
+      ignore_errors: true
+      tags: [prereqs, engine]
+
+    - name: Ensure Oracle OS groups exist
+      ansible.builtin.group:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - "{{ _ora_group }}"
+        - "{{ _dba_group }}"
+        - oper
+        - backupdba
+        - dgdba
+        - kmdba
+        - racdba
+      tags: [prereqs, engine]
+
+    - name: Ensure Oracle OS user exists
+      ansible.builtin.user:
+        name: "{{ _ora_user }}"
+        group: "{{ _ora_group }}"
+        groups: "{{ _dba_group }},oper,backupdba,dgdba,kmdba,racdba"
+        append: true
+        home: "/home/{{ _ora_user }}"
+        shell: /bin/bash
+        create_home: true
+        state: present
+      tags: [prereqs, engine]
+
+    - name: Create Oracle directory structure
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ _ora_user }}"
+        group: "{{ _ora_group }}"
+        mode: '0755'
+      loop:
+        - "{{ _oracle_base }}"
+        - "{{ _oracle_home }}"
+        - "{{ oracle_install.data_dir }}"
+        - "{{ oracle_install.fra_dir }}"
+        - "{{ oracle_install.backup_dir }}"
+        - "{{ _stage_dir }}"
+      tags: [prereqs, engine]
+
+    # -------------------------------------------------------------------------
+    # 2. Stage install media on the target
+    # -------------------------------------------------------------------------
+    - name: Copy Oracle RPM from controller to target
+      ansible.builtin.copy:
+        src: "{{ _src_rpm }}"
+        dest: "{{ _stage_dir }}/{{ _src_rpm | basename }}"
+        owner: root
+        group: root
+        mode: '0644'
+      when: _use_rpm
+      tags: [engine]
+
+    - name: Copy Oracle ZIP installer from controller to target
+      ansible.builtin.copy:
+        src: "{{ _src_zip }}"
+        dest: "{{ _stage_dir }}/{{ _src_zip | basename }}"
+        owner: "{{ _ora_user }}"
+        group: "{{ _ora_group }}"
+        mode: '0644'
+      when: not _use_rpm
+      tags: [engine]
+
+    # -------------------------------------------------------------------------
+    # 3. Install the Oracle engine
+    # -------------------------------------------------------------------------
+    - name: Install Oracle database via RPM
+      ansible.builtin.dnf:
+        name: "{{ _stage_dir }}/{{ _src_rpm | basename }}"
+        state: present
+        disable_gpg_check: true
+      when: _use_rpm
+      tags: [engine]
+
+    - name: Unzip Oracle installer archive
+      ansible.builtin.unarchive:
+        src: "{{ _stage_dir }}/{{ _src_zip | basename }}"
+        dest: "{{ _stage_dir }}"
+        remote_src: true
+        owner: "{{ _ora_user }}"
+        group: "{{ _ora_group }}"
+      when: not _use_rpm
+      tags: [engine]
+
+    - name: Run Oracle runInstaller silently (software-only)
+      ansible.builtin.shell: |
+        export ORACLE_BASE="{{ _oracle_base }}"
+        export ORACLE_HOME="{{ _oracle_home }}"
+        "{{ _stage_dir }}/database/runInstaller" \
+          -silent -ignorePrereq -waitforcompletion \
+          oracle.install.option=INSTALL_DB_SWONLY \
+          ORACLE_HOSTNAME="{{ inventory_hostname }}" \
+          UNIX_GROUP_NAME="{{ _ora_group }}" \
+          INVENTORY_LOCATION="{{ _oracle_base }}/oraInventory" \
+          ORACLE_HOME="{{ _oracle_home }}" \
+          ORACLE_BASE="{{ _oracle_base }}" \
+          oracle.install.db.InstallEdition="{{ oracle_install.edition }}" \
+          oracle.install.db.OSDBA_GROUP="{{ _dba_group }}" \
+          oracle.install.db.OSOPER_GROUP=oper \
+          oracle.install.db.OSBACKUPDBA_GROUP=backupdba \
+          oracle.install.db.OSDGDBA_GROUP=dgdba \
+          oracle.install.db.OSKMDBA_GROUP=kmdba \
+          oracle.install.db.OSRACDBA_GROUP=racdba \
+          SECURITY_UPDATES_VIA_MYORACLESUPPORT=false \
+          DECLINE_SECURITY_UPDATES=true
+      become_user: "{{ _ora_user }}"
+      when: not _use_rpm
+      register: runinstaller_out
+      changed_when: "'Successfully Setup Software' in (runinstaller_out.stdout | default(''))"
+      failed_when: >-
+        runinstaller_out.rc is defined and runinstaller_out.rc not in [0, 6, 250]
+      tags: [engine]
+
+    - name: Run Oracle root scripts after software install (ZIP method)
+      ansible.builtin.shell: "{{ item }}"
+      loop:
+        - "{{ _oracle_base }}/oraInventory/orainstRoot.sh"
+        - "{{ _oracle_home }}/root.sh"
+      when: not _use_rpm
+      tags: [engine]
+
+    - name: Open Oracle listener port in firewalld
+      ansible.posix.firewalld:
+        port: "{{ oracle_install.listener_port | default(1521) }}/tcp"
+        permanent: true
+        state: enabled
+        immediate: true
+      tags: [engine]
+
+    - name: Open Oracle EM Express port in firewalld
+      ansible.posix.firewalld:
+        port: "{{ oracle_install.em_express_port | default(5500) }}/tcp"
+        permanent: true
+        state: enabled
+        immediate: true
+      tags: [engine]
+
+    # -------------------------------------------------------------------------
+    # 4. Configure listener and create database via DBCA
+    # -------------------------------------------------------------------------
+    - name: Write Oracle listener.ora
+      ansible.builtin.copy:
+        dest: "{{ _oracle_home }}/network/admin/listener.ora"
+        owner: "{{ _ora_user }}"
+        group: "{{ _ora_group }}"
+        mode: '0644'
+        content: |
+          LISTENER =
+            (DESCRIPTION_LIST =
+              (DESCRIPTION =
+                (ADDRESS = (PROTOCOL = TCP)(HOST = {{ inventory_hostname }})(PORT = {{ oracle_install.listener_port | default(1521) }}))
+                (ADDRESS = (PROTOCOL = IPC)(KEY = EXTPROC1521))
+              )
+            )
+
+          SID_LIST_LISTENER =
+            (SID_LIST =
+              (SID_DESC =
+                (GLOBAL_DBNAME = {{ oracle_install.db_name }})
+                (ORACLE_HOME = {{ _oracle_home }})
+                (SID_NAME = {{ oracle_install.db_sid }})
+              )
+            )
+      tags: [database]
+
+    - name: Write Oracle tnsnames.ora
+      ansible.builtin.copy:
+        dest: "{{ _oracle_home }}/network/admin/tnsnames.ora"
+        owner: "{{ _ora_user }}"
+        group: "{{ _ora_group }}"
+        mode: '0644'
+        content: |
+          {{ oracle_install.db_name }} =
+            (DESCRIPTION =
+              (ADDRESS = (PROTOCOL = TCP)(HOST = localhost)(PORT = {{ oracle_install.listener_port | default(1521) }}))
+              (CONNECT_DATA = (SERVER = DEDICATED)(SERVICE_NAME = {{ oracle_install.db_name }}))
+            )
+
+          {{ oracle_install.pdb_name }} =
+            (DESCRIPTION =
+              (ADDRESS = (PROTOCOL = TCP)(HOST = localhost)(PORT = {{ oracle_install.listener_port | default(1521) }}))
+              (CONNECT_DATA = (SERVER = DEDICATED)(SERVICE_NAME = {{ oracle_install.pdb_name }}))
+            )
+      tags: [database]
+
+    - name: Start Oracle listener
+      ansible.builtin.shell: |
+        export ORACLE_HOME="{{ _oracle_home }}"
+        export PATH="$ORACLE_HOME/bin:$PATH"
+        lsnrctl start
+      become_user: "{{ _ora_user }}"
+      register: lsnrctl_start
+      changed_when: "'started' in lsnrctl_start.stdout | lower"
+      failed_when: >-
+        lsnrctl_start.rc != 0 and 'already running' not in (lsnrctl_start.stdout | lower)
+      tags: [database]
+
+    - name: Write DBCA response file
+      ansible.builtin.copy:
+        dest: "/tmp/dbca_{{ oracle_install.db_name }}.rsp"
+        owner: "{{ _ora_user }}"
+        group: "{{ _ora_group }}"
+        mode: '0600'
+        content: |
+          responseFileVersion=/oracle/assistants/rspfmt_dbca_response_schema_v19.0.0
+          gdbName={{ oracle_install.db_name }}
+          sid={{ oracle_install.db_sid }}
+          databaseConfigType=CDB
+          pdbName={{ oracle_install.pdb_name }}
+          pdbAdminPassword={{ oracle_install.sys_password }}
+          templateName=General_Purpose.dbc
+          sysPassword={{ oracle_install.sys_password }}
+          systemPassword={{ oracle_install.system_password }}
+          datafileDestination={{ oracle_install.data_dir }}
+          recoveryAreaDestination={{ oracle_install.fra_dir }}
+          storageType=FS
+          characterSet={{ oracle_install.char_set | default('AL32UTF8') }}
+          nationalCharacterSet={{ oracle_install.nchar_set | default('AL16UTF16') }}
+          automaticMemoryManagement=FALSE
+          totalMemory={{ oracle_install.memory_target_mb | default(2048) }}
+          emConfiguration=DBEXPRESS
+          emExpressPort={{ oracle_install.em_express_port | default(5500) }}
+      no_log: true
+      tags: [database]
+
+    - name: Create Oracle database via DBCA
+      ansible.builtin.shell: |
+        export ORACLE_BASE="{{ _oracle_base }}"
+        export ORACLE_HOME="{{ _oracle_home }}"
+        export ORACLE_SID="{{ oracle_install.db_sid }}"
+        export PATH="$ORACLE_HOME/bin:$PATH"
+        dbca -silent -createDatabase -responseFile /tmp/dbca_{{ oracle_install.db_name }}.rsp
+      become_user: "{{ _ora_user }}"
+      register: dbca_result
+      changed_when: "'100% complete' in (dbca_result.stdout | default(''))"
+      failed_when: dbca_result.rc not in [0]
+      no_log: true
+      tags: [database]
+
+    - name: Remove DBCA response file (contains passwords)
+      ansible.builtin.file:
+        path: "/tmp/dbca_{{ oracle_install.db_name }}.rsp"
+        state: absent
+      tags: [database]
+
+    - name: Set Oracle environment in oracle user's .bash_profile
+      ansible.builtin.blockinfile:
+        path: "/home/{{ _ora_user }}/.bash_profile"
+        create: true
+        owner: "{{ _ora_user }}"
+        group: "{{ _ora_group }}"
+        mode: '0644'
+        marker: "# {mark} ORACLE ENV (managed by Ansible)"
+        block: |
+          export ORACLE_BASE="{{ _oracle_base }}"
+          export ORACLE_HOME="{{ _oracle_home }}"
+          export ORACLE_SID="{{ oracle_install.db_sid }}"
+          export PATH="$ORACLE_HOME/bin:$PATH"
+          export LD_LIBRARY_PATH="$ORACLE_HOME/lib:/lib:/usr/lib"
+      tags: [database]
+
+    - name: Create Oracle DB systemd service unit
+      ansible.builtin.copy:
+        dest: "/etc/systemd/system/oracle-db-{{ oracle_install.db_sid }}.service"
+        mode: '0644'
+        content: |
+          [Unit]
+          Description=Oracle Database {{ oracle_install.db_sid }}
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=forking
+          User={{ _ora_user }}
+          Group={{ _ora_group }}
+          Environment=ORACLE_BASE={{ _oracle_base }}
+          Environment=ORACLE_HOME={{ _oracle_home }}
+          Environment=ORACLE_SID={{ oracle_install.db_sid }}
+          ExecStart={{ _oracle_home }}/bin/dbstart {{ _oracle_home }}
+          ExecStop={{ _oracle_home }}/bin/dbshut {{ _oracle_home }}
+          RemainAfterExit=yes
+          TimeoutStartSec=600
+          TimeoutStopSec=300
+
+          [Install]
+          WantedBy=multi-user.target
+      tags: [database]
+
+    - name: Enable and start Oracle DB systemd service
+      ansible.builtin.systemd:
+        name: "oracle-db-{{ oracle_install.db_sid }}"
+        daemon_reload: true
+        enabled: true
+        state: started
+      tags: [database]
+
+    - name: Remove staged Oracle install media
+      ansible.builtin.file:
+        path: "{{ _stage_dir }}"
+        state: absent
+      when: oracle_install.cleanup_after | default(true)
+      tags: [engine]
+
+  post_tasks:
+
+    # -------------------------------------------------------------------------
+    # 5. Verify
+    # -------------------------------------------------------------------------
+    - name: Wait for Oracle listener port to open
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ oracle_install.listener_port | default(1521) }}"
+        timeout: 120
+      tags: [verify]
+
+    - name: Check Oracle listener status
+      ansible.builtin.shell: |
+        export ORACLE_HOME="{{ _oracle_home }}"
+        export PATH="$ORACLE_HOME/bin:$PATH"
+        lsnrctl status
+      become_user: "{{ _ora_user }}"
+      register: lsnrctl_status
+      changed_when: false
+      tags: [verify]
+
+    - name: Check Oracle database is OPEN
+      ansible.builtin.shell: |
+        export ORACLE_HOME="{{ _oracle_home }}"
+        export ORACLE_SID="{{ oracle_install.db_sid }}"
+        export PATH="$ORACLE_HOME/bin:$PATH"
+        echo "SELECT STATUS FROM V\$INSTANCE;" | sqlplus -S / as sysdba
+      become_user: "{{ _ora_user }}"
+      register: db_status
+      changed_when: false
+      failed_when: "'OPEN' not in db_status.stdout"
+      tags: [verify]
+
+    - name: Installation summary
+      ansible.builtin.debug:
+        msg:
+          - "Host:          {{ inventory_hostname }}"
+          - "DB Name:       {{ oracle_install.db_name }} ({{ oracle_install.version }} {{ oracle_install.edition }})"
+          - "SID:           {{ oracle_install.db_sid }}"
+          - "PDB:           {{ oracle_install.pdb_name }}"
+          - "Listener:      port {{ oracle_install.listener_port | default(1521) }}"
+          - "DB Status:     {{ db_status.stdout | default('n/a') | trim }}"
+          - "Oracle Home:   {{ _oracle_home }}"
+      tags: [verify]

@@ -299,8 +299,17 @@ phase3_ansible() {
         "ansible-tower-cli>=3.0" \
         >>"$LOG_FILE" 2>&1 || warn "one or more ansible pip installs failed — review $LOG_FILE"
 
-    # Windows collections come from Galaxy, not PyPI.
-    ansible-galaxy collection install ansible.windows community.windows --upgrade >>"$LOG_FILE" 2>&1 || \
+    # Collections from Galaxy (not PyPI).
+    # ansible.windows / community.windows — MSSQL and Windows targets
+    # ansible.posix                        — firewalld module (Oracle/Db2/MySQL/MariaDB installs)
+    # community.mysql                      — MySQL / MariaDB secure-install modules
+    ansible-galaxy collection install \
+        ansible.windows \
+        community.windows \
+        ansible.posix \
+        community.mysql \
+        community.general \
+        --upgrade >>"$LOG_FILE" 2>&1 || \
         warn "ansible-galaxy collection install had warnings — review $LOG_FILE"
     ok "Ansible $(ansible --version | head -1 | awk '{print $NF}' | tr -d ']')"
 }
@@ -310,9 +319,11 @@ qa_phase3_ansible() {
     ansible --version >/dev/null 2>&1 || { warn "ansible --version failed"; return 1; }
     local installed
     installed="$(ansible-galaxy collection list 2>/dev/null || true)"
-    grep -q '^ansible\.windows ' <<<"$installed"     || { warn "ansible.windows collection missing"; return 1; }
-    grep -q '^community\.windows ' <<<"$installed"   || { warn "community.windows collection missing"; return 1; }
-    log "QA: ansible + windows collections present"
+    grep -q '^ansible\.windows '   <<<"$installed" || { warn "ansible.windows collection missing";   return 1; }
+    grep -q '^community\.windows ' <<<"$installed" || { warn "community.windows collection missing"; return 1; }
+    grep -q '^ansible\.posix '     <<<"$installed" || { warn "ansible.posix collection missing";     return 1; }
+    grep -q '^community\.mysql '   <<<"$installed" || { warn "community.mysql collection missing";   return 1; }
+    log "QA: ansible + all required collections present"
 }
 
 # --- Phase 3b: GitHub CLI ----------------------------------------------------
@@ -398,10 +409,11 @@ qa_phase4_influxdb() {
 # --- Phase 5: CheckMK Raw ----------------------------------------------------
 phase5_checkmk() {
     if ! command -v omd >/dev/null 2>&1; then
-        # Look for an RPM in MSSQL/files/ first; the user can drop any supported version there.
-        cmk_rpm="$(ls -1 "$SCRIPT_DIR"/MSSQL/files/check-mk-raw-*.rpm 2>/dev/null | sort -V | tail -1)"
+        # Search the whole project dir for a CheckMK Raw RPM (any subdirectory).
+        # The user can drop the RPM into MSSQL/files/, Oracle/files/, or the project root.
+        cmk_rpm="$(find "$SCRIPT_DIR" -maxdepth 3 -name 'check-mk-raw-*.rpm' 2>/dev/null | sort -V | tail -1)"
         if [[ -z $cmk_rpm ]]; then
-            die "CheckMK RPM not found. Download from https://checkmk.com/download and place in $SCRIPT_DIR/MSSQL/files/"
+            die "CheckMK RPM not found. Download from https://checkmk.com/download and place anywhere under $SCRIPT_DIR"
         fi
         log "Installing $cmk_rpm"
         dnf -y install "$cmk_rpm" >>"$LOG_FILE" 2>&1
@@ -801,12 +813,21 @@ ${c_green}========== bootstrap complete ==========${c_off}
 Next steps:
   1. Add hosts to /etc/ansible/hosts under the matching group:
        [sql_servers] [oracle_servers] [db2_servers] [mysql_servers] [mariadb_servers]
-  2. Push the per-flavor DBA stack (one line per flavor you use):
-       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/MSSQL/dba_automation.yaml   --ask-vault-pass
-       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/Oracle/dba_automation.yaml  --ask-vault-pass
-       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/Db2/dba_automation.yaml     --ask-vault-pass
-       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/MySQL/dba_automation.yaml   --ask-vault-pass
-       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/MariaDB/dba_automation.yaml --ask-vault-pass
-  3. In CheckMK WATO, add a notification rule that invokes 'ticktator'
-  4. In Rundeck, register the hosts (rundeckfacts.py provides the facts)
+
+  2. Install each database engine on NEW hosts (run once per host):
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/MSSQL/install_sqlserver.yaml   --ask-vault-pass
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/Oracle/install_oracle.yaml     --ask-vault-pass
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/Db2/install_db2.yaml           --ask-vault-pass
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/MySQL/install_mysql.yaml       --ask-vault-pass
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/MariaDB/install_mariadb.yaml   --ask-vault-pass
+
+  3. Push the per-flavor DBA automation stack (monitoring, scripts, CheckMK agents):
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/MSSQL/dba_automation.yaml     --ask-vault-pass
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/Oracle/dba_automation.yaml    --ask-vault-pass
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/Db2/dba_automation.yaml       --ask-vault-pass
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/MySQL/dba_automation.yaml     --ask-vault-pass
+       ansible-playbook -i /etc/ansible/hosts $SCRIPT_DIR/MariaDB/dba_automation.yaml   --ask-vault-pass
+
+  4. In CheckMK WATO, add a notification rule that invokes 'ticktator'
+  5. In Rundeck, register the hosts (rundeckfacts.py provides the facts)
 SUMMARY

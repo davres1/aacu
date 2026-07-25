@@ -1,0 +1,258 @@
+---
+# =============================================================================
+# install_mariadb.yaml
+#
+# Installs MariaDB 11.4 (or 10.11 LTS / 11.6) on every Linux host in
+# `mariadb_servers`, using:
+#   - the official MariaDB repository (via repo setup script or local repo file)
+#   - dnf package install
+#   - community.mysql modules for secure-install (root password, anon users,
+#     test database removal)
+#   - optional Galera cluster node configuration
+#
+# Tune behaviour by editing the `mariadb_install:` block in setup.yaml.
+# Secrets (root_password) should be encrypted with ansible-vault.
+#
+# Run:
+#   ansible-galaxy collection install community.mysql ansible.posix
+#   ansible-playbook -i /etc/ansible/hosts install_mariadb.yaml --ask-vault-pass
+#
+# Tag-filtered runs:
+#   --tags repo      add MariaDB repository only
+#   --tags engine    install MariaDB engine only
+#   --tags secure    run secure-installation tasks only
+#   --tags verify    run post-install verification block
+# =============================================================================
+
+- name: Install MariaDB on Linux hosts
+  hosts: mariadb_servers
+  gather_facts: true
+  strategy: free
+  become: true
+
+  vars_files:
+    - ../setup.yaml
+
+  collections:
+    - ansible.builtin
+    - ansible.posix
+    - community.mysql
+    - community.general
+
+  vars:
+    _port:          "{{ mariadb_install.port          | default(3306) }}"
+    _root_password: "{{ mariadb_install.root_password }}"
+    _datadir:       "{{ mariadb_install.datadir        | default('/var/lib/mysql') }}"
+    _logdir:        "{{ mariadb_install.logdir         | default('/var/log/mariadb') }}"
+    _socket:        "{{ mariadb_install.socket         | default('/var/lib/mysql/mysql.sock') }}"
+    _galera:        "{{ mariadb_install.galera         | default({}) }}"
+
+  pre_tasks:
+
+    - name: Show MariaDB install plan
+      ansible.builtin.debug:
+        msg:
+          - "Target host:   {{ inventory_hostname }}"
+          - "MariaDB ver:   {{ mariadb_install.version | default('11.4') }} ({{ mariadb_install.edition | default('Community') }})"
+          - "Port:          {{ _port }}"
+          - "Data dir:      {{ _datadir }}"
+          - "Galera:        {{ _galera.enabled | default(false) }}"
+
+    # -------------------------------------------------------------------------
+    # 1. Add MariaDB repository
+    # -------------------------------------------------------------------------
+    - name: Download and run MariaDB repo setup script
+      ansible.builtin.shell: |
+        curl -fsSL {{ mariadb_install.source.repo_url }} | \
+          bash -s -- --mariadb-server-version="mariadb-{{ mariadb_install.version | default('11.4') }}"
+      args:
+        creates: /etc/yum.repos.d/mariadb.repo
+      when: mariadb_install.source.local_repo_path | default('') | length == 0
+      tags: [repo, engine]
+
+    - name: Install MariaDB repo from local file
+      ansible.builtin.copy:
+        src: "{{ mariadb_install.source.local_repo_path }}"
+        dest: /etc/yum.repos.d/mariadb.repo
+        owner: root
+        group: root
+        mode: '0644'
+      when: mariadb_install.source.local_repo_path | default('') | length > 0
+      tags: [repo, engine]
+
+    # -------------------------------------------------------------------------
+    # 2. Install MariaDB engine
+    # -------------------------------------------------------------------------
+    - name: Install MariaDB server, client, and Python connector
+      ansible.builtin.dnf:
+        name: "{{ ['MariaDB-server', 'MariaDB-client', 'MariaDB-common', 'python3-PyMySQL']
+                  + (['galera-4'] if (_galera.enabled | default(false)) else ['MariaDB-backup']) }}"
+        state: present
+      tags: [engine]
+
+    - name: Ensure MariaDB log directory exists
+      ansible.builtin.file:
+        path: "{{ _logdir }}"
+        state: directory
+        owner: mysql
+        group: mysql
+        mode: '0750'
+      tags: [engine]
+
+    - name: Write MariaDB server configuration
+      ansible.builtin.copy:
+        dest: /etc/my.cnf.d/aacu-mariadb.cnf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [mysqld]
+          port            = {{ _port }}
+          bind-address    = {{ mariadb_install.bind_address | default('0.0.0.0') }}
+          datadir         = {{ _datadir }}
+          socket          = {{ _socket }}
+          log-error       = {{ _logdir }}/mariadb.log
+          pid-file        = /var/run/mariadb/mariadb.pid
+
+          innodb_buffer_pool_size = {{ mariadb_install.innodb_buffer_pool_mb | default(512) }}M
+          innodb_flush_log_at_trx_commit = 1
+          innodb_file_per_table   = 1
+
+          local_infile    = 0
+          symbolic-links  = 0
+
+          {% if _galera.enabled | default(false) %}
+          # Galera / wsrep
+          wsrep_on                = ON
+          wsrep_provider          = /usr/lib64/galera-4/libgalera_smm.so
+          wsrep_cluster_name      = {{ _galera.cluster_name    | default('mariadb_cluster') }}
+          wsrep_cluster_address   = {{ _galera.cluster_address | default('gcomm://') }}
+          wsrep_node_address      = {{ ansible_default_ipv4.address }}
+          wsrep_node_name         = {{ inventory_hostname }}
+          wsrep_sst_method        = mariabackup
+          wsrep_slave_threads     = 4
+          default_storage_engine  = InnoDB
+          binlog_format           = ROW
+          innodb_autoinc_lock_mode= 2
+          {% endif %}
+
+          [client]
+          port   = {{ _port }}
+          socket = {{ _socket }}
+      tags: [engine]
+
+    - name: Enable and start MariaDB service
+      ansible.builtin.systemd:
+        name: mariadb
+        enabled: true
+        state: started
+      tags: [engine]
+
+    - name: Open MariaDB firewall service
+      ansible.posix.firewalld:
+        service: mysql
+        permanent: true
+        state: enabled
+        immediate: true
+      tags: [engine]
+
+    - name: Open Galera cluster ports in firewalld
+      ansible.posix.firewalld:
+        port: "{{ item }}"
+        permanent: true
+        state: enabled
+        immediate: true
+      loop:
+        - 4567/tcp
+        - 4567/udp
+        - 4568/tcp
+        - 4444/tcp
+      when: _galera.enabled | default(false)
+      tags: [engine]
+
+    # -------------------------------------------------------------------------
+    # 3. Secure installation
+    # -------------------------------------------------------------------------
+    - name: Set MariaDB root password via unix socket
+      community.mysql.mysql_user:
+        login_user: root
+        login_unix_socket: "{{ _socket }}"
+        user: root
+        host_all: true
+        password: "{{ _root_password }}"
+        plugin: "{{ 'unix_socket' if (mariadb_install.unix_socket_auth | default(true)) else 'mysql_native_password' }}"
+        state: present
+      no_log: true
+      failed_when: false
+      tags: [secure]
+
+    - name: Remove anonymous MariaDB users
+      community.mysql.mysql_user:
+        login_user: root
+        login_password: "{{ _root_password }}"
+        login_unix_socket: "{{ _socket }}"
+        name: ''
+        host_all: true
+        state: absent
+      no_log: true
+      failed_when: false
+      tags: [secure]
+
+    - name: Remove MariaDB test database
+      community.mysql.mysql_db:
+        login_user: root
+        login_password: "{{ _root_password }}"
+        login_unix_socket: "{{ _socket }}"
+        name: test
+        state: absent
+      no_log: true
+      failed_when: false
+      tags: [secure]
+
+    - name: Flush MariaDB privileges
+      community.mysql.mysql_query:
+        login_user: root
+        login_password: "{{ _root_password }}"
+        login_unix_socket: "{{ _socket }}"
+        query: FLUSH PRIVILEGES
+      no_log: true
+      failed_when: false
+      tags: [secure]
+
+  post_tasks:
+
+    # -------------------------------------------------------------------------
+    # 4. Verify
+    # -------------------------------------------------------------------------
+    - name: Wait for MariaDB TCP port to open
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ _port }}"
+        timeout: 60
+      tags: [verify]
+
+    - name: Verify MariaDB service state
+      ansible.builtin.systemd:
+        name: mariadb
+      register: mariadb_state
+      tags: [verify]
+
+    - name: Capture MariaDB version
+      ansible.builtin.shell: |
+        mysql -u root --socket="{{ _socket }}" -e "SELECT VERSION();" -s --skip-column-names 2>/dev/null
+      register: mariadb_version
+      changed_when: false
+      no_log: true
+      failed_when: false
+      tags: [verify]
+
+    - name: Installation summary
+      ansible.builtin.debug:
+        msg:
+          - "Host:          {{ inventory_hostname }}"
+          - "MariaDB ver:   {{ mariadb_install.version | default('11.4') }} ({{ mariadb_install.edition | default('Community') }})"
+          - "Service:       mariadb={{ mariadb_state.status.ActiveState | default('unknown') }}"
+          - "Port:          {{ _port }}"
+          - "Version:       {{ mariadb_version.stdout | default('n/a') | trim }}"
+          - "Galera:        {{ _galera.enabled | default(false) }}"
+      tags: [verify]
