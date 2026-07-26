@@ -1,0 +1,281 @@
+---
+# =============================================================================
+# setup_db_access.yml
+# Configures all DB servers to accept SSH connections from the agent
+# and deploys the agent_scripts/ bundle that the agent calls at runtime.
+#
+# Run AFTER deploy_agent.yml (needs the generated SSH public key).
+# Run from the ansible/ directory:
+#   ansible-playbook setup_db_access.yml
+#   ansible-playbook setup_db_access.yml --limit oracle_servers --tags oracle
+#
+# Tags:
+#   common  — SSH user, authorized_keys, agent_scripts/ deployment
+#   sudo    — sudoers rules (fix/start scripts + systemctl)
+#   oracle  — Oracle group + log ACLs
+#   mysql   — MySQL monitoring user + log ACLs
+#   mssql   — MSSQL log ACLs
+#   db2     — DB2 group + log ACLs
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Step 1: Read the public key from the monitoring server
+# ---------------------------------------------------------------------------
+- name: Read agent SSH public key from monitoring server
+  hosts: monitoring_servers
+  gather_facts: false
+
+  tasks:
+    - name: Read SSH public key file
+      slurp:
+        src: "{{ agent_install_dir | default('/opt/AIAgent') }}/.ssh/db_agent_key.pub"
+      register: agent_pubkey_raw
+
+    - name: Store key as host fact
+      set_fact:
+        agent_public_key: "{{ agent_pubkey_raw.content | b64decode | trim }}"
+        cacheable: true
+
+# ---------------------------------------------------------------------------
+# Step 2: Configure all DB servers
+# ---------------------------------------------------------------------------
+- name: Configure DB servers for agent access
+  hosts: db_servers
+  become: true
+  gather_facts: true
+
+  vars:
+    agent_user:       dbagent
+    agent_group:      dbagent
+    monitor_host:     "{{ groups['monitoring_servers'][0] }}"
+    agent_public_key: "{{ hostvars[groups['monitoring_servers'][0]].agent_public_key }}"
+    scripts_src:      "{{ playbook_dir }}/../agent_scripts/"   # AIAgent/agent_scripts/
+    scripts_dest:     "/home/dbagent/.db_agent"
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # Common — OS user + SSH key
+    # -------------------------------------------------------------------------
+    - name: Create dbagent OS user on DB server
+      user:
+        name: "{{ agent_user }}"
+        groups: "{{ db_os_group | default(omit) }}"
+        append: true
+        shell: /bin/bash
+        create_home: true
+        state: present
+        comment: "DB AI Agent monitoring account"
+      tags: common
+
+    - name: Create .ssh directory for dbagent
+      file:
+        path: "/home/{{ agent_user }}/.ssh"
+        state: directory
+        owner: "{{ agent_user }}"
+        group: "{{ agent_group | default(agent_user) }}"
+        mode: "0700"
+      tags: common
+
+    - name: Install agent SSH public key
+      authorized_key:
+        user: "{{ agent_user }}"
+        key: "{{ agent_public_key }}"
+        state: present
+        comment: "db-ai-agent from {{ monitor_host }}"
+      tags: common
+
+    # -------------------------------------------------------------------------
+    # Deploy agent_scripts/ — the Python/bash scripts the agent calls via SSH
+    # This is the ONLY deployment step needed at runtime; Ansible not required again.
+    # -------------------------------------------------------------------------
+    - name: Create agent scripts directory on DB server
+      file:
+        path: "{{ scripts_dest }}"
+        state: directory
+        owner: "{{ agent_user }}"
+        group: "{{ agent_group | default(agent_user) }}"
+        mode: "0750"
+      tags: common
+
+    - name: Sync agent_scripts/ to DB server
+      synchronize:
+        src: "{{ scripts_src }}"
+        dest: "{{ scripts_dest }}/"
+        delete: true
+        rsync_opts:
+          - "--chmod=u=rwx,go="
+      delegate_to: "{{ groups['monitoring_servers'][0] }}"
+      tags: common
+
+    - name: Ensure agent scripts are owned by dbagent
+      file:
+        path: "{{ scripts_dest }}"
+        owner: "{{ agent_user }}"
+        group: "{{ agent_group | default(agent_user) }}"
+        recurse: true
+      tags: common
+
+    # -------------------------------------------------------------------------
+    # Sudoers — fix + start scripts run as DB OS users via run_fix.sh dispatcher.
+    # The dispatcher validates script names (regex) before executing.
+    # -------------------------------------------------------------------------
+    - name: Install dbagent sudoers rule
+      copy:
+        dest: /etc/sudoers.d/dbagent
+        content: |
+          # DB AI Agent — runtime-only; Ansible not required after this point.
+          # All commands flow through run_fix.sh which validates the script name.
+          Defaults!dbagent !requiretty
+
+          # Oracle: fix + start scripts run as oracle
+          dbagent ALL=(oracle)   NOPASSWD: /home/dbagent/.db_agent/run_fix.sh
+
+          # DB2: fix + start scripts run as db2inst1
+          dbagent ALL=(db2inst1) NOPASSWD: /home/dbagent/.db_agent/run_fix.sh
+
+          # MySQL / MSSQL Linux: fix + start scripts + service control run as root
+          dbagent ALL=(root)     NOPASSWD: /home/dbagent/.db_agent/run_fix.sh
+          dbagent ALL=(root)     NOPASSWD: /bin/systemctl start mysql
+          dbagent ALL=(root)     NOPASSWD: /bin/systemctl start mysqld
+          dbagent ALL=(root)     NOPASSWD: /bin/systemctl start mariadb
+          dbagent ALL=(root)     NOPASSWD: /bin/systemctl start mssql-server
+
+          # Utility (read-only)
+          dbagent ALL=(root)     NOPASSWD: /usr/bin/find, /usr/bin/du, /usr/bin/df
+        validate: visudo -cf %s
+        mode: "0440"
+      tags: sudo
+
+    # -------------------------------------------------------------------------
+    # Log file read permissions (common)
+    # -------------------------------------------------------------------------
+    - name: Grant dbagent read access to common log directories
+      acl:
+        path: "{{ item }}"
+        entity: "{{ agent_user }}"
+        etype: user
+        permissions: rx
+        state: present
+        recursive: true
+      loop:
+        - /var/log/mysql
+        - /var/log/oracle
+        - /var/opt/mssql/log
+      ignore_errors: true
+      tags: common
+
+    # -------------------------------------------------------------------------
+    # Oracle-specific
+    # -------------------------------------------------------------------------
+    - name: Grant dbagent read access to Oracle DIAG directories
+      acl:
+        path: "{{ item }}"
+        entity: "{{ agent_user }}"
+        etype: user
+        permissions: rx
+        state: present
+        recursive: true
+      loop:
+        - /u01/app/oracle/diag
+        - /u01/app/grid/diag
+      ignore_errors: true
+      when: inventory_hostname in groups['oracle_servers']
+      tags: oracle
+
+    - name: Add dbagent to Oracle oinstall group
+      user:
+        name: "{{ agent_user }}"
+        groups: "{{ db_os_group | default('oinstall') }}"
+        append: true
+      when: inventory_hostname in groups['oracle_servers']
+      ignore_errors: true
+      tags: oracle
+
+    # -------------------------------------------------------------------------
+    # MySQL-specific
+    # -------------------------------------------------------------------------
+    - name: Create MySQL monitoring user for blocking/state DMV checks
+      shell: |
+        mysql -e "
+          CREATE USER IF NOT EXISTS 'dbagent'@'localhost' IDENTIFIED BY 'AgentMon!tor#2024';
+          GRANT PROCESS, REPLICATION CLIENT ON *.* TO 'dbagent'@'localhost';
+          GRANT SELECT ON performance_schema.* TO 'dbagent'@'localhost';
+          GRANT SELECT ON information_schema.* TO 'dbagent'@'localhost';
+          FLUSH PRIVILEGES;
+        " 2>/dev/null || true
+      when: inventory_hostname in groups['mysql_servers']
+      tags: mysql
+      no_log: true
+
+    - name: Grant dbagent read on MySQL log directory
+      acl:
+        path: /var/log/mysql
+        entity: "{{ agent_user }}"
+        etype: user
+        permissions: rx
+        state: present
+        recursive: true
+      ignore_errors: true
+      when: inventory_hostname in groups['mysql_servers']
+      tags: mysql
+
+    # -------------------------------------------------------------------------
+    # MSSQL Linux-specific
+    # -------------------------------------------------------------------------
+    - name: Grant dbagent read on MSSQL log directory
+      acl:
+        path: /var/opt/mssql/log
+        entity: "{{ agent_user }}"
+        etype: user
+        permissions: rx
+        state: present
+        recursive: true
+      ignore_errors: true
+      when: inventory_hostname in groups['mssql_servers']
+      tags: mssql
+
+    - name: Add dbagent to mssql group
+      user:
+        name: "{{ agent_user }}"
+        groups: mssql
+        append: true
+      ignore_errors: true
+      when: inventory_hostname in groups['mssql_servers']
+      tags: mssql
+
+    # -------------------------------------------------------------------------
+    # DB2-specific
+    # -------------------------------------------------------------------------
+    - name: Add dbagent to DB2 instance group
+      user:
+        name: "{{ agent_user }}"
+        groups: "{{ db2_instance | default('db2inst1') }}"
+        append: true
+      ignore_errors: true
+      when: inventory_hostname in groups['db2_servers']
+      tags: db2
+
+    - name: Grant dbagent read on DB2 diagnostic directory
+      acl:
+        path: "/home/{{ db2_instance | default('db2inst1') }}/sqllib/db2dump"
+        entity: "{{ agent_user }}"
+        etype: user
+        permissions: rx
+        state: present
+        recursive: true
+      ignore_errors: true
+      when: inventory_hostname in groups['db2_servers']
+      tags: db2
+
+    # -------------------------------------------------------------------------
+    # Summary
+    # -------------------------------------------------------------------------
+    - name: DB server setup summary
+      debug:
+        msg: >
+          {{ inventory_hostname }} configured —
+          dbagent SSH key installed, agent_scripts/ deployed to {{ scripts_dest }},
+          sudoers rule installed.
+          The agent can now connect without Ansible.
+      tags: always

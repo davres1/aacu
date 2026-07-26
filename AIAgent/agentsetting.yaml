@@ -1,0 +1,189 @@
+# =============================================================================
+# DB AI Agent — Master Configuration
+# All database types, log paths, AI settings, email, and auto-fix controls
+# =============================================================================
+
+agent:
+  name: "DB-AI-Monitor"
+  poll_interval: 300              # seconds between monitoring cycles (5 min)
+  log_level: "INFO"               # DEBUG | INFO | WARNING | ERROR
+  agent_log: "logs/agent.log"     # relative to AIAgent directory
+  log_lines_per_check: 100        # max new log lines to read per log file per cycle
+  pid_file: "logs/agent.pid"
+  state_file: "logs/state.json"
+
+# ---------------------------------------------------------------------------
+# AI / LLM Settings — choose one provider
+# ---------------------------------------------------------------------------
+ai:
+  provider: "anthropic"            # "anthropic" | "openai"
+
+  # --- Anthropic (Claude) — https://console.anthropic.com ---
+  anthropic_api_key: "sk-ant-REPLACE_WITH_YOUR_ANTHROPIC_API_KEY"
+  anthropic_model: "claude-opus-4-5"   # claude-opus-4-5 | claude-sonnet-4-5 | claude-haiku-4-5
+
+  # --- OpenAI (ChatGPT) — https://platform.openai.com ---
+  openai_api_key: "sk-REPLACE_WITH_YOUR_OPENAI_API_KEY"
+  openai_model: "gpt-4o"               # gpt-4o | gpt-4-turbo | gpt-3.5-turbo
+
+  max_tokens: 2000
+  timeout: 60                     # API call timeout in seconds
+
+# ---------------------------------------------------------------------------
+# Email Notification Settings
+# ---------------------------------------------------------------------------
+email:
+  smtp_host: "smtp.company.com"
+  smtp_port: 587
+  smtp_user: "dbagent@company.com"
+  smtp_password: "REPLACE_WITH_SMTP_PASSWORD"
+  use_tls: true
+  from: "DB AI Agent <dbagent@company.com>"
+  to:
+    - "dba-team@company.com"
+    - "ops@company.com"
+  cc:
+    - "manager@company.com"
+  subject_prefix: "[DB-ALERT]"
+  min_severity_to_email: "medium"  # critical | high | medium | low
+
+# ---------------------------------------------------------------------------
+# Database Instances & Log File Locations
+# ---------------------------------------------------------------------------
+databases:
+
+  oracle:
+    enabled: true
+    homes:
+      - name: "ORACLE_PROD1"
+        host: "ora-server-01"
+        oracle_home: "/u01/app/oracle/product/19c/dbhome_1"
+        oracle_base: "/u01/app/oracle"
+        sid: "PROD1"
+        logs:
+          alert_log:    "/u01/app/oracle/diag/rdbms/prod1/PROD1/trace/alert_PROD1.log"
+          listener_log: "/u01/app/oracle/diag/tnslsnr/ora-server-01/listener/alert/log.xml"
+          cluster_log:  "/u01/app/grid/diag/crs/ora-server-01/crs/trace/alert.log"
+          asm_log:      "/u01/app/grid/diag/asm/+asm/+ASM1/trace/alert_+ASM1.log"
+
+      - name: "ORACLE_DR1"
+        host: "ora-server-02"
+        oracle_home: "/u01/app/oracle/product/19c/dbhome_1"
+        oracle_base: "/u01/app/oracle"
+        sid: "DR1"
+        logs:
+          alert_log:    "/u01/app/oracle/diag/rdbms/dr1/DR1/trace/alert_DR1.log"
+          listener_log: "/u01/app/oracle/diag/tnslsnr/ora-server-02/listener/alert/log.xml"
+
+  mysql:
+    enabled: true
+    instances:
+      - name: "MYSQL_PROD"
+        host: "mysql-server-01"
+        port: 3306
+        logs:
+          error_log:     "/var/log/mysql/error.log"
+          slow_query_log: "/var/log/mysql/slow.log"
+          general_log:   "/var/log/mysql/general.log"
+
+      - name: "MYSQL_REPLICA"
+        host: "mysql-server-02"
+        port: 3306
+        logs:
+          error_log: "/var/log/mysql/error.log"
+
+  mssql:
+    enabled: true
+    instances:
+      # --- Linux MSSQL (uses Ansible playbooks) ---
+      - name: "MSSQL_LINUX"
+        host: "mssql-linux-01"
+        port: 1433
+        windows: false
+        logs:
+          error_log: "/var/opt/mssql/log/errorlog"
+          agent_log: "/var/opt/mssql/log/sqlagent.out"
+
+      # --- Windows MSSQL (uses PowerShell scripts under windows/scripts/) ---
+      - name: "MSSQL_WIN_PROD"
+        host: "win-sql-01"               # hostname or IP; use "." for local
+        windows: true                     # signals PowerShell collector/remediator
+        server_instance: "win-sql-01"    # sqlcmd -S value (host\instance or just host)
+        port: 1433
+        auth: "windows"                  # "windows" (integrated) | "sql" (SQL login)
+        sql_user: ""                     # only needed when auth: sql
+        sql_password: ""
+        logs:
+          # Adjust MSSQL version folder (MSSQL16 = SQL 2022, MSSQL15 = SQL 2019)
+          error_log: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Log\ERRORLOG'
+          agent_log: 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\Log\SQLAGENT.OUT'
+
+      - name: "MSSQL_WIN_NAMED"
+        host: "win-sql-02"
+        windows: true
+        server_instance: "win-sql-02\\SQLEXPRESS"   # named instance
+        port: 1433
+        auth: "sql"
+        sql_user: "monitor_sa"
+        sql_password: "REPLACE_WITH_PASSWORD"
+        logs:
+          error_log: 'C:\Program Files\Microsoft SQL Server\MSSQL16.SQLEXPRESS\MSSQL\Log\ERRORLOG'
+          agent_log: 'C:\Program Files\Microsoft SQL Server\MSSQL16.SQLEXPRESS\MSSQL\Log\SQLAGENT.OUT'
+
+  db2:
+    enabled: true
+    instances:
+      - name: "DB2_PROD"
+        host: "db2-server-01"
+        instance: "db2inst1"
+        logs:
+          diag_log:  "/home/db2inst1/sqllib/db2dump/DIAG0000/db2diag.log"
+          event_log: "/home/db2inst1/sqllib/db2dump/db2eventlog"
+
+# ---------------------------------------------------------------------------
+# Auto-Remediation Controls
+# Only fixes listed here will be applied; none require a DB restart.
+# ---------------------------------------------------------------------------
+auto_fix:
+  enabled: true
+  dry_run: false                  # true = log what would be done without doing it
+
+  allowed_fixes:
+    - oracle_clear_archive         # Delete archive logs older than 2 days via RMAN
+    - oracle_restart_listener      # Stop/start Oracle TNS listener
+    - oracle_clear_temp            # Shrink/clear temporary tablespace segments
+    - oracle_kill_blocking         # Kill sessions blocking > 30 minutes
+    - mysql_flush_logs             # FLUSH LOGS + rotate slow/general logs
+    - mysql_kill_blocking          # Kill MySQL queries running > 30 minutes
+    - mssql_clear_errorlog         # EXEC sp_cycle_errorlog to cycle the log
+    - db2_flush_logs               # db2 reset dbm cfg + flush diagnostic logs
+    - generic_rotate_logs          # Force logrotate on any log file
+
+# ---------------------------------------------------------------------------
+# Alert Thresholds
+# ---------------------------------------------------------------------------
+thresholds:
+  error_count_before_alert: 5     # minimum new errors before triggering AI
+  disk_usage_warning_pct: 80
+  disk_usage_critical_pct: 90
+  dedup_window_seconds: 3600      # suppress duplicate alerts for 1 hour
+
+# ---------------------------------------------------------------------------
+# SSH Runtime Settings (used by agent at runtime — no Ansible required)
+# ---------------------------------------------------------------------------
+ssh:
+  user: "dbagent"                       # OS user on DB servers
+  key_file: ".ssh/db_agent_key"         # relative to AIAgent dir, or absolute path
+  connect_timeout: 10                   # TCP connect timeout in seconds
+  server_alive_interval: 15             # keep-alive packet interval
+  remote_scripts_dir: "/home/dbagent/.db_agent"   # where agent_scripts/ is deployed
+  command_timeout: 120                  # max seconds per remote command
+
+# ---------------------------------------------------------------------------
+# Database Health Check & Auto-Restart Settings
+# ---------------------------------------------------------------------------
+db_health:
+  enabled: true                         # check if each DB is alive each cycle
+  start_attempts: 2                     # restart attempts before giving up
+  start_wait_seconds: 30                # wait between start attempt and alive check
+  recheck_suppress_seconds: 600         # don't re-attempt restart within 10 min

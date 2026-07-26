@@ -1,0 +1,25 @@
+[Unit]
+Description=DB AI Agent - Database Monitoring and Auto-Remediation
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User={{ agent_user }}
+Group={{ agent_group }}
+WorkingDirectory={{ agent_install_dir }}
+ExecStart={{ agent_install_dir }}/venv/bin/python3 {{ agent_install_dir }}/agent.py
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=db-ai-agent
+
+# Keep the agent lightweight
+CPUQuota=10%
+MemoryMax=256M
+Nice=15
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,296 @@
+---
+# =============================================================================
+# deploy_agent.yml
+# Deploys the DB AI Agent daemon to all hosts in monitoring_servers.
+#
+# Run from the ansible/ directory (ansible.cfg sets inventory automatically):
+#   ansible-playbook deploy_agent.yml
+#   ansible-playbook deploy_agent.yml --limit monitor-01
+#   ansible-playbook deploy_agent.yml --tags service
+#   ansible-playbook deploy_agent.yml --check
+#
+# Tags:
+#   prereqs  — install system packages (python3, rsync, openssh-client)
+#   user     — create dbagent service account
+#   deploy   — rsync AIAgent files to target
+#   venv     — create Python venv, install requirements
+#   ssh      — generate SSH keypair for runtime DB server access
+#   config   — validate agentsetting.yaml
+#   service  — install, enable, and start systemd service
+# =============================================================================
+
+- name: Deploy DB AI Agent
+  hosts: monitoring_servers
+  become: true
+  gather_facts: true
+
+  vars:
+    agent_install_dir: "{{ hostvars[inventory_hostname].agent_install_dir | default('/opt/AIAgent') }}"
+    agent_user:        "{{ hostvars[inventory_hostname].agent_user        | default('dbagent') }}"
+    agent_group:       "{{ hostvars[inventory_hostname].agent_group       | default('dbagent') }}"
+    agent_venv:        "{{ agent_install_dir }}/venv"
+    agent_ssh_dir:     "{{ agent_install_dir }}/.ssh"
+    agent_ssh_key:     "{{ agent_install_dir }}/.ssh/db_agent_key"
+    # playbook_dir is ansible/ — one level below AIAgent/, so ../ is AIAgent/
+    source_dir:        "{{ playbook_dir }}/.."
+
+  handlers:
+    - name: restart db-ai-agent
+      systemd:
+        name: db-ai-agent
+        state: restarted
+        daemon_reload: true
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # System Prerequisites (monitoring server only — no Ansible on target)
+    # -------------------------------------------------------------------------
+    - name: Install required system packages (Debian/Ubuntu)
+      apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+          - rsync
+          - openssh-client     # for ssh/scp to DB servers at runtime
+        state: present
+        update_cache: true
+      when: ansible_os_family == "Debian"
+      tags: prereqs
+
+    - name: Install required system packages (RHEL/CentOS/Rocky)
+      dnf:
+        name:
+          - python3
+          - python3-pip
+          - python3-virtualenv
+          - rsync
+          - openssh-clients
+        state: present
+      when: ansible_os_family == "RedHat"
+      tags: prereqs
+
+    - name: Verify Python 3.9+
+      command: >
+        python3 -c "import sys; assert sys.version_info >= (3,9),
+        f'Python 3.9+ required, got {sys.version}'"
+      changed_when: false
+      tags: prereqs
+
+    # -------------------------------------------------------------------------
+    # Service Account
+    # -------------------------------------------------------------------------
+    - name: Create dbagent group
+      group:
+        name: "{{ agent_group }}"
+        system: true
+        state: present
+      tags: user
+
+    - name: Create dbagent service account
+      user:
+        name: "{{ agent_user }}"
+        group: "{{ agent_group }}"
+        home: "{{ agent_install_dir }}"
+        shell: /bin/bash
+        system: true
+        create_home: false
+        comment: "DB AI Agent service account"
+        state: present
+      tags: user
+
+    # -------------------------------------------------------------------------
+    # Directory Structure
+    # -------------------------------------------------------------------------
+    - name: Create agent directories
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ agent_user }}"
+        group: "{{ agent_group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "{{ agent_install_dir }}",                mode: "0750" }
+        - { path: "{{ agent_install_dir }}/logs",           mode: "0750" }
+        - { path: "{{ agent_install_dir }}/logs/collected", mode: "0750" }
+        - { path: "{{ agent_ssh_dir }}",                    mode: "0700" }
+      tags: deploy
+
+    # -------------------------------------------------------------------------
+    # Sync Agent Files to Target
+    # Excludes: ansible/ (control-machine only), venv/, logs/, caches
+    # -------------------------------------------------------------------------
+    - name: Sync AIAgent files to target
+      synchronize:
+        src: "{{ source_dir }}/"
+        dest: "{{ agent_install_dir }}/"
+        delete: false
+        rsync_opts:
+          - "--exclude=ansible/"        # deployment tooling — not needed at runtime
+          - "--exclude=venv/"
+          - "--exclude=logs/"
+          - "--exclude=*.pyc"
+          - "--exclude=__pycache__/"
+          - "--exclude=.git/"
+          - "--exclude=*.pid"
+          - "--exclude=state.json"
+          - "--exclude=*_logs.json"
+      tags: deploy
+      notify: restart db-ai-agent
+
+    - name: Set ownership on all agent files
+      file:
+        path: "{{ agent_install_dir }}"
+        owner: "{{ agent_user }}"
+        group: "{{ agent_group }}"
+        recurse: true
+      tags: deploy
+
+    - name: Make Linux agent control scripts executable
+      file:
+        path: "{{ agent_install_dir }}/{{ item }}"
+        mode: "0750"
+      loop:
+        - run_agent.sh
+        - stop_agent.sh
+      ignore_errors: true
+      tags: deploy
+
+    - name: Make agent_scripts executable (deployed to DB servers separately)
+      file:
+        path: "{{ agent_install_dir }}/agent_scripts/{{ item }}"
+        mode: "0750"
+      loop:
+        - run_fix.sh
+        - collect_logs.py
+        - start_oracle.sh
+        - start_mysql.sh
+        - start_mssql.sh
+        - start_db2.sh
+        - fix_oracle_clear_archive.sh
+        - fix_oracle_restart_listener.sh
+        - fix_oracle_clear_temp.sh
+        - fix_oracle_kill_blocking.sh
+        - fix_mysql_flush_logs.sh
+        - fix_mysql_kill_blocking.sh
+        - fix_mssql_clear_errorlog.sh
+        - fix_db2_flush_logs.sh
+        - fix_generic_rotate_logs.sh
+      ignore_errors: true
+      tags: deploy
+
+    # -------------------------------------------------------------------------
+    # Python Virtual Environment
+    # -------------------------------------------------------------------------
+    - name: Create Python virtual environment
+      command: python3 -m venv "{{ agent_venv }}"
+      become_user: "{{ agent_user }}"
+      args:
+        creates: "{{ agent_venv }}/bin/python3"
+      tags: venv
+
+    - name: Upgrade pip inside venv
+      pip:
+        name: pip
+        virtualenv: "{{ agent_venv }}"
+        state: latest
+      become_user: "{{ agent_user }}"
+      tags: venv
+
+    - name: Install Python requirements
+      pip:
+        requirements: "{{ agent_install_dir }}/requirements.txt"
+        virtualenv: "{{ agent_venv }}"
+        state: present
+      become_user: "{{ agent_user }}"
+      tags: venv
+
+    # -------------------------------------------------------------------------
+    # SSH Key — used at runtime when agent SSHs to DB servers
+    # -------------------------------------------------------------------------
+    - name: Generate SSH keypair for DB server connections
+      openssh_keypair:
+        path: "{{ agent_ssh_key }}"
+        type: rsa
+        size: 4096
+        comment: "db-ai-agent@{{ ansible_hostname }}"
+        owner: "{{ agent_user }}"
+        group: "{{ agent_group }}"
+        mode: "0600"
+        force: false       # don't overwrite if already exists
+      register: ssh_keypair
+      tags: ssh
+
+    - name: Display public key (distribute to DB servers with setup_db_access.yml)
+      debug:
+        msg: |
+          SSH public key on {{ inventory_hostname }}:
+          {{ ssh_keypair.public_key }}
+
+          Run setup_db_access.yml to push this key to all DB servers.
+      when: ssh_keypair.changed
+      tags: ssh
+
+    # -------------------------------------------------------------------------
+    # Config Validation
+    # -------------------------------------------------------------------------
+    - name: Validate agentsetting.yaml (--test mode)
+      command: "{{ agent_venv }}/bin/python3 {{ agent_install_dir }}/agent.py --test"
+      become_user: "{{ agent_user }}"
+      register: config_test
+      changed_when: false
+      ignore_errors: true
+      tags: config
+
+    - name: Show config test output
+      debug:
+        msg: "{{ config_test.stdout_lines }}"
+      when: config_test is defined
+      tags: config
+
+    # -------------------------------------------------------------------------
+    # Systemd Service
+    # -------------------------------------------------------------------------
+    - name: Install systemd service unit
+      template:
+        src: templates/agent.service.j2
+        dest: /etc/systemd/system/db-ai-agent.service
+        owner: root
+        group: root
+        mode: "0644"
+      tags: service
+      notify: restart db-ai-agent
+
+    - name: Enable and start agent service
+      systemd:
+        name: db-ai-agent
+        enabled: true
+        daemon_reload: true
+        state: started
+      tags: service
+
+    # -------------------------------------------------------------------------
+    # Summary
+    # -------------------------------------------------------------------------
+    - name: Get service status
+      command: systemctl status db-ai-agent --no-pager -l
+      register: svc_status
+      changed_when: false
+      ignore_errors: true
+      tags: always
+
+    - name: Deployment summary
+      debug:
+        msg: |
+          ============================================================
+          DB AI Agent deployed to {{ inventory_hostname }}
+          Install dir : {{ agent_install_dir }}
+          Service user: {{ agent_user }}
+          Log file    : {{ agent_install_dir }}/logs/agent.log
+          SSH key     : {{ agent_ssh_key }}.pub
+          Service     : {{ svc_status.stdout_lines[2] | default('check: systemctl status db-ai-agent') }}
+
+          Next step: run setup_db_access.yml to configure DB servers.
+          ============================================================
+      tags: always

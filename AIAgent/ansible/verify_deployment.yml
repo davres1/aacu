@@ -1,0 +1,207 @@
+---
+# =============================================================================
+# verify_deployment.yml
+# End-to-end verification of the DB AI Agent deployment.
+# Run after deploy_agent.yml and setup_db_access.yml.
+#
+# Run from the ansible/ directory:
+#   ansible-playbook verify_deployment.yml
+#   ansible-playbook verify_deployment.yml --limit monitor-01
+#
+# Checks:
+#   1. Agent service is active (systemd)
+#   2. Agent log file has entries
+#   3. Python venv and key packages are intact
+#   4. agentsetting.yaml passes --test validation
+#   5. SSH connectivity from agent to each configured DB server
+#   6. SMTP host reachability
+#   7. Disk space on monitoring server
+# =============================================================================
+
+- name: Verify DB AI Agent deployment
+  hosts: monitoring_servers
+  become: true
+  gather_facts: true
+
+  vars:
+    agent_install_dir: "{{ hostvars[inventory_hostname].agent_install_dir | default('/opt/AIAgent') }}"
+    agent_user:        "{{ hostvars[inventory_hostname].agent_user        | default('dbagent') }}"
+    agent_venv:        "{{ agent_install_dir }}/venv"
+    min_disk_mb: 500
+
+  tasks:
+
+    # -------------------------------------------------------------------------
+    # 1. Agent service
+    # -------------------------------------------------------------------------
+    - name: Check agent service is active
+      systemd:
+        name: db-ai-agent
+      register: svc
+      failed_when: false
+
+    - name: Set agent_running fact
+      set_fact:
+        agent_running: "{{ svc.status.ActiveState == 'active' }}"
+
+    - name: FAIL — Agent service not running
+      fail:
+        msg: |
+          db-ai-agent is NOT running on {{ inventory_hostname }}.
+          Diagnose: journalctl -u db-ai-agent -n 50 --no-pager
+      when: not agent_running
+
+    # -------------------------------------------------------------------------
+    # 2. Log file activity
+    # -------------------------------------------------------------------------
+    - name: Check agent log exists
+      stat:
+        path: "{{ agent_install_dir }}/logs/agent.log"
+      register: log_stat
+
+    - name: Show last 10 log lines
+      command: tail -n 10 "{{ agent_install_dir }}/logs/agent.log"
+      register: log_tail
+      changed_when: false
+      when: log_stat.stat.exists
+
+    - name: Print recent log
+      debug:
+        msg: "{{ log_tail.stdout_lines | default(['Log file not found — agent may be starting up']) }}"
+
+    # -------------------------------------------------------------------------
+    # 3. Python packages
+    # -------------------------------------------------------------------------
+    - name: Verify Python packages (anthropic, yaml, openai optional)
+      command: >
+        {{ agent_venv }}/bin/python3 -c
+        "import anthropic, yaml; print('anthropic+yaml OK');
+         try:\n    import openai; print('openai OK')\nexcept ImportError:\n    print('openai not installed (only needed if provider=openai)')"
+      become_user: "{{ agent_user }}"
+      register: pkg_check
+      changed_when: false
+      failed_when: pkg_check.rc != 0
+
+    - name: Confirm packages
+      debug:
+        msg: "{{ pkg_check.stdout_lines }}"
+
+    # -------------------------------------------------------------------------
+    # 4. Config test
+    # -------------------------------------------------------------------------
+    - name: Run agent --test
+      command: "{{ agent_venv }}/bin/python3 {{ agent_install_dir }}/agent.py --test"
+      become_user: "{{ agent_user }}"
+      register: cfg_test
+      changed_when: false
+      failed_when: false
+
+    - name: Show config test output
+      debug:
+        msg: "{{ cfg_test.stdout_lines }}"
+
+    # -------------------------------------------------------------------------
+    # 5. SSH connectivity from monitoring server to DB servers
+    # (agent connects at runtime using its generated SSH key — no Ansible needed)
+    # -------------------------------------------------------------------------
+    - name: Test SSH to each DB server (as dbagent with agent key)
+      command: >
+        ssh
+          -i {{ agent_install_dir }}/.ssh/db_agent_key
+          -o StrictHostKeyChecking=no
+          -o ConnectTimeout=5
+          -o BatchMode=yes
+          dbagent@{{ item }}
+          "echo SSH_OK"
+      loop: "{{ groups['db_servers'] | map('extract', hostvars, 'ansible_host') | select('defined') | list }}"
+      register: ssh_tests
+      changed_when: false
+      failed_when: false
+      become_user: "{{ agent_user }}"
+
+    - name: SSH connectivity results
+      debug:
+        msg: >
+          {{ item.item }}: {{ 'CONNECTED' if item.rc == 0
+          else 'FAILED — ' + (item.stderr | default('unknown error') | truncate(80)) }}
+      loop: "{{ ssh_tests.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # -------------------------------------------------------------------------
+    # 6. SMTP reachability
+    # -------------------------------------------------------------------------
+    - name: Load agentsetting.yaml
+      slurp:
+        src: "{{ agent_install_dir }}/agentsetting.yaml"
+      register: cfg_raw
+
+    - name: Parse settings
+      set_fact:
+        agent_cfg: "{{ cfg_raw.content | b64decode | from_yaml }}"
+
+    - name: Test SMTP reachability
+      wait_for:
+        host:    "{{ agent_cfg.email.smtp_host }}"
+        port:    "{{ agent_cfg.email.smtp_port }}"
+        timeout: 10
+      register: smtp_check
+      failed_when: false
+
+    - name: SMTP result
+      debug:
+        msg: >
+          SMTP {{ agent_cfg.email.smtp_host }}:{{ agent_cfg.email.smtp_port }}
+          — {{ 'REACHABLE' if smtp_check.elapsed is defined else 'UNREACHABLE (check smtp settings)' }}
+
+    # -------------------------------------------------------------------------
+    # 7. Disk space
+    # -------------------------------------------------------------------------
+    - name: Check free disk space in agent log dir
+      shell: df -m "{{ agent_install_dir }}/logs" | awk 'NR==2{print $4}'
+      register: disk_free
+      changed_when: false
+
+    - name: WARN — Low disk space
+      debug:
+        msg: "WARNING: Only {{ disk_free.stdout }}MB free — consider log rotation"
+      when: disk_free.stdout | int < min_disk_mb
+
+    # -------------------------------------------------------------------------
+    # Summary
+    # -------------------------------------------------------------------------
+    - name: Verification summary
+      debug:
+        msg: |
+          ================================================================
+          VERIFICATION SUMMARY — {{ inventory_hostname }}
+          ================================================================
+          Agent service  : {{ 'RUNNING' if agent_running else 'STOPPED' }}
+          Python packages: {{ pkg_check.stdout_lines[0] | default('ERROR') }}
+          Log file       : {{ 'EXISTS' if log_stat.stat.exists else 'MISSING' }}
+          AI provider    : {{ agent_cfg.ai.provider | default('anthropic') }}
+          API key set    : {{ 'YES' if (agent_cfg.ai.anthropic_api_key is defined and agent_cfg.ai.anthropic_api_key != 'sk-ant-REPLACE_WITH_YOUR_ANTHROPIC_API_KEY') or (agent_cfg.ai.openai_api_key is defined and agent_cfg.ai.openai_api_key != 'sk-REPLACE_WITH_YOUR_OPENAI_API_KEY') else 'NOT SET — update agentsetting.yaml' }}
+          SMTP           : {{ 'REACHABLE' if smtp_check.elapsed is defined else 'CHECK NEEDED' }}
+          Disk free      : {{ disk_free.stdout }}MB
+          DB SSH reachable: {{ ssh_tests.results | selectattr('rc', 'eq', 0) | list | length }}/{{ ssh_tests.results | length }}
+          ================================================================
+
+# ---------------------------------------------------------------------------
+# Also ping DB servers directly from Ansible controller (initial check)
+# ---------------------------------------------------------------------------
+- name: Verify DB server reachability from Ansible controller
+  hosts: db_servers
+  gather_facts: false
+
+  tasks:
+    - name: Ping DB server
+      ping:
+      register: ping_result
+      ignore_unreachable: true
+      failed_when: false
+
+    - name: Report connectivity
+      debug:
+        msg: >
+          {{ inventory_hostname }} ({{ ansible_host | default('?') }}):
+          {{ 'REACHABLE' if ping_result.ping is defined else 'UNREACHABLE' }}

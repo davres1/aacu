@@ -1,0 +1,21 @@
+{
+  "version": "0.2",
+  "language": "en",
+  "words": [
+    "agentsetting", "dbagent", "dedup", "getpid",
+    "anthropic", "anthropic_api_key", "openai",
+    "RMAN", "sysdba", "sqlplus", "lsnrctl", "tnsnames",
+    "pmon", "pgrep", "rdbms", "oinstall", "sysasm",
+    "mysqld", "mysqladmin", "logrotate",
+    "sqlcmd", "SQLAGENT", "SQLEXPRESS", "mssql", "tempdb",
+    "db2inst", "sqllib", "db2sysc", "db2diag",
+    "journalctl", "systemctl", "sudoers", "visudo",
+    "Remediator", "Remediators",
+    "venv", "MAINPID", "SyslogIdentifier"
+  ],
+  "ignorePaths": [
+    "venv/**",
+    "logs/**",
+    ".git/**"
+  ]
+}
