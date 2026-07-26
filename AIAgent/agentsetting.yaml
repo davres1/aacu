@@ -140,6 +140,23 @@ databases:
           diag_log:  "/home/db2inst1/sqllib/db2dump/DIAG0000/db2diag.log"
           event_log: "/home/db2inst1/sqllib/db2dump/db2eventlog"
 
+  postgresql:
+    enabled: true
+    instances:
+      - name: "PG_PROD"
+        host: "pg-server-01"
+        port: 5432
+        pgdata: "/var/lib/postgresql/15/main"   # PGDATA directory
+        logs:
+          pg_log: "/var/log/postgresql/postgresql-15-main.log"
+
+      - name: "PG_REPLICA"
+        host: "pg-server-02"
+        port: 5432
+        pgdata: "/var/lib/postgresql/15/main"
+        logs:
+          pg_log: "/var/log/postgresql/postgresql-15-main.log"
+
 # ---------------------------------------------------------------------------
 # Auto-Remediation Controls
 # Only fixes listed here will be applied; none require a DB restart.
@@ -157,6 +174,9 @@ auto_fix:
     - mysql_kill_blocking          # Kill MySQL queries running > 30 minutes
     - mssql_clear_errorlog         # EXEC sp_cycle_errorlog to cycle the log
     - db2_flush_logs               # db2 reset dbm cfg + flush diagnostic logs
+    - pg_flush_logs                # Rotate PostgreSQL log via pg_rotate_logfile()
+    - pg_kill_blocking             # Terminate sessions blocking > 30 minutes
+    - pg_vacuum_analyze            # VACUUM ANALYZE all databases to reclaim bloat
     - generic_rotate_logs          # Force logrotate on any log file
 
 # ---------------------------------------------------------------------------

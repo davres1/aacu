@@ -9,6 +9,10 @@
     "mysqld", "mysqladmin", "logrotate",
     "sqlcmd", "SQLAGENT", "SQLEXPRESS", "mssql", "tempdb",
     "db2inst", "sqllib", "db2sysc", "db2diag",
+    "psql", "postgresql", "pgdata", "pguser", "pgport", "pg_ctl",
+    "isready", "pg_isready", "pg_ctlcluster", "pg_lsclusters",
+    "pg_rotate", "pg_stat", "pg_terminate", "pg_backend",
+    "autovacuum", "pg_hba", "pgbouncer", "pg_isready",
     "journalctl", "systemctl", "sudoers", "visudo",
     "Remediator", "Remediators",
     "venv", "MAINPID", "SyslogIdentifier"

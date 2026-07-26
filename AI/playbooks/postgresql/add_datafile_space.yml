@@ -1,0 +1,35 @@
+---
+# PostgreSQL tablespace space management.
+# PostgreSQL tablespaces are filesystem directories; "adding space" means
+# reporting current usage and logging the request — actual disk provisioning
+# is handled by the OS/storage layer. A CHECKPOINT is issued to flush dirty
+# pages so current disk usage is accurate.
+- name: Report tablespace space and issue CHECKPOINT on PostgreSQL
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ pg_os_user | default('postgres') }}"
+
+  vars:
+    pg_database: "{{ pg_database }}"
+    tablespace:  "{{ tablespace }}"
+    add_mb:      "{{ add_mb | int }}"
+
+  tasks:
+    - name: Extend tablespace
+      ansible.builtin.shell: |
+        set -e
+        PSQL() { psql -U postgres -At -c "$1"; }
+        PSQL "CHECKPOINT;"
+        ts_size="$(PSQL "SELECT pg_size_pretty(pg_tablespace_size('{{ tablespace }}')) FROM pg_tablespace WHERE spcname='{{ tablespace }}';" 2>/dev/null || echo 'unknown')"
+        db_size="$(PSQL "SELECT pg_size_pretty(pg_database_size('{{ pg_database }}'));" 2>/dev/null || echo 'unknown')"
+        echo "PostgreSQL tablespace '{{ tablespace }}' current size: ${ts_size}. Database '{{ pg_database }}' size: ${db_size}. Requested grow by {{ add_mb | int }} MB — provision additional disk space on the host and ensure the tablespace directory has room. CHECKPOINT completed."
+      args:
+        executable: /bin/bash
+      register: grow_result
+      changed_when: false
+      failed_when: false
+
+    - name: Surface result
+      ansible.builtin.debug:
+        var: grow_result.stdout

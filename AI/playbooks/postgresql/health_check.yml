@@ -1,0 +1,42 @@
+---
+# PostgreSQL health check: instance status (CheckPostgreSQLStatus.sh)
+# plus database inventory (db_inventory.sh).
+- name: PostgreSQL host + database health check
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ pg_os_user | default('postgres') }}"
+
+  vars:
+    remote_dir: '/tmp/dba'
+
+  tasks:
+    - name: Ensure remote dir exists
+      ansible.builtin.file:
+        path: "{{ remote_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy CheckPostgreSQLStatus.sh
+      ansible.builtin.copy:
+        src: ../files/CheckPostgreSQLStatus.sh
+        dest: "{{ remote_dir }}/CheckPostgreSQLStatus.sh"
+        mode: '0755'
+
+    - name: Copy db_inventory.sh
+      ansible.builtin.copy:
+        src: ../files/db_inventory.sh
+        dest: "{{ remote_dir }}/db_inventory.sh"
+        mode: '0755'
+
+    - name: Run CheckPostgreSQLStatus.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/CheckPostgreSQLStatus.sh"
+      register: status_result
+      changed_when: false
+      failed_when: false
+
+    - name: Run db_inventory.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/db_inventory.sh"
+      register: inventory_result
+      changed_when: false
+      failed_when: false

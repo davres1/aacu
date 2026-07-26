@@ -141,6 +141,9 @@
           dbagent ALL=(root)     NOPASSWD: /bin/systemctl start mariadb
           dbagent ALL=(root)     NOPASSWD: /bin/systemctl start mssql-server
 
+          # PostgreSQL: fix + start scripts run as postgres
+          dbagent ALL=(postgres) NOPASSWD: /home/dbagent/.db_agent/run_fix.sh
+
           # Utility (read-only)
           dbagent ALL=(root)     NOPASSWD: /usr/bin/find, /usr/bin/du, /usr/bin/df
         validate: visudo -cf %s
@@ -267,6 +270,33 @@
       ignore_errors: true
       when: inventory_hostname in groups['db2_servers']
       tags: db2
+
+    # -------------------------------------------------------------------------
+    # PostgreSQL-specific
+    # -------------------------------------------------------------------------
+    - name: Add dbagent to postgres group
+      user:
+        name: "{{ agent_user }}"
+        groups: "{{ db_os_group | default('postgres') }}"
+        append: true
+      ignore_errors: true
+      when: inventory_hostname in groups['postgresql_servers']
+      tags: postgresql
+
+    - name: Grant dbagent read on PostgreSQL log directories
+      acl:
+        path: "{{ item }}"
+        entity: "{{ agent_user }}"
+        etype: user
+        permissions: rx
+        state: present
+        recursive: true
+      loop:
+        - /var/log/postgresql
+        - /var/lib/postgresql
+      ignore_errors: true
+      when: inventory_hostname in groups['postgresql_servers']
+      tags: postgresql
 
     # -------------------------------------------------------------------------
     # Summary

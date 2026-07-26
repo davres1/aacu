@@ -1,0 +1,30 @@
+---
+# PostgreSQL backup status: checks pg_stat_archiver for WAL archiving health
+# and looks for recent pgbackrest / pg_basebackup evidence.
+- name: Verify PostgreSQL backup status
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ pg_os_user | default('postgres') }}"
+
+  vars:
+    remote_dir: '/tmp/dba'
+
+  tasks:
+    - name: Ensure remote dir exists
+      ansible.builtin.file:
+        path: "{{ remote_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy VerifyBackups.sh
+      ansible.builtin.copy:
+        src: ../files/VerifyBackups.sh
+        dest: "{{ remote_dir }}/VerifyBackups.sh"
+        mode: '0755'
+
+    - name: Run VerifyBackups.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/VerifyBackups.sh"
+      register: result
+      changed_when: false
+      failed_when: false

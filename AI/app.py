@@ -28,7 +28,8 @@ from handlers.mssql  import sql_handler as mssql_sql,  ops_handler as mssql_ops
 from handlers.oracle import sql_handler as oracle_sql, ops_handler as oracle_ops
 from handlers.db2    import sql_handler as db2_sql,    ops_handler as db2_ops
 from handlers.mysql   import sql_handler as mysql_sql,   ops_handler as mysql_ops
-from handlers.mariadb import sql_handler as mariadb_sql, ops_handler as mariadb_ops
+from handlers.mariadb     import sql_handler as mariadb_sql,     ops_handler as mariadb_ops
+from handlers.postgresql  import sql_handler as postgresql_sql,  ops_handler as postgresql_ops
 from handlers.sql_guard import UnsafeSqlError
 
 
@@ -103,6 +104,8 @@ def _flavor_modules(flavor):
         return mysql_sql, mysql_ops, settings.MYSQL_GROUP, settings.MYSQL_DATABASES_INI
     if f == "mariadb":
         return mariadb_sql, mariadb_ops, settings.MARIADB_GROUP, settings.MARIADB_DATABASES_INI
+    if f == "postgresql":
+        return postgresql_sql, postgresql_ops, settings.POSTGRESQL_GROUP, settings.POSTGRESQL_DATABASES_INI
     return mssql_sql, mssql_ops, settings.MSSQL_GROUP, settings.MSSQL_DATABASES_INI
 
 
@@ -161,7 +164,7 @@ def _read_databases_ini(flavor):
 
 # Sections that aren't actual databases.
 _DB_INI_RESERVED = {"sql_servers", "oracle_servers", "db2_servers", "mysql_servers",
-                    "mariadb_servers", "DEFAULT"}
+                    "mariadb_servers", "postgresql_servers", "DEFAULT"}
 
 
 def _databases_metadata(flavor):
@@ -413,6 +416,8 @@ def _normalize_flavor(value):
         return "mysql"
     if v == "mariadb":
         return "mariadb"
+    if v == "postgresql":
+        return "postgresql"
     return "mssql"
 
 
@@ -543,7 +548,8 @@ def health():
             "oracle": {"group": settings.ORACLE_GROUP, "databases_ini": settings.ORACLE_DATABASES_INI},
             "db2":    {"group": settings.DB2_GROUP,    "databases_ini": settings.DB2_DATABASES_INI},
             "mysql":  {"group": settings.MYSQL_GROUP,  "databases_ini": settings.MYSQL_DATABASES_INI},
-            "mariadb":{"group": settings.MARIADB_GROUP, "databases_ini": settings.MARIADB_DATABASES_INI},
+            "mariadb":    {"group": settings.MARIADB_GROUP,    "databases_ini": settings.MARIADB_DATABASES_INI},
+            "postgresql": {"group": settings.POSTGRESQL_GROUP, "databases_ini": settings.POSTGRESQL_DATABASES_INI},
         },
     })
 

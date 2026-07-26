@@ -1,0 +1,30 @@
+---
+# PostgreSQL security audit: checks pg_hba.conf trust entries, superuser
+# accounts, SSL status, and roles with LOGIN + SUPERUSER privileges.
+- name: PostgreSQL security audit
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ pg_os_user | default('postgres') }}"
+
+  vars:
+    remote_dir: '/tmp/dba'
+
+  tasks:
+    - name: Ensure remote dir exists
+      ansible.builtin.file:
+        path: "{{ remote_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy SecurityAudit.sh
+      ansible.builtin.copy:
+        src: ../files/SecurityAudit.sh
+        dest: "{{ remote_dir }}/SecurityAudit.sh"
+        mode: '0755'
+
+    - name: Run SecurityAudit.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/SecurityAudit.sh"
+      register: result
+      changed_when: false
+      failed_when: false

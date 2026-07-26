@@ -1,0 +1,31 @@
+---
+# PostgreSQL temp file / bgwriter monitoring: reports temporary file usage from
+# pg_stat_bgwriter and pg_stat_database, surfacing sessions generating large
+# temp files (potential work_mem pressure).
+- name: Monitor PostgreSQL temporary file usage
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ pg_os_user | default('postgres') }}"
+
+  vars:
+    remote_dir: '/tmp/dba'
+
+  tasks:
+    - name: Ensure remote dir exists
+      ansible.builtin.file:
+        path: "{{ remote_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy MonitorTempFiles.sh
+      ansible.builtin.copy:
+        src: ../files/MonitorTempFiles.sh
+        dest: "{{ remote_dir }}/MonitorTempFiles.sh"
+        mode: '0755'
+
+    - name: Run MonitorTempFiles.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/MonitorTempFiles.sh"
+      register: result
+      changed_when: false
+      failed_when: false

@@ -1,0 +1,30 @@
+---
+# PostgreSQL patch level: reports server_version and server_version_num,
+# and checks whether the installed binary matches the running cluster version.
+- name: Check PostgreSQL patch level
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ pg_os_user | default('postgres') }}"
+
+  vars:
+    remote_dir: '/tmp/dba'
+
+  tasks:
+    - name: Ensure remote dir exists
+      ansible.builtin.file:
+        path: "{{ remote_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy PatchLevelCheck.sh
+      ansible.builtin.copy:
+        src: ../files/PatchLevelCheck.sh
+        dest: "{{ remote_dir }}/PatchLevelCheck.sh"
+        mode: '0755'
+
+    - name: Run PatchLevelCheck.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/PatchLevelCheck.sh"
+      register: result
+      changed_when: false
+      failed_when: false

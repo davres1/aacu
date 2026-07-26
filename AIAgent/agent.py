@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 DB AI Agent
-Monitors Oracle, MySQL, MSSQL, and DB2 databases.
+Monitors Oracle, MySQL, MSSQL, DB2, and PostgreSQL databases.
 Uses direct SSH + shell scripts for runtime log collection and fixes —
 no Ansible required on the monitoring server after deployment.
 Deployment uses Ansible once (from a control machine); after that the agent
@@ -376,6 +376,9 @@ class SSHRemediator:
         "mysql_kill_blocking":     ("fix_mysql_kill_blocking.sh",     "root"),
         "mssql_clear_errorlog":    ("fix_mssql_clear_errorlog.sh",    "root"),
         "db2_flush_logs":          ("fix_db2_flush_logs.sh",          "db2inst1"),
+        "pg_flush_logs":           ("fix_pg_flush_logs.sh",           "postgres"),
+        "pg_kill_blocking":        ("fix_pg_kill_blocking.sh",        "postgres"),
+        "pg_vacuum_analyze":       ("fix_pg_vacuum_analyze.sh",       "postgres"),
         "generic_rotate_logs":     ("fix_generic_rotate_logs.sh",     "root"),
     }
 
@@ -435,6 +438,10 @@ class SSHRemediator:
             args += [f"ORACLE_HOME={db['oracle_home']}", f"ORACLE_SID={db.get('sid','')}"]
         if db.get("instance"):
             args.append(f"DB2_INSTANCE={db['instance']}")
+        if db.get("pgdata"):
+            args.append(f"PGDATA={db['pgdata']}")
+        if db.get("port") and db.get("db_type") == "postgresql":
+            args.append(f"PGPORT={db['port']}")
         return args
 
     def _run(self, host: str, cmd: str, timeout: int = 120) -> subprocess.CompletedProcess:
@@ -552,6 +559,14 @@ _MANUAL_STEPS: dict[str, list[str]] = {
         "db2 list active databases",
         "Diag log: ~/sqllib/db2dump/DIAG0000/db2diag.log",
     ],
+    "postgresql": [
+        "SSH to the server",
+        "Debian/Ubuntu: sudo pg_ctlcluster <version> main start",
+        "RHEL/CentOS:   sudo systemctl start postgresql",
+        "Check logs: sudo tail -50 /var/log/postgresql/postgresql-*.log",
+        "Connect: sudo -u postgres psql -c 'SELECT version();'",
+        "Review pg_hba.conf if authentication errors are present",
+    ],
 }
 
 _DOWN_HTML = """\
@@ -594,10 +609,11 @@ class DBHealthChecker:
     """
 
     START_MAP: dict[str, tuple[str, str]] = {
-        "oracle": ("start_oracle.sh", "oracle"),
-        "mysql":  ("start_mysql.sh",  "root"),
-        "mssql":  ("start_mssql.sh",  "root"),
-        "db2":    ("start_db2.sh",    "db2inst1"),
+        "oracle":      ("start_oracle.sh",      "oracle"),
+        "mysql":       ("start_mysql.sh",       "root"),
+        "mssql":       ("start_mssql.sh",       "root"),
+        "db2":         ("start_db2.sh",         "db2inst1"),
+        "postgresql":  ("start_postgresql.sh",  "postgres"),
     }
     START_WAIT    = 30   # seconds between start attempts
     START_TIMEOUT = 120  # seconds per start command
@@ -674,6 +690,8 @@ class DBHealthChecker:
             return self._check_windows_service(db)
         elif db_type == "db2":
             cmd = "pgrep -x db2sysc >/dev/null 2>&1"
+        elif db_type == "postgresql":
+            cmd = "pgrep -x postgres >/dev/null 2>&1 || pg_isready -q 2>/dev/null"
         else:
             return True  # unknown type — assume up
 
@@ -761,7 +779,7 @@ class DBHealthChecker:
 # AI Analyzer
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You are a senior DBA specializing in Oracle, MySQL, MSSQL, and DB2.
+SYSTEM_PROMPT = """You are a senior DBA specializing in Oracle, MySQL, MSSQL, DB2, and PostgreSQL.
 Analyze the provided database log entries and identify real problems only (ignore routine messages).
 
 Return ONLY valid JSON — no markdown, no explanation — in this exact schema:
@@ -773,7 +791,7 @@ Return ONLY valid JSON — no markdown, no explanation — in this exact schema:
       "severity": "critical|high|medium|low",
       "description": "Concise issue description",
       "database": "<db_name from log>",
-      "db_type": "oracle|mysql|mssql|db2",
+      "db_type": "oracle|mysql|mssql|db2|postgresql",
       "error_code": "ORA-xxxxx or similar, or null",
       "fix_available": true,
       "fix_name": "<key from allowed list below, or null>",
@@ -798,6 +816,9 @@ Allowed fix_name values (use exact keys, only when requires_restart is false):
   mssql_clear_tempdb      — clear/shrink TempDB [Windows]
   mssql_shrink_log        — shrink transaction log [Windows]
   db2_flush_logs          — archive and truncate DB2 diagnostic log
+  pg_flush_logs           — rotate PostgreSQL log file via pg_rotate_logfile()
+  pg_kill_blocking        — terminate sessions blocking > 30 min via pg_terminate_backend()
+  pg_vacuum_analyze       — run VACUUM ANALYZE to reclaim bloat and update statistics
   generic_rotate_logs     — force logrotate on oversized log files
 
 Rules:
@@ -1030,6 +1051,8 @@ class DBAgent:
         "refused", "exception", "crash", "aborted", "oom",
         "alert", "severe", "emergency", "panic", "blocking",
         "db_state", "log_full",
+        # PostgreSQL-specific
+        "autovacuum", "could not", "pg_", "replication slot",
     ])
 
     def __init__(self, config_path: Path):

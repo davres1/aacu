@@ -27,7 +27,8 @@ MSSQL_DATABASES_INI_DEFAULT  = os.path.join(REPO_DIR, "MSSQL",  "inventory", "da
 ORACLE_DATABASES_INI_DEFAULT = os.path.join(REPO_DIR, "Oracle", "inventory", "databases.ini")
 DB2_DATABASES_INI_DEFAULT    = os.path.join(REPO_DIR, "Db2",    "inventory", "databases.ini")
 MYSQL_DATABASES_INI_DEFAULT  = os.path.join(REPO_DIR, "MySQL",   "inventory", "databases.ini")
-MARIADB_DATABASES_INI_DEFAULT = os.path.join(REPO_DIR, "MariaDB", "inventory", "databases.ini")
+MARIADB_DATABASES_INI_DEFAULT    = os.path.join(REPO_DIR, "MariaDB",    "inventory", "databases.ini")
+POSTGRESQL_DATABASES_INI_DEFAULT = os.path.join(REPO_DIR, "PostgreSQL", "inventory", "databases.ini")
 
 SETUP_YAML = os.environ.get("SETUP_YAML", os.path.join(REPO_DIR, "setup.yaml"))
 
@@ -192,12 +193,14 @@ MSSQL_GROUP          = _env("ANSIBLE_SQL_GROUP",    _path("inventory", "sql_serv
 ORACLE_GROUP         = _env("ANSIBLE_ORACLE_GROUP", _path("inventory", "oracle_servers_group", default="oracle_servers"))
 DB2_GROUP            = _env("ANSIBLE_DB2_GROUP",    _path("inventory", "db2_servers_group",     default="db2_servers"))
 MYSQL_GROUP          = _env("ANSIBLE_MYSQL_GROUP",  _path("inventory", "mysql_servers_group",   default="mysql_servers"))
-MARIADB_GROUP        = _env("ANSIBLE_MARIADB_GROUP", _path("inventory", "mariadb_servers_group", default="mariadb_servers"))
-MSSQL_DATABASES_INI  = _env("MSSQL_DATABASES_INI",  MSSQL_DATABASES_INI_DEFAULT)
-ORACLE_DATABASES_INI = _env("ORACLE_DATABASES_INI", ORACLE_DATABASES_INI_DEFAULT)
-DB2_DATABASES_INI    = _env("DB2_DATABASES_INI",    DB2_DATABASES_INI_DEFAULT)
-MYSQL_DATABASES_INI  = _env("MYSQL_DATABASES_INI",  MYSQL_DATABASES_INI_DEFAULT)
-MARIADB_DATABASES_INI = _env("MARIADB_DATABASES_INI", MARIADB_DATABASES_INI_DEFAULT)
+MARIADB_GROUP        = _env("ANSIBLE_MARIADB_GROUP",    _path("inventory", "mariadb_servers_group",    default="mariadb_servers"))
+POSTGRESQL_GROUP     = _env("ANSIBLE_POSTGRESQL_GROUP", _path("inventory", "postgresql_servers_group", default="postgresql_servers"))
+MSSQL_DATABASES_INI       = _env("MSSQL_DATABASES_INI",       MSSQL_DATABASES_INI_DEFAULT)
+ORACLE_DATABASES_INI      = _env("ORACLE_DATABASES_INI",      ORACLE_DATABASES_INI_DEFAULT)
+DB2_DATABASES_INI         = _env("DB2_DATABASES_INI",         DB2_DATABASES_INI_DEFAULT)
+MYSQL_DATABASES_INI       = _env("MYSQL_DATABASES_INI",       MYSQL_DATABASES_INI_DEFAULT)
+MARIADB_DATABASES_INI     = _env("MARIADB_DATABASES_INI",     MARIADB_DATABASES_INI_DEFAULT)
+POSTGRESQL_DATABASES_INI  = _env("POSTGRESQL_DATABASES_INI",  POSTGRESQL_DATABASES_INI_DEFAULT)
 ANSIBLE_BIN          = _env("ANSIBLE_PLAYBOOK_BIN", "ansible-playbook")
 ANSIBLE_TIMEOUT      = int(_env("ANSIBLE_TIMEOUT",  "600"))
 
@@ -254,6 +257,12 @@ DB2_OS_USER = _env("DB2_OS_USER", "db2inst1")
 # ---------------------------------------------------------------------------
 MYSQL_OS_USER   = _env("MYSQL_OS_USER", "root")
 MARIADB_OS_USER = _env("MARIADB_OS_USER", "root")
+
+
+# ---------------------------------------------------------------------------
+# PostgreSQL-specific
+# ---------------------------------------------------------------------------
+POSTGRESQL_OS_USER = _env("POSTGRESQL_OS_USER", "postgres")
 
 
 # ---------------------------------------------------------------------------

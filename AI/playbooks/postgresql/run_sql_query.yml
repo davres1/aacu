@@ -1,0 +1,59 @@
+---
+# Read-only PostgreSQL SELECT — sanitized client-side, executed via the psql
+# client on the target host. Credentials come from databases.ini.
+#
+# psql is run in unaligned mode (-A) with a pipe field separator (-F'|') and
+# the footer suppressed (--pset=footer=off). The first output line is the
+# column-header row, matching the pipe-parser contract of the other handlers.
+# The password is passed via PGPASSWORD so it never appears in the process list.
+- name: Run a read-only SQL query on a PostgreSQL database
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ pg_os_user | default('postgres') }}"
+
+  vars:
+    pg_database:   "{{ pg_database }}"
+    sql_query:     "{{ sql_query }}"
+    databases_ini: "{{ databases_ini | default('/etc/postgresql/databases.ini') }}"
+
+  tasks:
+    - name: Read connection credentials from databases.ini
+      ansible.builtin.set_fact:
+        pg_conn_user: >-
+          {{ lookup('ini', 'connuser section=' + pg_database + ' file=' + databases_ini, errors='ignore')
+             | default('postgres', true) }}
+        pg_conn_pass: >-
+          {{ lookup('ini', 'connpass section=' + pg_database + ' file=' + databases_ini, errors='ignore')
+             | default('', true) }}
+        pg_conn_host: >-
+          {{ lookup('ini', 'dbhost section=' + pg_database + ' file=' + databases_ini, errors='ignore')
+             | default(lookup('ini', 'ansible_servername section=' + pg_database + ' file=' + databases_ini, errors='ignore'), true)
+             | default('localhost', true) }}
+        pg_conn_port: >-
+          {{ lookup('ini', 'dbport section=' + pg_database + ' file=' + databases_ini, errors='ignore')
+             | default('5432', true) }}
+      no_log: true
+
+    - name: Run read-only SQL query
+      ansible.builtin.shell: |
+        set -o pipefail
+        qf="$(mktemp /tmp/dba_q_XXXXXX.sql)"
+        cat > "$qf" <<'SQLEOF'
+        {{ sql_query }}
+        SQLEOF
+        PGPASSWORD="{{ pg_conn_pass }}" psql \
+          -h "{{ pg_conn_host }}" \
+          -p "{{ pg_conn_port }}" \
+          -U "{{ pg_conn_user }}" \
+          -d "{{ pg_database }}" \
+          -A -F'|' --pset=footer=off \
+          -f "$qf"
+        rc=$?
+        rm -f "$qf"
+        exit $rc
+      args:
+        executable: /bin/bash
+      register: query_result
+      changed_when: false
+      no_log: true

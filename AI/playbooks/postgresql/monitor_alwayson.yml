@@ -1,0 +1,30 @@
+---
+# PostgreSQL streaming replication status: queries pg_stat_replication on the
+# primary and pg_stat_wal_receiver on standbys to report lag and sync state.
+- name: Monitor PostgreSQL streaming replication
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ pg_os_user | default('postgres') }}"
+
+  vars:
+    remote_dir: '/tmp/dba'
+
+  tasks:
+    - name: Ensure remote dir exists
+      ansible.builtin.file:
+        path: "{{ remote_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy MonitorReplication.sh
+      ansible.builtin.copy:
+        src: ../files/MonitorReplication.sh
+        dest: "{{ remote_dir }}/MonitorReplication.sh"
+        mode: '0755'
+
+    - name: Run MonitorReplication.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/MonitorReplication.sh"
+      register: result
+      changed_when: false
+      failed_when: false

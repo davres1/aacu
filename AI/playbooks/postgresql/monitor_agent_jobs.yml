@@ -1,0 +1,31 @@
+---
+# PostgreSQL scheduled jobs: checks pg_cron job history if the extension is
+# installed, otherwise reports that no native scheduler was found.
+- name: Monitor PostgreSQL scheduled jobs (pg_cron)
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  become: true
+  become_user: "{{ pg_os_user | default('postgres') }}"
+
+  vars:
+    remote_dir:    '/tmp/dba'
+    lookback_hours: "{{ lookback_hours | default(24) }}"
+
+  tasks:
+    - name: Ensure remote dir exists
+      ansible.builtin.file:
+        path: "{{ remote_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Copy MonitorJobs.sh
+      ansible.builtin.copy:
+        src: ../files/MonitorJobs.sh
+        dest: "{{ remote_dir }}/MonitorJobs.sh"
+        mode: '0755'
+
+    - name: Run MonitorJobs.sh
+      ansible.builtin.shell: "bash {{ remote_dir }}/MonitorJobs.sh {{ lookback_hours }}"
+      register: result
+      changed_when: false
+      failed_when: false
