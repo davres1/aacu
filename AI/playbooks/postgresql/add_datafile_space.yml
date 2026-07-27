@@ -1,35 +1,57 @@
 ---
-# PostgreSQL tablespace space management.
-# PostgreSQL tablespaces are filesystem directories; "adding space" means
-# reporting current usage and logging the request — actual disk provisioning
-# is handled by the OS/storage layer. A CHECKPOINT is issued to flush dirty
-# pages so current disk usage is accurate.
-- name: Report tablespace space and issue CHECKPOINT on PostgreSQL
+# PostgreSQL tablespace space management — AddDatafileSpace.sh.
+#
+# PostgreSQL tablespaces are filesystem directories. "Adding a datafile" means
+# creating a new tablespace directory on additional storage (optionally moving
+# the database's default tablespace there).
+#
+# Required vars:   target_host, pg_database, tablespace, add_mb
+# Optional vars:   new_datafile_path  (if set → CREATE TABLESPACE)
+#                  move_database      (if true + new_datafile_path → ALTER DATABASE)
+- name: PostgreSQL add datafile / extend tablespace
   hosts: "{{ target_host }}"
   gather_facts: false
   become: true
   become_user: "{{ pg_os_user | default('postgres') }}"
 
   vars:
-    pg_database: "{{ pg_database }}"
-    tablespace:  "{{ tablespace }}"
-    add_mb:      "{{ add_mb | int }}"
+    remote_dir: '/tmp/dba'
 
   tasks:
-    - name: Extend tablespace
-      ansible.builtin.shell: |
-        set -e
-        PSQL() { psql -U postgres -At -c "$1"; }
-        PSQL "CHECKPOINT;"
-        ts_size="$(PSQL "SELECT pg_size_pretty(pg_tablespace_size('{{ tablespace }}')) FROM pg_tablespace WHERE spcname='{{ tablespace }}';" 2>/dev/null || echo 'unknown')"
-        db_size="$(PSQL "SELECT pg_size_pretty(pg_database_size('{{ pg_database }}'));" 2>/dev/null || echo 'unknown')"
-        echo "PostgreSQL tablespace '{{ tablespace }}' current size: ${ts_size}. Database '{{ pg_database }}' size: ${db_size}. Requested grow by {{ add_mb | int }} MB — provision additional disk space on the host and ensure the tablespace directory has room. CHECKPOINT completed."
-      args:
-        executable: /bin/bash
-      register: grow_result
-      changed_when: false
+    - name: Ensure remote dirs exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ remote_dir }}"
+        - "{{ remote_dir }}/lib"
+
+    - name: Copy pg_common.sh
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../../PostgreSQL/files/lib/pg_common.sh"
+        dest: "{{ remote_dir }}/lib/pg_common.sh"
+        mode: '0644'
+
+    - name: Copy AddDatafileSpace.sh
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../../PostgreSQL/files/AddDatafileSpace.sh"
+        dest: "{{ remote_dir }}/AddDatafileSpace.sh"
+        mode: '0755'
+
+    - name: Add datafile to tablespace
+      ansible.builtin.shell: bash {{ remote_dir }}/AddDatafileSpace.sh
+      environment:
+        DATABASES_INI:       "{{ databases_ini }}"
+        DB_NAME:             "{{ pg_database }}"
+        TABLESPACE:          "{{ tablespace | default('pg_default') }}"
+        ADD_MB:              "{{ add_mb | default(0) | int }}"
+        NEW_DATAFILE_PATH:   "{{ new_datafile_path | default('') }}"
+        MOVE_DATABASE:       "{{ move_database | default('false') | string | lower }}"
+      register: result
+      changed_when: "new_datafile_path is defined and new_datafile_path | length > 0"
       failed_when: false
 
     - name: Surface result
       ansible.builtin.debug:
-        var: grow_result.stdout
+        var: result.stdout

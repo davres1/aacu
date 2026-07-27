@@ -3,7 +3,7 @@ Operational actions for PostgreSQL hosts. Each handler runs an Ansible playbook
 that ships a shell script to the target host and captures its JSON output:
 
   - check_blocking_locks  -> DetectBlockingLocks.sh  (pg_stat_activity + pg_locks)
-  - add_datafile_space    -> ExtendTablespace.sh      (pg_tablespace / data dir grow)
+  - add_datafile_space    -> AddDatafileSpace.sh      (CREATE TABLESPACE / data dir grow)
   - health_check          -> CheckPostgreSQLStatus.sh + db_inventory.sh
   - backup_status         -> VerifyBackups.sh         (pg_stat_archiver + pgbackrest)
   - integrity_status      -> GetCheckDBStatus.sh      (pg_catalog checks)
@@ -18,6 +18,7 @@ that ships a shell script to the target host and captures its JSON output:
 
 import json
 
+import settings
 from handlers import ansible_runner
 
 
@@ -95,12 +96,15 @@ def check_blocking_locks(server, database=None):
     }
 
 
-def add_datafile_space(server, database, tablespace, add_mb):
-    """Grow a PostgreSQL tablespace directory or extend a database's allocation.
+def add_datafile_space(server, database, tablespace, add_mb,
+                       new_datafile_path=None, move_database=False):
+    """Add a datafile / extend a PostgreSQL tablespace.
 
-    PostgreSQL tablespaces are directories; growing means ensuring there is
-    sufficient disk space. The playbook reports current tablespace sizes and
-    optionally triggers a CHECKPOINT + logs the request for the DBA.
+    PostgreSQL tablespaces are filesystem directories.  When new_datafile_path
+    is provided the script creates that directory, runs CREATE TABLESPACE
+    pointing there, and (if move_database=True) issues ALTER DATABASE SET
+    TABLESPACE so new objects go to the extended location.  Without
+    new_datafile_path the call reports current tablespace size and disk free.
     """
     if not database or not tablespace:
         return {"error": "database and tablespace are required."}
@@ -108,27 +112,38 @@ def add_datafile_space(server, database, tablespace, add_mb):
         add_mb = int(add_mb)
     except (TypeError, ValueError):
         return {"error": f"add_mb must be an integer, got {add_mb!r}"}
-    if add_mb <= 0 or add_mb > 102400:
-        return {"error": "add_mb must be between 1 and 102400."}
+    if add_mb < 0 or add_mb > 102400:
+        return {"error": "add_mb must be between 0 and 102400."}
+
+    extra_vars = {
+        "target_host":        server,
+        "pg_database":        database,
+        "tablespace":         tablespace,
+        "add_mb":             add_mb,
+        "new_datafile_path":  new_datafile_path or "",
+        "move_database":      "true" if move_database else "false",
+        "databases_ini":      settings.POSTGRESQL_DATABASES_INI,
+        "pg_os_user":         settings.POSTGRESQL_OS_USER,
+    }
 
     out = ansible_runner.run_playbook(
         "postgresql/add_datafile_space.yml", server,
-        extra_vars={
-            "target_host":  server,
-            "pg_database":  database,
-            "tablespace":   tablespace,
-            "add_mb":       add_mb,
-        },
+        extra_vars=extra_vars,
     )
-    task = ansible_runner.extract_task_result(out, "Extend tablespace") or {}
+    task = ansible_runner.extract_task_result(out, "Add datafile to tablespace") or {}
+    stdout = task.get("stdout") or ""
+    parsed = _parse_json_tail(stdout)
     return {
-        "server": server,
-        "database": database,
-        "tablespace": tablespace,
-        "add_mb": add_mb,
-        "stdout": task.get("stdout", "")[:4000],
-        "rc": task.get("rc"),
-        "_ansible": _ansible_meta(out, "Extend tablespace", task),
+        "server":             server,
+        "database":           database,
+        "tablespace":         tablespace,
+        "add_mb":             add_mb,
+        "new_datafile_path":  new_datafile_path,
+        "move_database":      move_database,
+        "summary":            parsed,
+        "stdout":             stdout[:4000],
+        "rc":                 task.get("rc"),
+        "_ansible":           _ansible_meta(out, "Add datafile to tablespace", task),
     }
 
 
