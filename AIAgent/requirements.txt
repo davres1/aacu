@@ -1,3 +1,7 @@
-anthropic>=0.34.0
-openai>=1.0.0
+# Required
 PyYAML>=6.0
+
+# Optional — only needed for AI-powered analysis. If no API key is configured the
+# agent runs in offline mode (built-in rule-based analyzer) without these.
+anthropic>=0.34.0      # provider: anthropic
+openai>=1.0.0          # provider: openai

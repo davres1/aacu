@@ -33,6 +33,57 @@ An AI-powered database monitoring and auto-remediation agent that watches Oracle
 
 ---
 
+## Offline Mode (No AI API Key)
+
+The agent does **not require an AI provider to keep working**. When no API key is
+configured (the `agentsetting.yaml` value is still the `sk-...REPLACE...`
+placeholder), or when an AI call fails, the agent falls back to a built-in
+**rule-based analyzer** (`RuleBasedAnalyzer` in `agent.py`).
+
+- It scans each cycle's log entries for known error signatures (e.g. `ORA-00257`,
+  MySQL `disk is full`, PostgreSQL `deadlock detected`, MSSQL error `9002`) and
+  maps them to the **same `fix_name` keys** the remediator already understands.
+- It produces the identical result structure the AI path returns, so **auto-fix
+  dispatch and email alerts work unchanged**.
+- Unlike the AI path (which is gated by `error_count_before_alert` to avoid API
+  cost), the rule engine runs **every cycle**, so the agent keeps checking the
+  `agent_scripts/` and taking allowlisted actions with no external dependency.
+
+Toggle it with `ai.rule_based_fallback` (default `true`). Set it to `false` to
+require a working AI provider and disable offline analysis/fixes.
+
+`agent.py --test` prints which analyzer is active:
+
+```
+API key   : NOT SET — using built-in RULE-BASED analyzer (offline)
+Fallback  : rule-based enabled
+```
+
+## Action Audit Trail
+
+Every `fix_*`/`start_*` script records **what it did (or skipped)** to a durable
+audit log, independent of the agent's own log:
+
+- Linux scripts source `agent_scripts/_common.sh` and call `save_action`.
+- Windows scripts dot-source `windows/scripts/_common.ps1` and call `Save-Action`.
+
+Each script first runs a **precondition check** — it verifies the required tool is
+present (`require_cmd`) and that there is actually something to do (e.g. blocking
+sessions exist, a log is over its size threshold) — and only then acts. A line is
+appended for each outcome:
+
+```
+2026-08-01 11:47:22 | host=db-01 | user=root | script=fix_mysql_flush_logs.sh | db=MYSQL_PROD | DONE | MySQL logs flushed; logrotate configs processed: 0
+```
+
+STATUS is `DONE` (action taken), `SKIP` (nothing to do / precondition not met),
+`FAIL` (attempted but errored), or `INFO`. The log lives at
+`$HOME/.db_agent/action_log/actions.log` (Linux) or
+`%ProgramData%\db_agent\action_log\actions.log` (Windows); override the directory
+with the `ACTION_LOG_DIR` environment variable.
+
+---
+
 ## Prerequisites
 
 ### Monitoring Server (Linux — runs the agent)
@@ -177,10 +228,15 @@ agent:
 ```yaml
 ai:
   provider: anthropic
-  api_key: sk-ant-...         # get from console.anthropic.com
-  model: claude-opus-4-5      # or claude-sonnet-4-5 (faster/cheaper)
+  anthropic_api_key: sk-ant-...   # get from console.anthropic.com
+  anthropic_model: claude-opus-4-5  # or claude-sonnet-4-5 (faster/cheaper)
   max_tokens: 2000
+  rule_based_fallback: true       # keep working offline if no key / AI call fails
 ```
+
+> If `anthropic_api_key` is left as the placeholder, the agent runs in
+> [Offline Mode](#offline-mode-no-ai-api-key) using the built-in rule engine.
+> The `anthropic`/`openai` Python packages are optional in that case.
 
 ### Email Settings
 ```yaml
@@ -433,6 +489,15 @@ ansible-playbook -i inventory/hosts.yml playbooks/gather_logs.yml -vvv
 - `log_lines_per_check` defaults to 100 — if no new lines found, AI is skipped
 - `error_count_before_alert` (default 5) must be reached before calling AI
 - Check `logs/state.json` to see the saved log byte positions
+- With no API key, the AI path is replaced by the rule engine (runs every cycle);
+  see [Offline Mode](#offline-mode-no-ai-api-key). If nothing acts offline, the
+  logs simply contain no signatures in `RuleBasedAnalyzer.RULES`.
+
+### Actions not being recorded
+- Each fix/start script writes to `$HOME/.db_agent/action_log/actions.log`
+  (Linux) or `%ProgramData%\db_agent\action_log\actions.log` (Windows)
+- A `SKIP` line means a precondition check failed (tool missing, or nothing to do)
+- Set `ACTION_LOG_DIR` to relocate the audit log
 
 ### Windows PowerShell execution policy
 ```powershell

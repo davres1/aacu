@@ -13,6 +13,7 @@ param(
 )
 
 Set-StrictMode -Version Latest
+. "$PSScriptRoot\_common.ps1"
 
 function Invoke-SQL {
     param([string]$Query)
@@ -23,6 +24,12 @@ function Invoke-SQL {
     $args += @('-Q', $Query, '-h', '-1')
     $out = & sqlcmd @args 2>&1
     return $out -join "`n"
+}
+
+# --- Check: sqlcmd must be available before touching the server ---
+if (-not (Get-Command sqlcmd -ErrorAction SilentlyContinue)) {
+    Save-Action -Status SKIP -DbName $DbName -Message "sqlcmd not found — cannot cycle error log"
+    exit 0
 }
 
 Write-Host "[$DbName] Cycling error log on $ServerInstance..."
@@ -45,4 +52,7 @@ $after = Get-ChildItem 'C:\Program Files\Microsoft SQL Server' -Recurse -Filter 
 
 Write-Host "Before:`n$before"
 Write-Host "After:`n$after"
+
+# --- Save: record that the error log was cycled ---
+Save-Action -Status DONE -DbName $DbName -Message "cycled MSSQL error log and SQL Agent log on $ServerInstance"
 Write-Host "[$DbName] Error log cycled successfully."

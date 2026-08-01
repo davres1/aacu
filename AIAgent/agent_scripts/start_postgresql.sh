@@ -2,6 +2,7 @@
 # Starts PostgreSQL via systemctl or pg_ctlcluster.
 # Runs as: postgres (via sudo -u postgres run_fix.sh)
 set -euo pipefail
+source "$(dirname "$0")/_common.sh"
 
 echo "[$(date +%T)] Starting PostgreSQL..."
 
@@ -21,7 +22,7 @@ if command -v pg_ctlcluster >/dev/null 2>&1; then
 fi
 
 # Try systemctl service names (RHEL/CentOS/generic)
-if [[ "$STARTED" == "false" ]]; then
+if [[ "$STARTED" == "false" ]] && command -v systemctl >/dev/null 2>&1; then
     for SVC in postgresql postgresql-16 postgresql-15 postgresql-14 postgresql-13; do
         if systemctl list-unit-files "${SVC}.service" &>/dev/null 2>&1; then
             echo "Starting service: $SVC"
@@ -32,7 +33,8 @@ fi
 
 if [[ "$STARTED" == "false" ]]; then
     echo "ERROR: Could not find a PostgreSQL service to start." >&2
-    systemctl list-unit-files | grep -i postgresql || true
+    command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files | grep -i postgresql || true
+    save_action "FAIL" "no PostgreSQL cluster/service found to start"
     exit 1
 fi
 
@@ -44,8 +46,11 @@ while [[ $TIMEOUT -gt 0 ]]; do
     TIMEOUT=$((TIMEOUT-3))
 done
 
+# --- Verify + save: confirm PostgreSQL is accepting connections ---
 if pg_isready -q 2>/dev/null; then
     echo "[$(date +%T)] PostgreSQL is UP and accepting connections."
+    save_action "DONE" "PostgreSQL started and accepting connections"
 else
     echo "[$(date +%T)] WARNING: PostgreSQL started but not yet ready."
+    save_action "FAIL" "PostgreSQL started but not ready (pg_isready) within timeout"
 fi

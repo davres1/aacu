@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import platform
+import re
 import signal
 import smtplib
 import subprocess
@@ -25,10 +26,16 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 try:
-    import anthropic
     import yaml
 except ImportError as e:
     sys.exit(f"Missing dependency: {e}\nRun: pip install -r requirements.txt")
+
+# The AI SDKs are OPTIONAL. When no API key is configured (or the package is
+# not installed) the agent still runs, using the built-in RuleBasedAnalyzer.
+try:
+    import anthropic
+except ImportError:
+    anthropic = None     # optional; only required when an Anthropic API key is used
 
 try:
     import openai as _openai_mod
@@ -84,6 +91,17 @@ class Config:
             return self.get("ai", "openai_model", default="gpt-4o")
         return self.get("ai", "anthropic_model",
                         default=self.get("ai", "model", default="claude-opus-4-5"))
+
+    @property
+    def api_key_configured(self) -> bool:
+        """True only when a real API key is set (not blank / not a placeholder)."""
+        key = self.api_key or ""
+        return bool(key) and not key.startswith(("sk-ant-REPLACE", "sk-REPLACE"))
+
+    @property
+    def rule_based_fallback(self) -> bool:
+        """When True, analyze logs with the built-in rule engine if AI is unavailable."""
+        return self.get("ai", "rule_based_fallback", default=True)
 
     @property
     def email_cfg(self) -> dict:
@@ -831,8 +849,17 @@ class AIAnalyzer:
     def __init__(self, config: Config, log: logging.Logger):
         self.cfg  = config
         self.log  = log
-        self._ant: anthropic.Anthropic | None = None   # lazy Anthropic client
-        self._oai: object | None = None                # lazy OpenAI client
+        self._ant = None   # lazy Anthropic client (anthropic.Anthropic)
+        self._oai = None   # lazy OpenAI client
+
+    @property
+    def available(self) -> bool:
+        """True when a usable AI provider (key configured + SDK installed) exists."""
+        if not self.cfg.api_key_configured:
+            return False
+        if self.cfg.ai_provider == "openai":
+            return _openai_mod is not None
+        return anthropic is not None
 
     def analyze(self, entries: list[dict]) -> dict | None:
         if not entries:
@@ -856,6 +883,8 @@ class AIAnalyzer:
         return None
 
     def _call_anthropic(self, log_text: str) -> dict:
+        if anthropic is None:
+            raise ValueError("anthropic package not installed. Run: pip install anthropic>=0.34.0")
         if self._ant is None:
             key = self.cfg.api_key
             if not key or key.startswith("sk-ant-REPLACE"):
@@ -898,6 +927,189 @@ class AIAnalyzer:
                 raw = raw[4:]
             raw = raw.rsplit("```", 1)[0].strip()
         return json.loads(raw)
+
+
+# ---------------------------------------------------------------------------
+# Rule-Based Analyzer — offline fallback when no AI API key is available
+# ---------------------------------------------------------------------------
+
+class RuleBasedAnalyzer:
+    """
+    Deterministic, no-API replacement for AIAnalyzer.
+
+    When no AI key is configured (or the AI call fails and fallback is enabled),
+    this scans the collected log entries for known error signatures and maps
+    them to the SAME fix_name keys the remediator understands. It returns the
+    identical dict schema AIAnalyzer.analyze() produces, so the rest of the
+    cycle — auto-fix dispatch and email alerting — works unchanged.
+
+    Each rule is: (regex, db_type|None, fix_name, severity, description, recommendation).
+    A db_type of None matches any database. Matching is case-insensitive.
+    """
+
+    SEV_ORDER = ("critical", "high", "medium", "low")
+
+    # (pattern, db_type, fix_name, severity, description, recommendation)
+    RULES: list[tuple] = [
+        # ---- Oracle ----
+        (r"ORA-00257|archiver (is )?stuck|cannot allocate .*archive",
+         "oracle", "oracle_clear_archive", "critical",
+         "Archiver stuck — archive log destination / FRA is full (ORA-00257).",
+         "Delete archive logs already backed up to free the recovery area and confirm RMAN backups are current."),
+        (r"ORA-12541|TNS-12541|ORA-12514|no listener|listener.*(down|not running)",
+         "oracle", "oracle_restart_listener", "high",
+         "Oracle TNS listener is down or not responding.",
+         "Restart the listener and confirm database services register; review listener.log for the cause."),
+        (r"ORA-01652|unable to extend temp",
+         "oracle", "oracle_clear_temp", "high",
+         "Unable to extend TEMP segment — temporary tablespace exhausted (ORA-01652).",
+         "Shrink/clear the temporary tablespace and identify the query consuming TEMP space."),
+        (r"ORA-00060|deadlock detected|enq: *tx|blocking session",
+         "oracle", "oracle_kill_blocking", "high",
+         "Long-running blocking sessions or deadlocks detected.",
+         "Terminate sessions blocking others for over 30 minutes and review the offending SQL."),
+        # ---- MySQL ----
+        (r"disk is full|no space left|error writing file|can'?t create/write|binary log.*space",
+         "mysql", "mysql_flush_logs", "high",
+         "MySQL disk pressure / oversized logs detected.",
+         "Flush and rotate MySQL logs to reclaim space and review binary-log retention."),
+        (r"lock wait timeout exceeded|deadlock found|waiting for .*lock",
+         "mysql", "mysql_kill_blocking", "high",
+         "MySQL queries blocked on locks for an extended period.",
+         "Kill queries running over 30 minutes and review transaction and isolation design."),
+        # ---- MSSQL ----
+        (r"transaction log for database .*is full|log file .*is full|\b9002\b|log_reuse_wait",
+         "mssql", "mssql_shrink_log", "high",
+         "A SQL Server transaction log is full (error 9002).",
+         "Back up / shrink the transaction log and resolve the log_reuse_wait cause."),
+        (r"tempdb|version store is full|\b1105\b.*tempdb",
+         "mssql", "mssql_clear_tempdb", "high",
+         "TempDB space pressure detected.",
+         "Reclaim TempDB free space and investigate the workload filling the version store."),
+        (r"error log|sp_cycle|severity: *1[6-9]|severity: *2[0-5]|has occurred",
+         "mssql", "mssql_clear_errorlog", "medium",
+         "MSSQL error log growth or recurring high-severity errors.",
+         "Cycle the SQL Server error log and review the recurring entries."),
+        # ---- DB2 ----
+        (r"db2diag|adm\d+|sql1035n|disk.*full|log.*full|no space",
+         "db2", "db2_flush_logs", "medium",
+         "DB2 diagnostic log growth / disk pressure detected.",
+         "Archive and truncate db2diag.log and verify DIAGPATH disk headroom."),
+        # ---- PostgreSQL ----
+        (r"could not extend|no space left|checkpoints? .*too frequently|disk full|wal",
+         "postgresql", "pg_flush_logs", "high",
+         "PostgreSQL disk pressure / oversized log files detected.",
+         "Rotate and prune PostgreSQL logs and confirm WAL / log-directory headroom."),
+        (r"deadlock detected|still waiting for .*lock|canceling statement due to lock|process .*still waiting",
+         "postgresql", "pg_kill_blocking", "high",
+         "PostgreSQL sessions blocked on locks for an extended period.",
+         "Terminate sessions blocking others for over 30 minutes and review long transactions."),
+        (r"autovacuum|to prevent wraparound|dead (rows|tuples)|must be vacuumed|database is not accepting commands",
+         "postgresql", "pg_vacuum_analyze", "medium",
+         "PostgreSQL bloat / autovacuum falling behind (possible wraparound risk).",
+         "Run VACUUM ANALYZE to reclaim bloat and refresh planner statistics."),
+    ]
+
+    # Generic disk-pressure fallback used when no DB-specific rule matched a line.
+    GENERIC_RULE = (
+        r"no space left|disk (is )?full|filesystem full|out of disk",
+        "generic_rotate_logs", "high",
+        "Disk-space pressure detected on the database host.",
+        "Force log rotation and compress oversized logs to reclaim space.",
+    )
+
+    def __init__(self, config: Config, log: logging.Logger):
+        self.cfg = config
+        self.log = log
+        self._rules = [
+            (re.compile(p, re.IGNORECASE), dbt, fix, sev, desc, rec)
+            for (p, dbt, fix, sev, desc, rec) in self.RULES
+        ]
+        gp, gfix, gsev, gdesc, grec = self.GENERIC_RULE
+        self._generic = (re.compile(gp, re.IGNORECASE), gfix, gsev, gdesc, grec)
+
+    def analyze(self, entries: list[dict]) -> dict | None:
+        if not entries:
+            return None
+
+        allowed = set(self.cfg.allowed_fixes)
+        found: dict[tuple, dict] = {}
+
+        for e in entries:
+            content = e.get("content") or ""
+            if not content:
+                continue
+            db_name = e.get("db_name") or e.get("database") or "unknown"
+            db_type = (e.get("db_type") or "").lower()
+
+            matched = False
+            for rx, dbt, fix, sev, desc, rec in self._rules:
+                if dbt and dbt != db_type:
+                    continue
+                if rx.search(content):
+                    matched = True
+                    self._record(found, allowed, db_name, db_type,
+                                 fix, sev, desc, rec, content)
+
+            if not matched:
+                rx, fix, sev, desc, rec = self._generic
+                if rx.search(content):
+                    self._record(found, allowed, db_name, db_type,
+                                 fix, sev, desc, rec, content)
+
+        if not found:
+            return {
+                "has_issues": False, "overall_severity": "low", "issues": [],
+                "summary": "Rule-based scan (no AI key) found no known issue signatures.",
+            }
+
+        issues  = list(found.values())
+        overall = min((i["severity"] for i in issues),
+                      key=lambda s: self.SEV_ORDER.index(s) if s in self.SEV_ORDER else 3)
+        dbs     = len({i["database"] for i in issues})
+        self.log.info("Rule-based analyzer matched %d issue(s) across %d database(s)",
+                      len(issues), dbs)
+        return {
+            "has_issues": True,
+            "overall_severity": overall,
+            "issues": [{k: v for k, v in i.items() if not k.startswith("_")} for i in issues],
+            "summary": (f"Rule-based analysis (no AI key) matched {len(issues)} known "
+                        f"issue signature(s) across {dbs} database(s). "
+                        f"Fixes are applied only when auto-fix is enabled and the "
+                        f"fix is on the allowlist."),
+        }
+
+    def _record(self, found, allowed, db_name, db_type,
+                fix, sev, desc, rec, content):
+        key = (db_name, fix)
+        if key in found:
+            cur = found[key]
+            if self.SEV_ORDER.index(sev) < self.SEV_ORDER.index(cur["severity"]):
+                cur["severity"] = sev
+            cur["_hits"] += 1
+            return
+
+        fix_ok = fix in allowed
+        found[key] = {
+            "severity":         sev,
+            "description":      desc,
+            "database":         db_name,
+            "db_type":          db_type,
+            "error_code":       self._first_code(content),
+            "fix_available":    fix_ok,
+            "fix_name":         fix if fix_ok else None,
+            "fix_description":  (f"Runs the {fix} remediation script." if fix_ok
+                                 else "No allowlisted fix — manual action required."),
+            "requires_restart": False,
+            "email_subject":    desc[:58],
+            "recommendation":   rec,
+            "_hits":            1,
+        }
+
+    @staticmethod
+    def _first_code(content: str) -> str | None:
+        m = re.search(r"(ORA-\d{3,5}|TNS-\d{3,5}|SQL\d{3,5}[NWCncw]?)", content, re.IGNORECASE)
+        return m.group(1).upper() if m else None
 
 
 # ---------------------------------------------------------------------------
@@ -1067,6 +1279,7 @@ class DBAgent:
         self.coll     = SSHLogCollector(self.cfg, self.state, self.log)
         self.coll.set_windows_collector(self.win_coll)
         self.ai       = AIAnalyzer(self.cfg, self.log)
+        self.rules    = RuleBasedAnalyzer(self.cfg, self.log)
         self.rem      = SSHRemediator(self.cfg, self.log)
         self.mail     = EmailSender(self.cfg, self.log)
         self.health   = DBHealthChecker(self.cfg, self.state, self.log, self.mail)
@@ -1126,15 +1339,14 @@ class DBAgent:
         relevant = [e for e in entries if self._is_relevant(e)]
         self.log.info("Entries: %d total, %d relevant", len(entries), len(relevant))
 
-        threshold = self.cfg.thresholds.get("error_count_before_alert", 5)
-        if len(relevant) < threshold:
-            self.log.info("Below threshold (%d), skipping AI", threshold)
+        if not relevant:
+            self.log.info("No relevant log entries this cycle")
             self.state.touch(); self.state.save()
             return
 
-        analysis = self.ai.analyze(relevant)
+        analysis = self._analyze(relevant)
         if not analysis or not analysis.get("has_issues"):
-            self.log.info("AI: no actionable issues")
+            self.log.info("No actionable issues")
             self.state.touch(); self.state.save()
             return
 
@@ -1170,6 +1382,37 @@ class DBAgent:
         self.log.info("Cycle %.1fs | issues=%d fixed=%d", time.time()-t0, len(issues), len(fixed))
         self.state.touch(); self.state.save()
 
+    def _analyze(self, relevant: list[dict]) -> dict | None:
+        """
+        Choose the analysis engine:
+          * AI available            → call the LLM (gated by the error-count
+            threshold to avoid spending API calls on trivial noise). If the AI
+            call fails and fallback is enabled, use the rule engine.
+          * AI unavailable (no key) → use the rule engine every cycle so the
+            agent keeps checking logs and taking allowlisted actions offline.
+        """
+        threshold = self.cfg.thresholds.get("error_count_before_alert", 5)
+
+        if self.ai.available:
+            if len(relevant) < threshold:
+                self.log.info("Below threshold (%d) — skipping AI analysis", threshold)
+                return None
+            analysis = self.ai.analyze(relevant)
+            if analysis is not None:
+                return analysis
+            if self.cfg.rule_based_fallback:
+                self.log.warning("AI analysis failed — falling back to rule-based analyzer")
+                return self.rules.analyze(relevant)
+            return None
+
+        # No usable AI key/SDK.
+        if not self.cfg.rule_based_fallback:
+            self.log.warning("No AI API key and rule-based fallback disabled — skipping analysis")
+            return None
+        self.log.info("No AI API key configured — using rule-based analyzer (%d entries)",
+                      len(relevant))
+        return self.rules.analyze(relevant)
+
     def _is_relevant(self, entry: dict) -> bool:
         return any(kw in entry.get("content", "").lower() for kw in self.ERROR_KEYWORDS)
 
@@ -1187,9 +1430,16 @@ def _test_mode(cfg: Config):
     print(f"Databases configured: {len(dbs)}")
     for d in dbs:
         print(f"  [{d['db_type'].upper()}] {d['name']} @ {d['host']}")
-    print(f"\nAI model  : {cfg.ai_model}")
-    api_ok = cfg.api_key and not cfg.api_key.startswith("sk-ant-REPLACE")
-    print(f"API key   : {'configured' if api_ok else 'NOT SET'}")
+    print(f"\nAI provider: {cfg.ai_provider}")
+    print(f"AI model  : {cfg.ai_model}")
+    api_ok = cfg.api_key_configured
+    if api_ok:
+        print("API key   : configured (AI analysis)")
+    elif cfg.rule_based_fallback:
+        print("API key   : NOT SET — using built-in RULE-BASED analyzer (offline)")
+    else:
+        print("API key   : NOT SET and fallback DISABLED — no analysis will run")
+    print(f"Fallback  : rule-based {'enabled' if cfg.rule_based_fallback else 'disabled'}")
     print(f"SSH key   : {cfg.ssh_key}")
     print(f"SSH user  : {cfg.ssh_user}")
     print(f"Remote dir: {cfg.remote_scripts_dir}")

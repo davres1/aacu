@@ -168,6 +168,7 @@
         - start_mysql.sh
         - start_mssql.sh
         - start_db2.sh
+        - start_postgresql.sh
         - fix_oracle_clear_archive.sh
         - fix_oracle_restart_listener.sh
         - fix_oracle_clear_temp.sh
@@ -177,6 +178,18 @@
         - fix_mssql_clear_errorlog.sh
         - fix_db2_flush_logs.sh
         - fix_generic_rotate_logs.sh
+        - fix_pg_flush_logs.sh
+        - fix_pg_kill_blocking.sh
+        - fix_pg_vacuum_analyze.sh
+      ignore_errors: true
+      tags: deploy
+
+    # _common.sh is a sourced library (run_fix.sh will not run it directly); it
+    # needs to be readable but not executable. It syncs with the rest of the bundle.
+    - name: Ensure agent_scripts shared library is present
+      file:
+        path: "{{ agent_install_dir }}/agent_scripts/_common.sh"
+        mode: "0640"
       ignore_errors: true
       tags: deploy
 

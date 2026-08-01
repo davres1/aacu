@@ -8,6 +8,8 @@ param(
     [string]$ServerInstance = "."
 )
 
+. "$PSScriptRoot\_common.ps1"
+
 # Derive Windows service name from instance
 if ($ServerInstance -match "\\(.+)$") {
     $svcName = "MSSQL`$$($Matches[1].ToUpper())"
@@ -23,6 +25,7 @@ if (-not $svc) {
     $svc = Get-Service | Where-Object { $_.Name -like "MSSQL*" } | Select-Object -First 1
     if (-not $svc) {
         Write-Error "No SQL Server service found for instance: $ServerInstance"
+        Save-Action -Status FAIL -DbName $ServerInstance -Message "no SQL Server service found for instance $ServerInstance"
         exit 1
     }
     Write-Host "Found service: $($svc.Name)"
@@ -30,6 +33,7 @@ if (-not $svc) {
 
 if ($svc.Status -eq 'Running') {
     Write-Host "Service $($svc.Name) is already Running."
+    Save-Action -Status INFO -DbName $ServerInstance -Message "service $($svc.Name) already Running — no action"
     exit 0
 }
 
@@ -42,9 +46,11 @@ while ((Get-Date) -lt $limit) {
     $status = (Get-Service -Name $svc.Name).Status
     if ($status -eq 'Running') {
         Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Service $($svc.Name) is now Running."
+        Save-Action -Status DONE -DbName $ServerInstance -Message "started SQL Server service $($svc.Name)"
         exit 0
     }
 }
 
 Write-Error "Service $($svc.Name) did not reach Running state within 60s."
+Save-Action -Status FAIL -DbName $ServerInstance -Message "service $($svc.Name) did not reach Running within 60s"
 exit 1

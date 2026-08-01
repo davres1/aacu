@@ -3,6 +3,7 @@
 # Runs as: oracle (via sudo -u oracle run_fix.sh)
 # Env: ORACLE_HOME, ORACLE_SID
 set -euo pipefail
+source "$(dirname "$0")/_common.sh"
 
 export ORACLE_HOME="${ORACLE_HOME:?ORACLE_HOME is required}"
 export ORACLE_SID="${ORACLE_SID:?ORACLE_SID is required}"
@@ -11,10 +12,10 @@ export ORACLE_BASE="${ORACLE_BASE:-/u01/app/oracle}"
 
 echo "[$(date +%T)] Starting Oracle instance $ORACLE_SID..."
 
-# Verify sqlplus is accessible
-command -v sqlplus >/dev/null || { echo "ERROR: sqlplus not found in $ORACLE_HOME/bin"; exit 1; }
+# --- Check: verify sqlplus is accessible ---
+require_cmd sqlplus
 
-sqlplus -s / as sysdba <<'SQL'
+OUT=$(sqlplus -s / as sysdba <<'SQL' 2>&1
 WHENEVER SQLERROR EXIT 1
 SET ECHO OFF FEEDBACK OFF PAGESIZE 0
 
@@ -37,5 +38,13 @@ STARTUP;
 SELECT 'Instance status: ' || STATUS FROM V$INSTANCE;
 EXIT;
 SQL
+) || true
+echo "$OUT"
 
+# --- Verify + save: confirm the instance reached OPEN ---
+if printf '%s\n' "$OUT" | grep -q "Instance status: OPEN"; then
+    save_action "DONE" "Oracle instance $ORACLE_SID started and OPEN"
+else
+    save_action "FAIL" "Oracle instance $ORACLE_SID startup did not reach OPEN"
+fi
 echo "[$(date +%T)] Oracle startup command completed."

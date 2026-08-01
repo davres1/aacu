@@ -19,6 +19,7 @@ param(
 )
 
 Set-StrictMode -Version Latest
+. "$PSScriptRoot\_common.ps1"
 
 function Invoke-SQL {
     param([string]$Query, [int]$Timeout = 120)
@@ -57,12 +58,14 @@ $targets = & sqlcmd @(if ($Auth -eq 'sql') { @('-S', $ServerInstance, '-U', $Sql
 
 if (-not $targets) {
     Write-Host "No log files above threshold. Nothing to do."
+    Save-Action -Status SKIP -DbName $DbName -Message "no transaction logs above $ThresholdPct% full on $ServerInstance"
     exit 0
 }
 
 Write-Host "Logs to shrink:`n$($targets -join "`n")"
 
 # Shrink each identified database log
+$shrunk = 0
 foreach ($row in $targets) {
     if (-not ($row -match '\S')) { continue }
 
@@ -92,7 +95,10 @@ foreach ($row in $targets) {
         $shrinkSql = "USE [$db]; DBCC SHRINKFILE ([$logFile], $TargetSizeMB) WITH NO_INFOMSGS;"
         Write-Host "  Shrinking to ~$TargetSizeMB MB..."
         Write-Host "  $(Invoke-SQL $shrinkSql 120)"
+        $shrunk++
     }
 }
 
+# --- Save: record how many transaction logs were shrunk ---
+Save-Action -Status DONE -DbName $DbName -Message "shrank $shrunk transaction log(s) above $ThresholdPct% full on $ServerInstance"
 Write-Host "`n[$DbName] Transaction log shrink complete."

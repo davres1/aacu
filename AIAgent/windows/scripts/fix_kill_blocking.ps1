@@ -13,6 +13,7 @@ param(
 )
 
 Set-StrictMode -Version Latest
+. "$PSScriptRoot\_common.ps1"
 
 function Invoke-SQL {
     param([string]$Query)
@@ -21,6 +22,12 @@ function Invoke-SQL {
     else { $a += '-E' }
     $a += @('-Q', $Query, '-h', '-1')
     return (& sqlcmd @a 2>&1) -join "`n"
+}
+
+# --- Check: sqlcmd must be available before attempting to kill sessions ---
+if (-not (Get-Command sqlcmd -ErrorAction SilentlyContinue)) {
+    Save-Action -Status SKIP -DbName $DbName -Message "sqlcmd not found — cannot kill blocking sessions"
+    exit 0
 }
 
 Write-Host "[$DbName] Finding blocking sessions > $($MinWaitSeconds/60) min on $ServerInstance..."
@@ -80,4 +87,13 @@ PRINT 'Sessions killed: ' + CAST(@killed AS VARCHAR(10));
 
 $result = Invoke-SQL $killSql
 Write-Host $result
+
+# --- Save: record how many blocking sessions were killed ---
+$killedCount = 0
+if ($result -match 'Sessions killed:\s*(\d+)') { $killedCount = [int]$Matches[1] }
+if ($killedCount -gt 0) {
+    Save-Action -Status DONE -DbName $DbName -Message "killed $killedCount MSSQL session(s) blocking > $($MinWaitSeconds/60) min on $ServerInstance"
+} else {
+    Save-Action -Status SKIP -DbName $DbName -Message "no MSSQL sessions blocking > $($MinWaitSeconds/60) min on $ServerInstance"
+}
 Write-Host "[$DbName] Blocking session kill complete."

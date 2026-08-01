@@ -13,6 +13,7 @@ param(
 )
 
 Set-StrictMode -Version Latest
+. "$PSScriptRoot\_common.ps1"
 
 function Invoke-SQL {
     param([string]$Query)
@@ -21,6 +22,12 @@ function Invoke-SQL {
     else { $a += '-E' }
     $a += @('-Q', $Query, '-h', '-1')
     return (& sqlcmd @a 2>&1) -join "`n"
+}
+
+# --- Check: sqlcmd must be available before touching TempDB ---
+if (-not (Get-Command sqlcmd -ErrorAction SilentlyContinue)) {
+    Save-Action -Status SKIP -DbName $DbName -Message "sqlcmd not found — cannot clear TempDB"
+    exit 0
 }
 
 Write-Host "[$DbName] Checking TempDB usage on $ServerInstance..."
@@ -68,4 +75,6 @@ PRINT 'TempDB shrink complete';
 Write-Host "Shrinking TempDB files..."
 Write-Host (Invoke-SQL $shrinkSql)
 
+# --- Save: record the TempDB cleanup ---
+Save-Action -Status DONE -DbName $DbName -Message "flushed procedure cache and shrank TempDB files on $ServerInstance"
 Write-Host "[$DbName] TempDB cleanup complete."
