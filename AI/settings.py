@@ -218,6 +218,13 @@ INFLUX_USER     = _env("INFLUX_USER",     _path("chatbot", "influxdb", "user",  
 INFLUX_PASSWORD = _env("INFLUX_PASSWORD", _path("chatbot", "influxdb", "password", default="checkmk"))
 INFLUX_SSL      = (_env("INFLUX_SSL",     str(_path("chatbot", "influxdb", "ssl",  default=False))).lower() == "true")
 
+# Names of the CheckMK-fed measurements used by the "server status" action to
+# classify a host as under- / over- / well-utilized. Override via env when the
+# local CheckMK plugin emits under different names.
+INFLUX_MEASUREMENT_CPU    = _env("INFLUX_MEASUREMENT_CPU",    _path("chatbot", "influxdb", "measurement_cpu",    default="cpu_utilization"))
+INFLUX_MEASUREMENT_MEMORY = _env("INFLUX_MEASUREMENT_MEMORY", _path("chatbot", "influxdb", "measurement_memory", default="memory_utilization"))
+INFLUX_MEASUREMENT_DISK   = _env("INFLUX_MEASUREMENT_DISK",   _path("chatbot", "influxdb", "measurement_disk",   default="disk_utilization"))
+
 
 # ---------------------------------------------------------------------------
 # SQL safety — single denylist covers both T-SQL and PL/SQL.

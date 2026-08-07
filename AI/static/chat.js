@@ -363,10 +363,85 @@ function renderData(data, intent) {
         if (t) block.appendChild(t);
       });
     }
+  } else if (action === 'server_status') {
+    renderServerStatus(data, block);
   } else if (data && data.summary) {
     renderSummaryTables(action, data.summary, block);
   }
   return block.children.length ? block : null;
+}
+
+// ---- server_status renderer --------------------------------------------
+function renderServerStatus(data, block) {
+  if (!data || typeof data !== 'object') return;
+
+  const verdict = data.verdict || 'unknown';
+  const banner = document.createElement('div');
+  banner.className = `srv-verdict srv-${verdict}`;
+  const label = {
+    under:   'Under-utilised',
+    over:    'Over-utilised',
+    well:    'Well-utilised',
+    unknown: 'Insufficient data',
+  }[verdict] || verdict;
+  banner.innerHTML =
+    `<div class="srv-verdict-label">${escapeHtml(label)}</div>` +
+    `<div class="srv-verdict-host">${escapeHtml(data.host || '(host?)')} · window ${escapeHtml(data.time_range || '7d')}</div>`;
+  block.appendChild(banner);
+
+  // Per-metric stats table (mean / p95 / peak / verdict).
+  const rows = (data.classifications || []).map(c => {
+    const st = ((data.metrics || {})[c.metric] || {}).stats || {};
+    return {
+      metric:  c.metric.toUpperCase(),
+      samples: st.samples ?? 0,
+      mean:    st.mean != null ? `${st.mean}%` : '—',
+      p95:     st.p95  != null ? `${st.p95}%`  : '—',
+      peak:    st.max  != null ? `${st.max}%`  : '—',
+      verdict: c.verdict,
+    };
+  });
+  const t = renderTable(rows, 'CPU / memory / disk — utilisation summary');
+  if (t) block.appendChild(t);
+
+  // Chart per metric (reusing the influx_query chart renderer).
+  for (const name of ['cpu', 'memory', 'disk']) {
+    const m = (data.metrics || {})[name];
+    if (!m) continue;
+    if (m.error) {
+      block.appendChild(emptyHint(`${name.toUpperCase()}: ${m.error}`));
+      continue;
+    }
+    const c = renderChart({
+      measurement: m.measurement,
+      aggregation: m.aggregation,
+      time_range:  m.time_range,
+      series:      m.series,
+    });
+    if (c) block.appendChild(c);
+  }
+
+  // Reasoning bullets.
+  if (Array.isArray(data.reasoning) && data.reasoning.length) {
+    const wrap = document.createElement('div');
+    wrap.className = 'srv-reasoning';
+    wrap.innerHTML =
+      '<div class="srv-section-title">Reasoning</div>' +
+      '<ul>' + data.reasoning.map(r => `<li>${escapeHtml(r)}</li>`).join('') + '</ul>';
+    block.appendChild(wrap);
+  }
+
+  // SQL Server licensing hints (mssql only).
+  if (Array.isArray(data.licensing) && data.licensing.length) {
+    const licRows = data.licensing.map(l => ({
+      finding: l.finding,
+      estimated_saving_usd: (l.saving_estimate == null)
+        ? '—'
+        : `$${Math.round(Number(l.saving_estimate)).toLocaleString()}`,
+    }));
+    const lic = renderTable(licRows, 'SQL Server — cost-optimisation opportunities');
+    if (lic) block.appendChild(lic);
+  }
 }
 
 function renderSummaryTables(action, s, block) {

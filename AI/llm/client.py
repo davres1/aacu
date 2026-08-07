@@ -54,6 +54,15 @@ Allowed actions and their parameter shapes:
   performance_review    {"server": str}            Long-running queries, top CPU/IO
                                                     statements, blocking, waits,
                                                     missing indexes — for tuning.
+  server_status         {"host": str, "time_range": str,
+                         "cores": int|null, "edition": "Standard"|"Enterprise"|null,
+                         "users": int|null, "has_software_assurance": bool|null,
+                         "is_passive_replica": bool|null}
+      InfluxDB CPU / memory / disk utilisation over the window (default 7d) →
+      verdict (under/well/over-utilised) + reasoning + SQL Server licensing
+      cost-reduction hints (edition audit, Server+CAL vs per-core, passive
+      replica). Pass 'host' when the user names one; otherwise leave null so
+      the backend can fill it from the selected database.
   chat                  {"reply": str}             Free-form answer.
 
 Return JSON only — no prose, no markdown fences. Pick exactly one action.
@@ -100,6 +109,9 @@ Allowed actions and their parameter shapes:
   performance_review    {"server": str}            Long-running sessions, top SQL by
                                                     elapsed/CPU, blocking, top waits
                                                     (ASH) — for tuning.
+  server_status         {"host": str, "time_range": str}
+      InfluxDB CPU / memory / disk utilisation over the window (default 7d) →
+      under/well/over-utilised verdict with reasoning drawn from historical data.
   create_restore_point  {"server": str, "database": str, "name": str,
                          "guarantee": bool}
   list_restore_points   {"server": str, "database": str}
@@ -154,6 +166,9 @@ Allowed actions and their parameter shapes:
   performance_review    {"server": str}            Long-running activities, top SQL by
                                                     exec time (package cache), lock
                                                     waits, bufferpool hit ratio — tuning.
+  server_status         {"host": str, "time_range": str}
+      InfluxDB CPU / memory / disk utilisation over the window (default 7d) →
+      under/well/over-utilised verdict with reasoning drawn from historical data.
   chat                  {"reply": str}
 
 Return JSON only — no prose, no markdown fences. Pick exactly one action.
@@ -204,6 +219,9 @@ Allowed actions and their parameter shapes:
   performance_review    {"server": str}            Long-running queries, top SQL by exec time
                                                     (events_statements_summary_by_digest), lock
                                                     waits, buffer-pool hit ratio — for tuning.
+  server_status         {"host": str, "time_range": str}
+      InfluxDB CPU / memory / disk utilisation over the window (default 7d) →
+      under/well/over-utilised verdict with reasoning drawn from historical data.
   chat                  {"reply": str}
 
 Return JSON only — no prose, no markdown fences. Pick exactly one action.
@@ -456,6 +474,17 @@ def summarize(user_message, intent, tool_result):
             "changes, query rewrites, killing or chasing a blocker, configuration or "
             "memory/tempdb tuning. Clearly mark anything destructive as requiring review; "
             "do not claim to have applied any change.")
+    if intent.get("action") == "server_status":
+        system += (
+            " This is a SERVER STATUS / capacity review. The tool result contains "
+            "CPU / memory / disk utilisation stats (mean, p95, min, max) drawn from "
+            "historical InfluxDB data, plus a rule-based verdict (under/well/over-utilised) "
+            "and, for SQL Server, licensing cost-reduction hints. Write a short verdict "
+            "paragraph anchored in the numbers, then a **Reasoning** section that cites "
+            "the specific mean/p95 figures per metric, then — only when licensing hints "
+            "are present — a **Cost-optimisation** section that summarises them. Do NOT "
+            "invent numbers not in the data. If the verdict is 'unknown', say the window "
+            "had no data and suggest widening time_range.")
     messages = [
         {"role": "system", "content": system},
         {"role": "user",

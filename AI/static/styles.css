@@ -569,6 +569,49 @@ button { font-family: inherit; }
   font-style: italic;
 }
 
+/* =========== Server-status card =========== */
+.srv-verdict {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  margin: 4px 0 12px;
+  border: 1px solid var(--border-soft);
+  background: var(--bg-card);
+}
+.srv-verdict-label {
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+.srv-verdict-host { color: var(--text-muted); font-size: 12px; }
+.srv-under   { border-color: #f59e0b55; background: #f59e0b12; }
+.srv-under   .srv-verdict-label { color: #f59e0b; }
+.srv-over    { border-color: #f8717155; background: #f8717112; }
+.srv-over    .srv-verdict-label { color: #f87171; }
+.srv-well    { border-color: #34d39955; background: #34d39912; }
+.srv-well    .srv-verdict-label { color: #34d399; }
+.srv-unknown .srv-verdict-label { color: var(--text-muted); }
+
+.srv-section-title {
+  color: var(--text-dim2);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 12px 0 6px;
+  font-weight: 700;
+}
+.srv-reasoning ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.srv-reasoning li { margin-bottom: 4px; }
+
 /* =========== Flavor tabs (SQL Server / Oracle / Db2) =========== */
 .flavor-tabs {
   display: inline-flex;

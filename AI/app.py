@@ -244,6 +244,210 @@ def _resolve_db_name_for_section(flavor, database):
 
 
 # ---------------------------------------------------------------------------
+# Server status — CPU / memory / disk utilization from InfluxDB, with a
+# rule-based verdict (under- / over- / well-utilized) and, for SQL Server,
+# licensing-aware cost-reduction hints.
+#
+# Thresholds are conservative defaults used across VMware/CloudOps capacity
+# planning: <30% mean and <60% p95 = under-utilized; >75% mean or >90% p95 =
+# over-utilized; otherwise well-utilized. Adjustable via env if needed.
+# ---------------------------------------------------------------------------
+
+# SQL Server list-price constants (per 2-core pack; unchanged 2022 -> 2025).
+_SQL_2CORE_ENTERPRISE = 15123
+_SQL_2CORE_STANDARD   = 3945
+_SQL_MIN_CORES_ENT    = 8
+_SQL_MIN_CORES_STD    = 4
+_SQL_SERVER_LICENCE   = 989      # Standard Server+CAL server licence
+_SQL_CAL              = 230      # per user/device CAL
+
+
+def _classify(mean, p95, name):
+    """Map a metric's mean+p95 utilisation to an under/well/over verdict."""
+    if mean is None or p95 is None:
+        return {"metric": name, "verdict": "unknown", "reason": "no data points in range"}
+    if mean < 30 and p95 < 60:
+        return {
+            "metric":  name,
+            "verdict": "under",
+            "reason": (f"{name} mean {mean}% / p95 {p95}% — sustained low load "
+                       "leaves headroom that could be reclaimed."),
+        }
+    if mean > 75 or p95 > 90:
+        return {
+            "metric":  name,
+            "verdict": "over",
+            "reason": (f"{name} mean {mean}% / p95 {p95}% — running hot; "
+                       "risks queueing, throttling and SLA breach."),
+        }
+    return {
+        "metric":  name,
+        "verdict": "well",
+        "reason":  f"{name} mean {mean}% / p95 {p95}% — within a healthy operating band.",
+    }
+
+
+def _mssql_licensing_advice(cores, edition, users, has_sa, is_passive):
+    """
+    Apply the SQL-Server-specific right-sizing rules the user asked for.
+    Returns a list of {finding, saving_estimate} dicts; empty when no
+    licensing context was supplied.
+    """
+    edition = (edition or "").strip().lower()
+    tips = []
+    if not edition and not cores:
+        return tips
+
+    if edition == "standard":
+        # 1. Server+CAL vs per-core break-even (~30 users on a 4-core box).
+        if users is not None and cores is not None:
+            per_core_cost = max(cores, _SQL_MIN_CORES_STD) / 2 * _SQL_2CORE_STANDARD
+            cal_cost      = _SQL_SERVER_LICENCE + _SQL_CAL * int(users)
+            if int(users) < 30 and cal_cost < per_core_cost:
+                tips.append({
+                    "finding": (f"With ~{users} users on a {cores}-core Standard host, "
+                                f"Server+CAL (${cal_cost:,}) is cheaper than per-core "
+                                f"(${per_core_cost:,})."),
+                    "saving_estimate": per_core_cost - cal_cost,
+                })
+            elif int(users) >= 30 and per_core_cost < cal_cost:
+                tips.append({
+                    "finding": (f"With ~{users} users, per-core (${per_core_cost:,}) is "
+                                f"cheaper than Server+CAL (${cal_cost:,})."),
+                    "saving_estimate": cal_cost - per_core_cost,
+                })
+
+        # 2. Right-size vCPU: every unnecessary 2-core pack ≈ $3,945.
+        if cores is not None and cores > _SQL_MIN_CORES_STD:
+            tips.append({
+                "finding": ("If sustained CPU headroom is >70% for 7 days, drop 2 vCPUs — "
+                            f"each 2-core pack on Standard costs ${_SQL_2CORE_STANDARD:,}."),
+                "saving_estimate": _SQL_2CORE_STANDARD,
+            })
+
+    if edition == "enterprise":
+        # Audit whether Enterprise is actually needed.
+        tips.append({
+            "finding": ("1 in 3 estates run Enterprise where Standard would fit. "
+                        "If you don't use multi-secondary AlwaysOn, unlimited "
+                        "virtualisation, or readable secondaries, Standard 2025 "
+                        "covers the old 24-core / 128GB Enterprise triggers."),
+            "saving_estimate": (_SQL_2CORE_ENTERPRISE - _SQL_2CORE_STANDARD)
+                                * max((cores or _SQL_MIN_CORES_ENT), _SQL_MIN_CORES_ENT) / 2,
+        })
+        if cores is not None and cores > _SQL_MIN_CORES_ENT:
+            tips.append({
+                "finding": ("Each unused 2-core pack on Enterprise costs "
+                            f"${_SQL_2CORE_ENTERPRISE:,} — right-size vCPUs based on real load."),
+                "saving_estimate": _SQL_2CORE_ENTERPRISE,
+            })
+
+    # 3. Passive replica licensing.
+    if is_passive:
+        if has_sa:
+            tips.append({
+                "finding": "Passive failover replica is free of charge under active Software Assurance — no additional core licences needed.",
+                "saving_estimate": None,
+            })
+        else:
+            tips.append({
+                "finding": ("Passive replica without Software Assurance is billable — "
+                            "either add SA or fold this workload into a licensed active node."),
+                "saving_estimate": None,
+            })
+
+    return tips
+
+
+def _overall_verdict(classifications):
+    """Roll the per-metric verdicts into a single verdict for the host."""
+    verdicts = [c["verdict"] for c in classifications]
+    if "over" in verdicts:
+        return "over"
+    # Under-utilised only if EVERY known metric is under.
+    known = [v for v in verdicts if v in ("under", "well")]
+    if known and all(v == "under" for v in known):
+        return "under"
+    if "well" in verdicts:
+        return "well"
+    return "unknown"
+
+
+def _server_status(flavor, host, time_range, cores, edition, users,
+                   has_software_assurance, is_passive_replica):
+    if not host:
+        return {"error": "host is required (pass ?host=<name> or select a database)"}
+    util = influx_handler.server_utilization(host=host, time_range=time_range)
+    metrics = util.get("metrics", {})
+
+    classifications = []
+    for name in ("cpu", "memory", "disk"):
+        stats = (metrics.get(name) or {}).get("stats") or {}
+        classifications.append(_classify(stats.get("mean"), stats.get("p95"), name))
+
+    verdict = _overall_verdict(classifications)
+
+    # Contextual recommendations driven by the verdict.
+    reasoning = []
+    if verdict == "under":
+        reasoning.append("All three vitals show sustained low utilisation — the host is oversized for its workload.")
+        reasoning.append("Recommend: shrink vCPU / memory in the next maintenance window; consolidate onto a shared instance; or reclaim disk that hasn't grown in weeks.")
+    elif verdict == "over":
+        reasoning.append("At least one vital is running hot — throughput or SLA risk.")
+        reasoning.append("Recommend: profile hot workload (see performance_review); add vCPU / memory; move IO-heavy files to faster storage; verify statistics & indexes.")
+    elif verdict == "well":
+        reasoning.append("Utilisation sits inside a healthy operating band — no immediate resize action recommended.")
+    else:
+        reasoning.append("Not enough data in the selected window to classify — extend time_range or check that CheckMK is feeding InfluxDB for this host.")
+
+    licensing = []
+    if flavor == "mssql":
+        licensing = _mssql_licensing_advice(
+            cores=cores,
+            edition=edition,
+            users=users,
+            has_sa=has_software_assurance,
+            is_passive=is_passive_replica,
+        )
+        if verdict == "under" and cores and (edition or "").lower() == "standard":
+            reasoning.append(
+                f"With Standard edition at {cores} cores under-utilised, dropping "
+                f"2 vCPUs saves ${_SQL_2CORE_STANDARD:,} in list-price licensing per year.")
+        if verdict == "under" and cores and (edition or "").lower() == "enterprise":
+            reasoning.append(
+                f"Enterprise at {cores} cores under-utilised: an audit "
+                f"downgrade to Standard could save ${(_SQL_2CORE_ENTERPRISE - _SQL_2CORE_STANDARD) * max(cores, _SQL_MIN_CORES_ENT) // 2:,} per year.")
+
+    return {
+        "host":            host,
+        "flavor":          flavor,
+        "time_range":      util.get("time_range"),
+        "verdict":         verdict,
+        "classifications": classifications,
+        "reasoning":       reasoning,
+        "licensing":       licensing,
+        "context": {
+            "cores":                  cores,
+            "edition":                edition,
+            "users":                  users,
+            "has_software_assurance": has_software_assurance,
+            "is_passive_replica":     is_passive_replica,
+        },
+        # Raw series for the front-end to chart (CPU / memory / disk).
+        "metrics": {
+            name: {
+                "measurement": (metrics.get(name) or {}).get("measurement"),
+                "time_range":  (metrics.get(name) or {}).get("time_range"),
+                "aggregation": (metrics.get(name) or {}).get("aggregation"),
+                "series":      (metrics.get(name) or {}).get("series", []),
+                "stats":       (metrics.get(name) or {}).get("stats"),
+                "error":       (metrics.get(name) or {}).get("error"),
+            } for name in ("cpu", "memory", "disk")
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Intent dispatch
 # ---------------------------------------------------------------------------
 
@@ -368,6 +572,17 @@ def _dispatch(flavor, intent):
         return ops_h.alwayson_status(server=params.get("server"))
     if action == "performance_review":
         return ops_h.performance_review(server=params.get("server"))
+    if action == "server_status":
+        return _server_status(
+            flavor=flavor,
+            host=params.get("host") or params.get("server"),
+            time_range=params.get("time_range") or "7d",
+            cores=params.get("cores"),
+            edition=params.get("edition"),
+            users=params.get("users"),
+            has_software_assurance=params.get("has_software_assurance"),
+            is_passive_replica=bool(params.get("is_passive_replica", False)),
+        )
 
     # Oracle-only intents
     if action == "create_restore_point" and flavor == "oracle":
