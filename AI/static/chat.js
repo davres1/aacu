@@ -355,7 +355,7 @@ function renderData(data, intent) {
     if (!block.children.length) block.appendChild(emptyHint('Combo query returned no rows or points.'));
   } else if (action === 'health_check') {
     // mssql + db2 + mysql + mariadb share the instance->databases inventory shape.
-    const instances = data.inventory && (data.inventory.mssql || data.inventory.db2 || data.inventory.mysql || data.inventory.mariadb);
+    const instances = data.inventory && (data.inventory.mssql || data.inventory.db2 || data.inventory.mysql || data.inventory.mariadb || data.inventory.postgresql);
     if (instances) {
       Object.entries(instances).forEach(([inst, info]) => {
         if (!info || !Array.isArray(info.databases)) return;

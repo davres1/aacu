@@ -1,0 +1,243 @@
+---
+# =============================================================================
+# install_postgresql.yaml
+#
+# Installs PostgreSQL 16 (or 15 / 17) on every Linux host in
+# `postgresql_servers`, using:
+#   - the official PGDG repository (or a local repo RPM)
+#   - dnf package install
+#   - community.postgresql modules for secure-install (superuser password,
+#     pg_hba rules)
+#
+# Tune behaviour by editing the `pg_install:` block in setup.yaml.
+# Secrets (postgres_password) should be encrypted with ansible-vault.
+#
+# Run:
+#   ansible-galaxy collection install community.postgresql ansible.posix
+#   ansible-playbook -i /etc/ansible/hosts PostgreSQL/install_postgresql.yaml --ask-vault-pass
+#
+# Tag-filtered runs:
+#   --tags repo      add PGDG repository only
+#   --tags engine    install engine, initdb, configure, and start service
+#   --tags secure    set postgres superuser password and pg_hba rules
+#   --tags verify    run post-install verification block
+# =============================================================================
+
+- name: Install PostgreSQL on Linux hosts
+  hosts: postgresql_servers
+  gather_facts: true
+  strategy: free
+  become: true
+
+  vars_files:
+    - ../setup.yaml
+
+  collections:
+    - ansible.builtin
+    - ansible.posix
+    - community.postgresql
+    - community.general
+
+  vars:
+    _ver:           "{{ pg_install.version        | default('16') }}"
+    _port:          "{{ pg_install.port           | default(5432) }}"
+    _datadir:       "{{ pg_install.datadir        | default('/var/lib/pgsql/' ~ (pg_install.version | default('16')) ~ '/data') }}"
+    _logdir:        "{{ pg_install.logdir         | default('/var/log/postgresql') }}"
+    _socket_dir:    "/var/run/postgresql"
+    _svc:           "postgresql-{{ pg_install.version | default('16') }}"
+    _pg_password:   "{{ pg_install.postgres_password }}"
+    _listen:        "{{ pg_install.listen_addresses | default('*') }}"
+
+  pre_tasks:
+
+    - name: Show PostgreSQL install plan
+      ansible.builtin.debug:
+        msg:
+          - "Target host:      {{ inventory_hostname }}"
+          - "PG version:       {{ _ver }} ({{ pg_install.edition | default('Community') }})"
+          - "Port:             {{ _port }}"
+          - "Data dir:         {{ _datadir }}"
+          - "listen_addresses: {{ _listen }}"
+
+    # -------------------------------------------------------------------------
+    # 1. Add PGDG repository
+    # -------------------------------------------------------------------------
+    - name: Install PGDG repo RPM from URL
+      ansible.builtin.dnf:
+        name: "{{ pg_install.source.repo_rpm_url | default('https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm') }}"
+        state: present
+        disable_gpg_check: true
+      when: pg_install.source.local_rpm_path | default('') | length == 0
+      tags: [repo, engine]
+
+    - name: Install PGDG repo from local RPM file
+      ansible.builtin.dnf:
+        name: "{{ pg_install.source.local_rpm_path }}"
+        state: present
+        disable_gpg_check: true
+      when: pg_install.source.local_rpm_path | default('') | length > 0
+      tags: [repo, engine]
+
+    - name: Disable the built-in postgresql module to avoid conflicts
+      ansible.builtin.shell: |
+        dnf -qy module disable postgresql 2>/dev/null || true
+      changed_when: false
+      tags: [repo, engine]
+
+    # -------------------------------------------------------------------------
+    # 2. Install PostgreSQL engine packages
+    # -------------------------------------------------------------------------
+    - name: Install postgresql{{ _ver }}-server and supporting packages
+      ansible.builtin.dnf:
+        name:
+          - "postgresql{{ _ver }}-server"
+          - "postgresql{{ _ver }}"
+          - "postgresql{{ _ver }}-contrib"
+          - python3-psycopg2
+        state: present
+      tags: [engine]
+
+    - name: Ensure PostgreSQL log directory exists
+      ansible.builtin.file:
+        path: "{{ _logdir }}"
+        state: directory
+        owner: postgres
+        group: postgres
+        mode: '0750'
+      tags: [engine]
+
+    # -------------------------------------------------------------------------
+    # 3. Initialize the database cluster (idempotent — skipped if data dir exists)
+    # -------------------------------------------------------------------------
+    - name: Check whether data directory has been initialised
+      ansible.builtin.stat:
+        path: "{{ _datadir }}/PG_VERSION"
+      register: pg_initdb_done
+      tags: [engine]
+
+    - name: Run postgresql{{ _ver }}-setup initdb (first time only)
+      ansible.builtin.shell: |
+        PGSETUP_INITDB_OPTIONS="--locale={{ pg_install.initdb_locale | default('en_US.UTF-8') }} --encoding=UTF8" \
+          /usr/pgsql-{{ _ver }}/bin/postgresql-{{ _ver }}-setup initdb
+      when: not pg_initdb_done.stat.exists
+      tags: [engine]
+
+    # -------------------------------------------------------------------------
+    # 4. Write postgresql.conf tuning
+    # -------------------------------------------------------------------------
+    - name: Write AACU tuning block into postgresql.conf
+      ansible.builtin.blockinfile:
+        path: "{{ _datadir }}/postgresql.conf"
+        marker: "# {mark} AACU managed block"
+        block: |
+          listen_addresses = '{{ _listen }}'
+          port             = {{ _port }}
+          log_directory    = '{{ _logdir }}'
+          log_filename     = 'postgresql-%a.log'
+          log_rotation_age = 1d
+          log_rotation_size = 0
+          logging_collector = on
+          log_min_duration_statement = {{ pg_install.log_min_duration_ms | default(1000) }}
+
+          max_connections            = {{ pg_install.max_connections     | default(100) }}
+          shared_buffers             = {{ pg_install.shared_buffers_mb   | default(256) }}MB
+          effective_cache_size       = {{ pg_install.effective_cache_size_mb | default(768) }}MB
+          work_mem                   = {{ pg_install.work_mem_mb         | default(4) }}MB
+          maintenance_work_mem       = {{ pg_install.maintenance_work_mem_mb | default(64) }}MB
+          wal_level                  = {{ pg_install.wal_level           | default('replica') }}
+          max_wal_size               = {{ pg_install.max_wal_size_mb     | default(1024) }}MB
+          checkpoint_completion_target = 0.9
+      tags: [engine]
+
+    # -------------------------------------------------------------------------
+    # 5. Write pg_hba.conf access rules
+    # -------------------------------------------------------------------------
+    - name: Write AACU pg_hba.conf rules
+      ansible.builtin.blockinfile:
+        path: "{{ _datadir }}/pg_hba.conf"
+        marker: "# {mark} AACU managed block"
+        insertafter: "^# TYPE"
+        block: |
+          # Local connections via UNIX socket
+          local   all             postgres                                peer
+          local   all             all                                     peer
+          # TCP connections from localhost
+          host    all             all             127.0.0.1/32            scram-sha-256
+          host    all             all             ::1/128                 scram-sha-256
+          # TCP connections from the DBA network (set pg_install.dba_network in setup.yaml)
+          host    all             all             {{ pg_install.dba_network | default('0.0.0.0/0') }}  scram-sha-256
+      tags: [engine, secure]
+
+    - name: Enable and start PostgreSQL service
+      ansible.builtin.systemd:
+        name: "{{ _svc }}"
+        enabled: true
+        state: started
+      tags: [engine]
+
+    - name: Open PostgreSQL firewall port {{ _port }}/tcp
+      ansible.posix.firewalld:
+        port: "{{ _port }}/tcp"
+        permanent: true
+        state: enabled
+        immediate: true
+      tags: [engine]
+
+    # -------------------------------------------------------------------------
+    # 6. Secure installation — postgres superuser password
+    # -------------------------------------------------------------------------
+    - name: Set postgres superuser password
+      community.postgresql.postgresql_user:
+        login_unix_socket: "{{ _socket_dir }}"
+        login_user: postgres
+        name: postgres
+        password: "{{ _pg_password }}"
+        state: present
+      become_user: postgres
+      no_log: true
+      tags: [secure]
+
+    - name: Reload PostgreSQL to apply pg_hba and config changes
+      ansible.builtin.systemd:
+        name: "{{ _svc }}"
+        state: reloaded
+      tags: [engine, secure]
+
+  post_tasks:
+
+    # -------------------------------------------------------------------------
+    # 7. Verify
+    # -------------------------------------------------------------------------
+    - name: Wait for PostgreSQL TCP port to open
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ _port }}"
+        timeout: 60
+      tags: [verify]
+
+    - name: Verify PostgreSQL service state
+      ansible.builtin.systemd:
+        name: "{{ _svc }}"
+      register: pg_svc_state
+      tags: [verify]
+
+    - name: Capture PostgreSQL server version via psql
+      ansible.builtin.shell: |
+        psql -U postgres -h 127.0.0.1 -p {{ _port }} -tAc "SELECT version();" 2>/dev/null | head -1
+      become_user: postgres
+      register: pg_version_probe
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags: [verify]
+
+    - name: Installation summary
+      ansible.builtin.debug:
+        msg:
+          - "Host:         {{ inventory_hostname }}"
+          - "PG version:   {{ _ver }} ({{ pg_install.edition | default('Community') }})"
+          - "Service:      {{ _svc }}={{ pg_svc_state.status.ActiveState | default('unknown') }}"
+          - "Port:         {{ _port }}"
+          - "Data dir:     {{ _datadir }}"
+          - "Version info: {{ pg_version_probe.stdout_lines | default(['n/a']) | first }}"
+      tags: [verify]

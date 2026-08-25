@@ -500,6 +500,54 @@ mariadb_install:
   innodb_buffer_pool_mb: 512
 
 
+# ---------- PostgreSQL installation -------------------------------------------
+# Consumed by PostgreSQL/install_postgresql.yaml. Adds the official PGDG repo
+# and installs postgresql<version>-server via dnf.
+pg_install:
+  source:
+    # URL to the PGDG release RPM (sets up the yum repo).
+    repo_rpm_url:   https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
+    # Supply a pre-downloaded RPM path instead when internet access is restricted.
+    local_rpm_path: ''
+
+  version: '16'                      # 15 / 16 / 17
+  edition: Community
+
+  # Service / network
+  port:             5432
+  listen_addresses: '*'              # '*' = all interfaces; '127.0.0.1' = localhost only
+  # CIDR allowed to connect via TCP (pg_hba.conf HOST line).
+  # Set to your management network for tighter security.
+  dba_network:      '0.0.0.0/0'
+
+  # Directories
+  datadir:  ''                       # blank = /var/lib/pgsql/<version>/data
+  logdir:   /var/log/postgresql
+
+  # initdb
+  initdb_locale: 'en_US.UTF-8'
+
+  # Authentication
+  # ansible-vault encrypt_string 'PGr00t!' --name 'pg_install_postgres_password'
+  postgres_password: CHANGE_ME
+
+  # Memory tuning (MB)
+  shared_buffers_mb:          256    # 25% of RAM is a good starting point
+  effective_cache_size_mb:    768    # 75% of RAM
+  work_mem_mb:                4
+  maintenance_work_mem_mb:    64
+
+  # WAL / replication
+  wal_level:        replica          # minimal / replica / logical
+  max_wal_size_mb:  1024
+
+  # Slow-query logging (ms; 0 = log all, -1 = disable)
+  log_min_duration_ms:  1000
+
+  # Connection limit
+  max_connections:  100
+
+
 # ---------- ServiceNow / ticktator (CheckMK notification handler) ------------
 # ticktator.py reads its config from environment variables. The simplest
 # integration is to drop a snippet into /etc/default/ticktator that the
